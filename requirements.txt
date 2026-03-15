@@ -1,0 +1,13 @@
+Flask==2.3.3
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.0.5
+Flask-Login==0.6.2
+flask-cors==4.0.0
+python-dotenv==1.0.0
+Werkzeug==2.3.7
+redis==5.0.0
+rq==1.15.1
+PyMySQL==1.1.2
+uiautomation==2.0.29
+comtypes==1.4.16
+pyautogui==0.9.54

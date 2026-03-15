@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>登录 - 视频工厂</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: 'Segoe UI', 'PingFang SC', Roboto, sans-serif;
+            background: #0f172a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .login-card {
+            background: #1e293b;
+            border-radius: 24px;
+            padding: 40px;
+            width: 360px;
+            border: 1px solid #334155;
+            box-shadow: 0 20px 30px -10px rgba(0,0,0,0.5);
+        }
+        h2 {
+            color: #e2e8f0;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            color: #94a3b8;
+            display: block;
+            margin-bottom: 8px;
+        }
+        input {
+            width: 100%;
+            padding: 12px;
+            background: #334155;
+            border: 1px solid #475569;
+            border-radius: 12px;
+            color: #e2e8f0;
+            font-size: 1rem;
+            box-sizing: border-box;
+        }
+        input:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+        .btn {
+            width: 100%;
+            padding: 12px;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        .btn:hover {
+            background: #2563eb;
+        }
+        .link {
+            text-align: center;
+            margin-top: 20px;
+            color: #94a3b8;
+        }
+        .link a {
+            color: #3b82f6;
+            text-decoration: none;
+        }
+        .flash {
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: center;
+            color: white;
+        }
+        .flash-success { background: #059669; }
+        .flash-danger { background: #dc2626; }
+        .flash-info { background: #3b82f6; }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <h2>🔐 登录视频工厂</h2>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="flash flash-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        <form method="post" action="{{ url_for('auth.login') }}">
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" name="username" required>
+            </div>
+            <div class="form-group">
+                <label>密码</label>
+                <input type="password" name="password" required>
+            </div>
+            <button class="btn" type="submit">登录</button>
+        </form>
+        <div class="link">
+            没有账号？ <a href="{{ url_for('auth.register') }}">立即注册</a>
+        </div>
+    </div>
+</body>
+</html>

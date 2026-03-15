@@ -1,0 +1,39 @@
+<div class="card">
+    <div class="page-title">⚙️ 素材路径</div>
+    <form id="materialForm">
+        <div class="form-group">
+            <label>素材文件夹路径</label>
+            <div class="path-input-group">
+                <input type="text" name="material_folder" id="folder" class="form-control" value="{{ folder }}">
+                <button type="button" class="btn btn-secondary" id="browseBtn">浏览...</button>
+            </div>
+        </div>
+        <button type="submit" class="btn">保存</button>
+    </form>
+</div>
+<script>
+    async function loadFolder() {
+        const res = await fetch('/api/material-folder');
+        const data = await res.json();
+        document.getElementById('folder').value = data.folder;
+    }
+    document.getElementById('browseBtn').addEventListener('click', async () => {
+        const res = await fetch('/api/browse-folder', { method: 'POST' });
+        const data = await res.json();
+        if (data.folder) {
+            document.getElementById('folder').value = data.folder;
+        }
+    });
+    document.getElementById('materialForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const res = await fetch('/api/material-folder', { method: 'POST', body: formData });
+        const result = await res.json();
+        if (result.success) {
+            alert('保存成功');
+        } else {
+            alert('保存失败');
+        }
+    });
+    loadFolder();
+</script>

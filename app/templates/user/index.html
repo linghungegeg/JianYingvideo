@@ -1,0 +1,1587 @@
+﻿<!DOCTYPE html>
+
+
+<html>
+
+
+<head>
+
+
+    <title id="dynamicTitle">???? - ???</title>
+
+
+    <meta charset="utf-8">
+
+
+    <meta name="keywords" id="dynamicKeywords" content="">
+
+
+    <meta name="description" id="dynamicDescription" content="">
+
+
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+
+    <style>
+
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+
+        body {
+
+
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Roboto, sans-serif;
+
+
+            background: #0f172a;
+
+
+            color: #e2e8f0;
+
+
+            height: 100vh;
+
+
+            display: flex;
+
+
+            overflow: hidden;
+
+
+            transition: background 0.3s;
+
+
+        }
+
+
+        body.light-mode {
+
+
+            background: #f8fafc;
+
+
+            color: #1e293b;
+
+
+        }
+
+
+        .sidebar {
+
+
+            width: 280px;
+
+
+            background: rgba(30, 41, 59, 0.95);
+
+
+            backdrop-filter: blur(10px);
+
+
+            border-right: 1px solid #334155;
+
+
+            display: flex;
+
+
+            flex-direction: column;
+
+
+            user-select: none;
+
+
+        }
+
+
+        .light-mode .sidebar {
+
+
+            background: white;
+
+
+            border-right: 1px solid #e2e8f0;
+
+
+            color: #1e293b;
+
+
+        }
+
+
+        .sidebar-header {
+
+
+            padding: 28px 24px;
+
+
+            font-size: 1.6rem;
+
+
+            font-weight: 700;
+
+
+            display: flex;
+
+
+            align-items: center;
+
+
+            gap: 12px;
+
+
+            border-bottom: 1px solid #334155;
+
+
+        }
+
+
+        .sidebar-header span {
+
+
+            background: #3b82f6;
+
+
+            padding: 4px 12px;
+
+
+            border-radius: 40px;
+
+
+            font-size: 0.9rem;
+
+
+            color: white;
+
+
+        }
+
+
+        .user-info {
+
+
+            padding: 16px 24px;
+
+
+            border-bottom: 1px solid #334155;
+
+
+            font-size: 0.9rem;
+
+
+            color: #94a3b8;
+
+
+            display: flex;
+
+
+            align-items: center;
+
+
+            justify-content: space-between;
+
+
+        }
+
+
+        .logout-btn {
+
+
+            color: #ef4444;
+
+
+            cursor: pointer;
+
+
+            text-decoration: none;
+
+
+            font-size: 0.8rem;
+
+
+        }
+
+
+        .nav-items {
+
+
+            flex: 1;
+
+
+            padding: 24px 0;
+
+
+            overflow-y: auto;
+
+
+        }
+
+
+        .nav-item {
+
+
+            margin: 4px 12px;
+
+
+            border-radius: 14px;
+
+
+            cursor: pointer;
+
+
+            transition: all 0.2s;
+
+
+        }
+
+
+        .nav-item .parent {
+
+
+            padding: 14px 24px;
+
+
+            display: flex;
+
+
+            align-items: center;
+
+
+            gap: 14px;
+
+
+            font-weight: 500;
+
+
+        }
+
+
+        .nav-item .parent:hover {
+
+
+            background: #334155;
+
+
+        }
+
+
+        .light-mode .nav-item .parent:hover {
+
+
+            background: #f1f5f9;
+
+
+        }
+
+
+        .nav-item.active > .parent {
+
+
+            background: #3b82f6;
+
+
+            color: white;
+
+
+        }
+
+
+        .nav-item .parent i {
+
+
+            font-style: normal;
+
+
+            font-size: 1.3rem;
+
+
+        }
+
+
+        .sub-items {
+
+
+            list-style: none;
+
+
+            padding-left: 48px;
+
+
+            margin: 8px 0;
+
+
+            display: none;
+
+
+        }
+
+
+        .nav-item.expanded .sub-items {
+
+
+            display: block;
+
+
+        }
+
+
+        .sub-item {
+
+
+            padding: 10px 16px;
+
+
+            border-radius: 10px;
+
+
+            margin: 2px 0;
+
+
+            cursor: pointer;
+
+
+            font-size: 0.95rem;
+
+
+            color: #cbd5e1;
+
+
+        }
+
+
+        .sub-item:hover {
+
+
+            background: #334155;
+
+
+        }
+
+
+        .light-mode .sub-item {
+
+
+            color: #475569;
+
+
+        }
+
+
+        .light-mode .sub-item:hover {
+
+
+            background: #e2e8f0;
+
+
+        }
+
+
+        .sub-item.active {
+
+
+            background: #3b82f6;
+
+
+            color: white;
+
+
+        }
+
+
+        .theme-toggle {
+
+
+            margin: 20px 24px;
+
+
+            padding: 10px;
+
+
+            background: #334155;
+
+
+            border-radius: 40px;
+
+
+            display: flex;
+
+
+            cursor: pointer;
+
+
+            position: relative;
+
+
+        }
+
+
+        .light-mode .theme-toggle {
+
+
+            background: #e2e8f0;
+
+
+        }
+
+
+        .theme-option {
+
+
+            flex: 1;
+
+
+            text-align: center;
+
+
+            padding: 6px 0;
+
+
+            border-radius: 30px;
+
+
+            z-index: 1;
+
+
+        }
+
+
+        .theme-slider {
+
+
+            position: absolute;
+
+
+            width: 50%;
+
+
+            height: 32px;
+
+
+            background: #3b82f6;
+
+
+            border-radius: 30px;
+
+
+            left: 0;
+
+
+            transition: left 0.2s;
+
+
+        }
+
+
+        .theme-slider.dark {
+
+
+            left: 0;
+
+
+        }
+
+
+        .theme-slider.light {
+
+
+            left: 50%;
+
+
+        }
+
+
+        .main {
+
+
+            flex: 1;
+
+
+            display: flex;
+
+
+            flex-direction: column;
+
+
+            background: #0f172a;
+
+
+            overflow: hidden;
+
+
+        }
+
+
+        .light-mode .main {
+
+
+            background: #f8fafc;
+
+
+        }
+
+
+        .content-area {
+
+
+            flex: 1;
+
+
+            padding: 24px;
+
+
+            overflow-y: auto;
+
+
+            background: #0f172a;
+
+
+        }
+
+
+        .light-mode .content-area {
+
+
+            background: #f8fafc;
+
+
+        }
+
+
+        .card {
+
+
+            background: #1e293b;
+
+
+            border-radius: 24px;
+
+
+            padding: 28px;
+
+
+            border: 1px solid #334155;
+
+
+            box-shadow: 0 20px 30px -10px rgba(0,0,0,0.5);
+
+
+            margin-bottom: 24px;
+
+
+        }
+
+
+        .light-mode .card {
+
+
+            background: white;
+
+
+            border-color: #e2e8f0;
+
+
+            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05);
+
+
+        }
+
+
+        .page-title {
+
+
+            font-size: 2rem;
+
+
+            font-weight: 700;
+
+
+            margin-bottom: 28px;
+
+
+            display: flex;
+
+
+            align-items: center;
+
+
+            gap: 12px;
+
+
+        }
+
+
+        .stats-grid {
+
+
+            display: grid;
+
+
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+
+
+            gap: 20px;
+
+
+            margin-bottom: 30px;
+
+
+        }
+
+
+        .stat-card {
+
+
+            background: #334155;
+
+
+            border-radius: 20px;
+
+
+            padding: 20px;
+
+
+            border-left: 6px solid #3b82f6;
+
+
+        }
+
+
+        .light-mode .stat-card {
+
+
+            background: #f1f5f9;
+
+
+        }
+
+
+        .stat-title {
+
+
+            font-size: 0.9rem;
+
+
+            color: #94a3b8;
+
+
+            margin-bottom: 8px;
+
+
+        }
+
+
+        .stat-value {
+
+
+            font-size: 2rem;
+
+
+            font-weight: 700;
+
+
+            color: #3b82f6;
+
+
+        }
+
+
+        .table {
+
+
+            width: 100%;
+
+
+            border-collapse: collapse;
+
+
+            background: #334155;
+
+
+            border-radius: 16px;
+
+
+            overflow: hidden;
+
+
+        }
+
+
+        .light-mode .table {
+
+
+            background: #f1f5f9;
+
+
+        }
+
+
+        .table th {
+
+
+            text-align: left;
+
+
+            padding: 16px 12px;
+
+
+            background: #1e293b;
+
+
+            color: #94a3b8;
+
+
+            font-weight: 600;
+
+
+            font-size: 0.9rem;
+
+
+        }
+
+
+        .light-mode .table th {
+
+
+            background: #e2e8f0;
+
+
+            color: #475569;
+
+
+        }
+
+
+        .table td {
+
+
+            padding: 16px 12px;
+
+
+            border-bottom: 1px solid #475569;
+
+
+        }
+
+
+        .light-mode .table td {
+
+
+            border-color: #cbd5e1;
+
+
+        }
+
+
+        .badge {
+
+
+            display: inline-block;
+
+
+            padding: 4px 12px;
+
+
+            border-radius: 40px;
+
+
+            font-size: 0.8rem;
+
+
+            background: #475569;
+
+
+            color: #e2e8f0;
+
+
+        }
+
+
+        .badge-success {
+
+
+            background: #05966920;
+
+
+            color: #34d399;
+
+
+            border: 1px solid #059669;
+
+
+        }
+
+
+        .badge-danger {
+
+
+            background: #dc262620;
+
+
+            color: #f87171;
+
+
+            border: 1px solid #dc2626;
+
+
+        }
+
+
+        .btn {
+
+
+            display: inline-block;
+
+
+            padding: 8px 16px;
+
+
+            border-radius: 12px;
+
+
+            font-weight: 500;
+
+
+            text-decoration: none;
+
+
+            border: none;
+
+
+            cursor: pointer;
+
+
+            font-size: 0.9rem;
+
+
+            transition: all 0.2s;
+
+
+            background: #3b82f6;
+
+
+            color: white;
+
+
+        }
+
+
+        .btn:hover {
+
+
+            background: #2563eb;
+
+
+        }
+
+
+        .btn-secondary {
+
+
+            background: #475569;
+
+
+            color: #e2e8f0;
+
+
+        }
+
+
+        .btn-secondary:hover {
+
+
+            background: #64748b;
+
+
+        }
+
+
+        .btn-danger {
+
+
+            background: #dc2626;
+
+
+        }
+
+
+        .btn-danger:hover {
+
+
+            background: #b91c1c;
+
+
+        }
+
+
+        .form-group {
+
+
+            margin-bottom: 20px;
+
+
+        }
+
+
+        .form-group label {
+
+
+            display: block;
+
+
+            margin-bottom: 6px;
+
+
+            color: #94a3b8;
+
+
+        }
+
+
+        .form-control {
+
+
+            width: 100%;
+
+
+            padding: 10px 12px;
+
+
+            background: #334155;
+
+
+            border: 1px solid #475569;
+
+
+            border-radius: 12px;
+
+
+            color: #e2e8f0;
+
+
+            font-size: 1rem;
+
+
+        }
+
+
+        .light-mode .form-control {
+
+
+            background: white;
+
+
+            border-color: #cbd5e1;
+
+
+            color: #1e293b;
+
+
+        }
+
+
+        .form-control:focus {
+
+
+            outline: none;
+
+
+            border-color: #3b82f6;
+
+
+        }
+
+
+        .path-input-group {
+
+
+            display: flex;
+
+
+            gap: 8px;
+
+
+        }
+
+
+        .path-input-group .form-control {
+
+
+            flex: 1;
+
+
+        }
+
+
+        .action-links button {
+
+
+            margin-right: 8px;
+
+
+        }
+
+
+    </style>
+
+
+</head>
+
+
+<body>
+
+
+    <div class="sidebar">
+
+
+        <div class="sidebar-header">
+
+
+            ?? ???? <span>???</span>
+
+
+        </div>
+
+
+        <div class="user-info">
+
+
+            <span>?? {{ session.username }} ({{ session.role }})</span>
+
+
+            <a href="{{ url_for('auth.logout') }}" class="logout-btn">??</a>
+
+
+        </div>
+
+
+        <div class="nav-items" id="navItems">
+
+
+            <!-- ????????? -->
+
+
+            <div class="nav-item" data-menu="dashboard" data-url="/api/dashboard-fragment">
+
+
+                <div class="parent">
+
+
+                    <i>??</i> ????
+
+
+                </div>
+
+
+            </div>
+
+
+            <!-- ?????????????? -->
+
+
+            <div class="nav-item has-sub" data-menu="frame">
+
+
+                <div class="parent">
+
+
+                    <i>??</i> ????
+
+
+                </div>
+
+
+                <ul class="sub-items">
+
+
+                    <li class="sub-item" data-menu="templates" data-url="/templates-fragment">????</li>
+
+
+                    <li class="sub-item" data-menu="upload" data-url="/upload-fragment">????</li>
+
+
+                    <li class="sub-item" data-menu="material" data-url="/material-fragment">????</li>
+
+
+                    <li class="sub-item" data-menu="logs" data-url="/logs-fragment">????</li>
+
+                <li class="sub-item" data-menu="drafts" data-url="/drafts-folder-fragment">草稿路径</li>
+                <li class="sub-item" data-menu="billing" data-url="/billing-fragment">充值购买</li>
+
+                </ul>
+
+
+            </div>
+
+
+            <!-- ????????? -->
+
+
+            <div class="nav-item" data-menu="users" data-url="/admin/users-fragment">
+
+
+                <div class="parent">
+
+
+                    <i>??</i> ????
+
+
+                </div>
+
+
+            </div>
+
+
+            <!-- ????????? -->
+
+
+            <div class="nav-item" data-menu="site" data-url="/site-fragment">
+
+
+                <div class="parent">
+
+
+                    <i>??</i> ????
+
+
+                </div>
+
+
+            </div>
+
+
+        </div>
+
+
+        <div class="theme-toggle" id="themeToggle">
+
+
+            <div class="theme-option">?? ??</div>
+
+
+            <div class="theme-option">?? ??</div>
+
+
+            <div class="theme-slider dark" id="themeSlider"></div>
+
+
+        </div>
+
+
+        <div style="padding: 20px 24px; font-size:0.9rem; color:#64748b;">
+
+
+            ? 2026 ???? - ???
+
+
+        </div>
+
+
+    </div>
+
+
+    <div class="main">
+
+
+        <div class="content-area" id="contentArea">
+
+
+            <div class="card" id="dynamicContent">
+
+
+                ???...
+
+
+            </div>
+
+
+        </div>
+
+
+    </div>
+
+
+
+
+
+    <script>
+
+
+        // ---------- ???? ----------
+
+
+        const themeToggle = document.getElementById('themeToggle');
+
+
+        const themeSlider = document.getElementById('themeSlider');
+
+
+        themeToggle.addEventListener('click', () => {
+
+
+            document.body.classList.toggle('light-mode');
+
+
+            if (document.body.classList.contains('light-mode')) {
+
+
+                themeSlider.className = 'theme-slider light';
+
+
+            } else {
+
+
+                themeSlider.className = 'theme-slider dark';
+
+
+            }
+
+
+        });
+
+
+
+
+
+        // ---------- ???? ----------
+
+
+        fetch('/api/site-settings')
+
+
+            .then(res => res.json())
+
+
+            .then(settings => {
+
+
+                document.getElementById('dynamicTitle').textContent = settings.title;
+
+
+                document.getElementById('dynamicKeywords').setAttribute('content', settings.keywords);
+
+
+                document.getElementById('dynamicDescription').setAttribute('content', settings.description);
+
+
+            })
+
+
+            .catch(err => console.warn('????????', err));
+
+
+
+
+
+        // ---------- ???? ----------
+
+
+        const navItems = document.getElementById('navItems');
+
+
+        let currentActiveMenu = null;
+
+
+        let currentActiveSub = null;
+
+
+
+
+
+        // 澶勭悊涓€绾ц彍鍗曠偣鍑伙紙鏃犲瓙鑿滃崟锛?
+
+
+        navItems.querySelectorAll('.nav-item:not(.has-sub)').forEach(item => {
+
+
+            item.addEventListener('click', () => {
+
+
+                const menu = item.dataset.menu;
+
+
+                const url = item.dataset.url;
+
+
+                if (!url) return;
+
+
+                // 绉婚櫎鎵€鏈変竴绾ц彍鍗曠殑active
+
+
+                navItems.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+
+                item.classList.add('active');
+
+
+                // 濡傛灉鏈夊睍寮€鐨勫瓙鑿滃崟锛屾姌鍙?
+
+
+                navItems.querySelectorAll('.nav-item.has-sub').forEach(n => n.classList.remove('expanded'));
+
+
+                // 娓呴櫎瀛愯彍鍗昦ctive
+
+
+                if (currentActiveSub) {
+
+
+                    currentActiveSub.classList.remove('active');
+
+
+                    currentActiveSub = null;
+
+
+                }
+
+
+                currentActiveMenu = menu;
+
+
+                loadContent(url);
+
+
+            });
+
+
+        });
+
+
+
+
+
+        // 澶勭悊鏈夊瓙鑿滃崟鐨勪竴绾ц彍鍗曪紙鐐瑰嚮灞曞紑/鎶樺彔锛?
+
+
+        navItems.querySelectorAll('.nav-item.has-sub > .parent').forEach(parent => {
+
+
+            parent.addEventListener('click', (e) => {
+
+
+                const navItem = parent.closest('.nav-item');
+
+
+                // 鍒囨崲灞曞紑鐘舵€?
+
+
+                navItem.classList.toggle('expanded');
+
+
+                // ??????????
+
+
+            });
+
+
+        });
+
+
+
+
+
+        // 澶勭悊瀛愯彍鍗曠偣鍑?
+
+
+        navItems.querySelectorAll('.sub-item').forEach(sub => {
+
+
+            sub.addEventListener('click', (e) => {
+
+
+                e.stopPropagation();
+
+
+                const menu = sub.dataset.menu;
+
+
+                const url = sub.dataset.url;
+
+
+                if (!url) return;
+
+
+                // 绉婚櫎鎵€鏈変竴绾ц彍鍗曠殑active
+
+
+                navItems.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+
+                // 绉婚櫎鎵€鏈夊瓙鑿滃崟鐨刟ctive
+
+
+                navItems.querySelectorAll('.sub-item').forEach(s => s.classList.remove('active'));
+
+
+                sub.classList.add('active');
+
+
+                // 鐖剁骇楂樹寒锛熷彲浠ョ粰鐖剁骇鍔燼ctive浣嗕笉褰卞搷灞曞紑
+
+
+                const parentItem = sub.closest('.nav-item');
+
+
+                parentItem.classList.add('active');
+
+
+                parentItem.classList.add('expanded'); // ???????
+
+
+                // 璁板綍褰撳墠婵€娲荤殑瀛愯彍鍗?
+
+
+                currentActiveSub = sub;
+
+
+                currentActiveMenu = menu;
+
+
+                loadContent(url);
+
+
+            });
+
+
+        });
+
+
+
+
+
+        // ????????
+
+
+        window.onload = () => {
+
+
+            const dashboardItem = document.querySelector('.nav-item[data-menu="dashboard"]');
+
+
+            if (dashboardItem) {
+
+
+                dashboardItem.classList.add('active');
+
+
+                loadContent(dashboardItem.dataset.url);
+
+
+            }
+
+
+        };
+
+
+
+
+
+        // ---------- ???? ----------
+
+
+        function loadContent(url) {
+
+
+            const contentDiv = document.getElementById('dynamicContent');
+
+
+            contentDiv.innerHTML = '<div class="card">???...</div>';
+
+
+            fetch(url)
+
+
+                .then(res => res.text())
+
+
+                .then(html => {
+
+
+                    contentDiv.innerHTML = html;
+
+
+                    // ?????????
+
+
+                    Array.from(contentDiv.querySelectorAll('script')).forEach(oldScript => {
+
+
+                        const newScript = document.createElement('script');
+
+
+                        Array.from(oldScript.attributes).forEach(attr => {
+
+
+                            newScript.setAttribute(attr.name, attr.value);
+
+
+                        });
+
+
+                        newScript.appendChild(document.createTextNode(oldScript.innerHTML));
+
+
+                        oldScript.parentNode.replaceChild(newScript, oldScript);
+
+
+                    });
+
+
+                })
+
+
+                .catch(err => {
+
+
+                    contentDiv.innerHTML = `<div class="card flash-error">????: ${err.message}</div>`;
+
+
+                });
+
+
+        }
+
+
+
+
+
+        // ??????
+
+
+        window.refreshCurrentContent = function() {
+
+
+            if (currentActiveSub) {
+
+
+                loadContent(currentActiveSub.dataset.url);
+
+
+            } else {
+
+
+                const activeItem = document.querySelector('.nav-item.active:not(.has-sub)');
+
+
+                if (activeItem && activeItem.dataset.url) {
+
+
+                    loadContent(activeItem.dataset.url);
+
+
+                }
+
+
+            }
+
+
+        };
+
+
+    </script>
+
+
+</body>
+
+
+</html>

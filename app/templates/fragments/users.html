@@ -1,0 +1,197 @@
+<h2>用户管理</h2>
+
+<div style="margin: 12px 0; display: flex; gap: 8px; align-items: center;">
+    <label for="adminToken">管理员 Token</label>
+    <input id="adminToken" type="text" style="min-width: 320px;" placeholder="用于配额调整的管理员 Token">
+    <button id="saveTokenBtn">保存</button>
+</div>
+
+<div style="margin: 12px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+    <label for="batchQuotaInput">批量调整</label>
+    <textarea id="batchQuotaInput" rows="4" style="min-width: 360px; flex: 1;" placeholder='示例: [{"user_id":1,"delta":5},{"user_id":2,"remaining":20,"vip_expire_at":"2026-03-31T00:00:00"}]'></textarea>
+    <button id="batchQuotaBtn">批量更新</button>
+    <button id="exportCsvBtn">导出CSV</button>
+</div>
+<div class="hint" style="margin-bottom: 12px;">vip_expire_at 使用 ISO 时间字符串；留空字符串将清空会员到期。</div>
+<table class="table" id="usersTable">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>用户名</th>
+            <th>邮箱</th>
+            <th>角色</th>
+            <th>剩余次数</th>
+            <th>总生成</th>
+            <th>会员到期</th>
+            <th>注册时间</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody></tbody>
+</table>
+
+<script>
+const adminTokenKey = 'vf_admin_token';
+const adminTokenInput = document.getElementById('adminToken');
+const saveTokenBtn = document.getElementById('saveTokenBtn');
+
+function getAdminToken() {
+    return localStorage.getItem(adminTokenKey) || '';
+}
+
+function setAdminToken(token) {
+    localStorage.setItem(adminTokenKey, token || '');
+}
+
+function authHeaders() {
+    const token = getAdminToken();
+    const headers = {'Content-Type': 'application/json'};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return headers;
+}
+
+adminTokenInput.value = getAdminToken();
+saveTokenBtn.addEventListener('click', () => {
+    setAdminToken(adminTokenInput.value.trim());
+    alert('已保存管理员 Token');
+});
+
+async function loadUsers() {
+    const res = await fetch('/admin/api/users');
+    const users = await res.json();
+    const tbody = document.querySelector('#usersTable tbody');
+    tbody.innerHTML = users.map(u => {
+        const vipValue = u.vip_expire_at ? new Date(u.vip_expire_at).toISOString().slice(0,16) : '';
+        return `
+        <tr>
+            <td>#${u.id}</td>
+            <td>${u.username}</td>
+            <td>${u.email || ''}</td>
+            <td>
+                <select class="role-select" data-id="${u.id}">
+                    <option value="user" ${u.role === 'user' ? 'selected' : ''}>user</option>
+                    <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
+                </select>
+            </td>
+            <td><input class="quota-remaining" data-id="${u.id}" type="number" min="0" value="${u.remaining || 0}"></td>
+            <td>${u.total_generated || 0}</td>
+            <td><input class="quota-vip" data-id="${u.id}" type="datetime-local" value="${vipValue}"></td>
+            <td>${u.created_at || ''}</td>
+            <td>
+                <button class="btn-quota" data-id="${u.id}">更新配额</button>
+                <button class="btn-delete" data-id="${u.id}">删除</button>
+            </td>
+        </tr>
+        `;
+    }).join('');
+
+    document.querySelectorAll('.role-select').forEach(select => {
+        select.addEventListener('change', async (e) => {
+            const id = e.target.dataset.id;
+            const role = e.target.value;
+            const res = await fetch(`/admin/api/users/${id}/role`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({role})
+            });
+            const result = await res.json();
+            if (!result.success) {
+                alert('角色修改失败');
+                loadUsers();
+            }
+        });
+    });
+
+    document.querySelectorAll('.btn-quota').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const id = e.target.dataset.id;
+            const remaining = document.querySelector(`.quota-remaining[data-id="${id}"]`).value;
+            const vipValue = document.querySelector(`.quota-vip[data-id="${id}"]`).value;
+            const payload = {
+                user_id: parseInt(id, 10),
+                remaining: remaining === '' ? null : parseInt(remaining, 10),
+                vip_expire_at: vipValue ? new Date(vipValue).toISOString() : ''
+            };
+            const res = await fetch('/admin/user/quota', {
+                method: 'POST',
+                headers: authHeaders(),
+                body: JSON.stringify(payload)
+            });
+            const result = await res.json();
+            if (result.ok) {
+                alert('配额更新成功');
+                loadUsers();
+            } else {
+                alert(result.error || '配额更新失败');
+            }
+        });
+    });
+
+    document.querySelectorAll('.btn-delete').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            if (!confirm('确定删除该用户？')) return;
+            const id = e.target.dataset.id;
+            const res = await fetch(`/admin/api/users/${id}`, { method: 'DELETE' });
+            const result = await res.json();
+            if (result.success) {
+                loadUsers();
+            } else {
+                alert(result.error || '删除失败');
+            }
+        });
+    });
+}
+
+const batchQuotaInput = document.getElementById('batchQuotaInput');
+const batchQuotaBtn = document.getElementById('batchQuotaBtn');
+const exportCsvBtn = document.getElementById('exportCsvBtn');
+
+batchQuotaBtn.addEventListener('click', async () => {
+    let items = [];
+    try {
+        items = JSON.parse(batchQuotaInput.value || '[]');
+        if (!Array.isArray(items)) throw new Error('items must be array');
+    } catch (e) {
+        alert('批量调整 JSON 解析失败');
+        return;
+    }
+    if (!items.length) {
+        alert('请填写批量调整内容');
+        return;
+    }
+    const res = await fetch('/admin/user/quota/batch', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({items})
+    });
+    const data = await res.json();
+    if (data.ok) {
+        const okCount = (data.results || []).filter(r => r.ok).length;
+        const failCount = (data.results || []).length - okCount;
+        alert(`批量更新完成：成功 ${okCount} 条，失败 ${failCount} 条`);
+        loadUsers();
+    } else {
+        alert(data.error || '批量更新失败');
+    }
+});
+
+exportCsvBtn.addEventListener('click', async () => {
+    const res = await fetch('/admin/users/export', {headers: authHeaders()});
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || '导出失败');
+        return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'users_quota.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+});
+
+loadUsers();
+</script>

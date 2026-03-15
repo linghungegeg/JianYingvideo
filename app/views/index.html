@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title id="dynamicTitle">视频工厂 · 专业版</title>
+    <meta charset="utf-8">
+    <meta name="keywords" id="dynamicKeywords" content="">
+    <meta name="description" id="dynamicDescription" content="">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Roboto, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+            transition: background 0.3s;
+        }
+        body.light-mode {
+            background: #f8fafc;
+            color: #1e293b;
+        }
+        .sidebar {
+            width: 280px;
+            background: rgba(30, 41, 59, 0.95);
+            backdrop-filter: blur(10px);
+            border-right: 1px solid #334155;
+            display: flex;
+            flex-direction: column;
+            user-select: none;
+        }
+        .light-mode .sidebar {
+            background: white;
+            border-right: 1px solid #e2e8f0;
+            color: #1e293b;
+        }
+        .sidebar-header {
+            padding: 28px 24px;
+            font-size: 1.6rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            border-bottom: 1px solid #334155;
+        }
+        .sidebar-header span {
+            background: #3b82f6;
+            padding: 4px 12px;
+            border-radius: 40px;
+            font-size: 0.9rem;
+            color: white;
+        }
+        .user-info {
+            padding: 16px 24px;
+            border-bottom: 1px solid #334155;
+            font-size: 0.9rem;
+            color: #94a3b8;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .logout-btn {
+            color: #ef4444;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 0.8rem;
+        }
+        .nav-items {
+            flex: 1;
+            padding: 24px 0;
+        }
+        .nav-item {
+            padding: 14px 24px;
+            margin: 4px 12px;
+            border-radius: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            font-weight: 500;
+        }
+        .nav-item:hover {
+            background: #334155;
+        }
+        .light-mode .nav-item:hover {
+            background: #f1f5f9;
+        }
+        .nav-item.active {
+            background: #3b82f6;
+            color: white;
+        }
+        .nav-item i {
+            font-style: normal;
+            font-size: 1.3rem;
+        }
+        .theme-toggle {
+            margin: 20px 24px;
+            padding: 10px;
+            background: #334155;
+            border-radius: 40px;
+            display: flex;
+            cursor: pointer;
+            position: relative;
+        }
+        .light-mode .theme-toggle {
+            background: #e2e8f0;
+        }
+        .theme-option {
+            flex: 1;
+            text-align: center;
+            padding: 6px 0;
+            border-radius: 30px;
+            z-index: 1;
+        }
+        .theme-slider {
+            position: absolute;
+            width: 50%;
+            height: 32px;
+            background: #3b82f6;
+            border-radius: 30px;
+            left: 0;
+            transition: left 0.2s;
+        }
+        .theme-slider.dark {
+            left: 0;
+        }
+        .theme-slider.light {
+            left: 50%;
+        }
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #0f172a;
+            overflow: hidden;
+        }
+        .light-mode .main {
+            background: #f8fafc;
+        }
+        .tab-bar {
+            background: #1e293b;
+            padding: 12px 20px 0 20px;
+            display: flex;
+            gap: 4px;
+            border-bottom: 1px solid #334155;
+            overflow-x: auto;
+        }
+        .light-mode .tab-bar {
+            background: white;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .tab {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 18px;
+            background: #334155;
+            border: 1px solid #475569;
+            border-bottom: none;
+            border-radius: 12px 12px 0 0;
+            font-size: 0.95rem;
+            color: #cbd5e1;
+            cursor: pointer;
+        }
+        .light-mode .tab {
+            background: #f1f5f9;
+            border-color: #cbd5e1;
+            color: #475569;
+        }
+        .tab.active {
+            background: #0f172a;
+            color: #3b82f6;
+            font-weight: 500;
+            border-bottom: 2px solid #3b82f6;
+        }
+        .light-mode .tab.active {
+            background: white;
+            color: #3b82f6;
+        }
+        .tab-close {
+            margin-left: 4px;
+            width: 20px;
+            height: 20px;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            color: #94a3b8;
+        }
+        .tab-close:hover {
+            background: #475569;
+            color: #ef4444;
+        }
+        .content-area {
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+            background: #0f172a;
+        }
+        .light-mode .content-area {
+            background: #f8fafc;
+        }
+        .card {
+            background: #1e293b;
+            border-radius: 24px;
+            padding: 28px;
+            border: 1px solid #334155;
+            box-shadow: 0 20px 30px -10px rgba(0,0,0,0.5);
+            margin-bottom: 24px;
+        }
+        .light-mode .card {
+            background: white;
+            border-color: #e2e8f0;
+            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05);
+        }
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 28px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: #334155;
+            border-radius: 20px;
+            padding: 20px;
+            border-left: 6px solid #3b82f6;
+        }
+        .light-mode .stat-card {
+            background: #f1f5f9;
+        }
+        .stat-title {
+            font-size: 0.9rem;
+            color: #94a3b8;
+            margin-bottom: 8px;
+        }
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #3b82f6;
+        }
+        .chart-container {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .chart-box {
+            flex: 1;
+            min-width: 300px;
+            background: #334155;
+            border-radius: 20px;
+            padding: 20px;
+        }
+        .light-mode .chart-box {
+            background: #f1f5f9;
+        }
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .table th {
+            text-align: left;
+            padding: 16px 12px;
+            background: #334155;
+            color: #94a3b8;
+            font-weight: 600;
+            font-size: 0.9rem;
+            border-radius: 12px 12px 0 0;
+        }
+        .light-mode .table th {
+            background: #e2e8f0;
+            color: #475569;
+        }
+        .table td {
+            padding: 16px 12px;
+            border-bottom: 1px solid #334155;
+        }
+        .light-mode .table td {
+            border-color: #e2e8f0;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 40px;
+            font-size: 0.8rem;
+            background: #334155;
+            color: #cbd5e1;
+        }
+        .badge-success {
+            background: #05966920;
+            color: #34d399;
+            border: 1px solid #059669;
+        }
+        .badge-danger {
+            background: #dc262620;
+            color: #f87171;
+            border: 1px solid #dc2626;
+        }
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            border-radius: 14px;
+            font-weight: 500;
+            text-decoration: none;
+            border: none;
+            cursor: pointer;
+            font-size: 0.95rem;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #2563eb;
+            transform: translateY(-2px);
+        }
+        .btn-secondary {
+            background: #334155;
+            color: #cbd5e1;
+        }
+        .btn-secondary:hover {
+            background: #475569;
+        }
+        .form-group {
+            margin-bottom: 24px;
+        }
+        .form-group label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: #94a3b8;
+        }
+        .form-control {
+            width: 100%;
+            padding: 12px 16px;
+            background: #334155;
+            border: 2px solid #475569;
+            border-radius: 16px;
+            font-size: 1rem;
+            color: #e2e8f0;
+            transition: all 0.2s;
+        }
+        .light-mode .form-control {
+            background: white;
+            border-color: #cbd5e1;
+            color: #1e293b;
+        }
+        .form-control:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+        .path-input-group {
+            display: flex;
+            gap: 8px;
+        }
+        .path-input-group .form-control {
+            flex: 1;
+        }
+        .action-links a {
+            margin-right: 16px;
+            color: #3b82f6;
+            text-decoration: none;
+            font-size: 0.9rem;
+        }
+        .action-links a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            🦞 视频工厂 <span>商用版</span>
+        </div>
+        <div class="user-info">
+            <span>👤 {{ session.username }} ({{ session.role }})</span>
+            <a href="{{ url_for('auth.logout') }}" class="logout-btn">退出</a>
+        </div>
+        <div class="nav-items">
+            <div class="nav-item active" data-menu="dashboard">
+                <i>📊</i> 数据看板
+            </div>
+            <div class="nav-item" data-menu="templates">
+                <i>📋</i> 模板管理
+            </div>
+            <div class="nav-item" data-menu="upload">
+                <i>📤</i> 上传骨架
+            </div>
+            <div class="nav-item" data-menu="settings">
+                <i>⚙️</i> 素材路径
+            </div>
+            <div class="nav-item" data-menu="site">
+                <i>🌐</i> 站点设置
+            </div>
+            <div class="nav-item" data-menu="logs">
+                <i>📊</i> 生成记录
+            </div>
+            {% if session.role == 'admin' %}
+            <div class="nav-item" data-menu="users">
+                <i>👥</i> 用户管理
+            </div>
+            {% endif %}
+        </div>
+        <div class="theme-toggle" id="themeToggle">
+            <div class="theme-option">🌙 暗色</div>
+            <div class="theme-option">☀️ 亮色</div>
+            <div class="theme-slider dark" id="themeSlider"></div>
+        </div>
+        <div style="padding: 20px 24px; font-size:0.9rem; color:#64748b;">
+            © 2026 视频工厂 · 商用版
+        </div>
+    </div>
+    <div class="main">
+        <div class="tab-bar" id="tabBar"></div>
+        <div class="content-area" id="contentArea">
+            <div class="card" id="dynamicContent">
+                加载中...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ---------- 主题切换 ----------
+        const themeToggle = document.getElementById('themeToggle');
+        const themeSlider = document.getElementById('themeSlider');
+        themeToggle.addEventListener('click', () => {
+            document.body.classList.toggle('light-mode');
+            if (document.body.classList.contains('light-mode')) {
+                themeSlider.className = 'theme-slider light';
+            } else {
+                themeSlider.className = 'theme-slider dark';
+            }
+        });
+
+        // ---------- 加载站点设置并更新页面元数据 ----------
+        fetch('/api/site-settings')
+            .then(res => res.json())
+            .then(settings => {
+                document.getElementById('dynamicTitle').textContent = settings.title;
+                document.getElementById('dynamicKeywords').setAttribute('content', settings.keywords);
+                document.getElementById('dynamicDescription').setAttribute('content', settings.description);
+            })
+            .catch(err => console.warn('站点设置加载失败', err));
+
+        // ---------- 标签页管理 ----------
+        let tabs = [];
+        let activeTabId = null;
+
+        function renderTabs() {
+            const tabBar = document.getElementById('tabBar');
+            tabBar.innerHTML = '';
+            tabs.forEach(tab => {
+                const tabEl = document.createElement('div');
+                tabEl.className = 'tab' + (tab.id === activeTabId ? ' active' : '');
+                tabEl.dataset.tabId = tab.id;
+                tabEl.innerHTML = `${tab.title}<span class="tab-close" data-close="${tab.id}">✕</span>`;
+                tabEl.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('tab-close')) return;
+                    switchTab(tab.id);
+                });
+                tabBar.appendChild(tabEl);
+            });
+            document.querySelectorAll('.tab-close').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const tabId = btn.dataset.close;
+                    closeTab(tabId);
+                });
+            });
+        }
+
+        function switchTab(tabId) {
+            if (activeTabId === tabId) return;
+            activeTabId = tabId;
+            renderTabs();
+            const tab = tabs.find(t => t.id === tabId);
+            if (tab) {
+                loadContent(tab.menu, tab.params);
+            }
+        }
+
+        function closeTab(tabId) {
+            const index = tabs.findIndex(t => t.id === tabId);
+            if (index === -1) return;
+            tabs.splice(index, 1);
+            if (activeTabId === tabId) {
+                if (tabs.length > 0) {
+                    activeTabId = tabs[0].id;
+                    loadContent(tabs[0].menu, tabs[0].params);
+                } else {
+                    activeTabId = null;
+                    document.getElementById('dynamicContent').innerHTML = '<div class="card">请从左侧选择功能</div>';
+                }
+            }
+            renderTabs();
+        }
+
+        function openTab(menu, title, params = {}) {
+            const existing = tabs.find(t => t.menu === menu && JSON.stringify(t.params) === JSON.stringify(params));
+            if (existing) {
+                switchTab(existing.id);
+                return existing.id;
+            }
+            const id = menu + '-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5);
+            tabs.push({ id, menu, title, params, active: false });
+            if (tabs.length === 1) {
+                activeTabId = id;
+            } else {
+                activeTabId = id;
+            }
+            renderTabs();
+            loadContent(menu, params);
+            return id;
+        }
+
+        function loadContent(menu, params) {
+            const contentDiv = document.getElementById('dynamicContent');
+            contentDiv.innerHTML = '<div class="card">加载中...</div>';
+            
+            let url = '';
+            if (menu === 'dashboard') {
+                url = '/api/dashboard-data';  // 返回 JSON 数据，由前端渲染
+                fetch(url)
+                    .then(res => res.json())
+                    .then(data => {
+                        // 渲染仪表盘 HTML
+                        let html = `
+                            <div class="card">
+                                <div class="page-title">📊 数据看板</div>
+                                <div class="stats-grid">
+                                    <div class="stat-card"><div class="stat-title">📋 总模板数</div><div class="stat-value">${data.total_templates}</div></div>
+                                    <div class="stat-card"><div class="stat-title">✅ 已启用</div><div class="stat-value">${data.active_templates}</div></div>
+                                    <div class="stat-card"><div class="stat-title">⏱️ 总时长</div><div class="stat-value">${data.total_duration}秒</div></div>
+                                    <div class="stat-card"><div class="stat-title">⚡ 生成次数</div><div class="stat-value">${data.total_generates}</div></div>
+                                </div>
+                                <h3>🏆 热门模板 TOP 5</h3>
+                                <table class="table">
+                                    <thead><tr><th>名称</th><th>分类</th><th>生成次数</th></tr></thead>
+                                    <tbody>
+                        `;
+                        data.hot_templates.forEach(t => {
+                            html += `<tr><td>${t.name}</td><td>${t.category || '-'}</td><td>${t.generate_count}</td></tr>`;
+                        });
+                        html += '</tbody></table></div>';
+                        contentDiv.innerHTML = html;
+                    })
+                    .catch(err => {
+                        contentDiv.innerHTML = `<div class="card flash-error">加载失败: ${err.message}</div>`;
+                    });
+                return;
+            } else if (menu === 'templates') {
+                url = '/templates-page';  // 我们还没有这个页面，稍后添加
+            } else if (menu === 'upload') {
+                url = '/upload-page';
+            } else if (menu === 'settings') {
+                url = '/settings-page';
+            } else if (menu === 'site') {
+                url = '/site-settings-page';
+            } else if (menu === 'logs') {
+                url = '/logs-page';
+            } else if (menu === 'users') {
+                url = '/admin/users-page';
+            } else {
+                contentDiv.innerHTML = '<div class="card">未知菜单</div>';
+                return;
+            }
+
+            fetch(url)
+                .then(res => res.text())
+                .then(html => {
+                    contentDiv.innerHTML = html;
+                    bindEvents(menu, params);
+                })
+                .catch(err => {
+                    contentDiv.innerHTML = `<div class="card flash-error">加载失败: ${err.message}</div>`;
+                });
+        }
+
+        function bindEvents(menu, params) {
+            // 根据菜单绑定不同的事件
+            if (menu === 'templates') {
+                // 绑定模板列表的生成、删除等按钮（由后端返回的 HTML 中的按钮）
+                // 这部分需要根据实际返回的 HTML 结构来写，可以后续完善
+            } else if (menu === 'settings') {
+                const browseBtn = document.getElementById('browseBtn');
+                if (browseBtn) {
+                    browseBtn.addEventListener('click', async () => {
+                        const res = await fetch('/api/browse-folder', { method: 'POST' });
+                        const data = await res.json();
+                        if (data.folder) {
+                            document.querySelector('input[name="material_folder"]').value = data.folder;
+                        }
+                    });
+                }
+                const settingsForm = document.getElementById('settingsForm');
+                if (settingsForm) {
+                    settingsForm.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const formData = new FormData(e.target);
+                        const res = await fetch('/api/settings', { method: 'POST', body: formData });
+                        const result = await res.json();
+                        if (result.success) {
+                            flash('保存成功', 'success');
+                        } else {
+                            flash('保存失败', 'error');
+                        }
+                    });
+                }
+            } else if (menu === 'site') {
+                const siteForm = document.getElementById('siteForm');
+                if (siteForm) {
+                    siteForm.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const formData = new FormData(e.target);
+                        const res = await fetch('/api/site-settings', { method: 'POST', body: formData });
+                        const result = await res.json();
+                        if (result.success) {
+                            flash('站点设置保存成功', 'success');
+                        } else {
+                            flash('保存失败', 'error');
+                        }
+                    });
+                }
+            }
+        }
+
+        function flash(msg, type) {
+            const flashDiv = document.createElement('div');
+            flashDiv.className = `card flash-${type}`;
+            flashDiv.textContent = msg;
+            const content = document.getElementById('dynamicContent');
+            content.prepend(flashDiv);
+            setTimeout(() => flashDiv.remove(), 3000);
+        }
+
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+                item.classList.add('active');
+                const menu = item.dataset.menu;
+                let title = '';
+                if (menu === 'dashboard') title = '数据看板';
+                else if (menu === 'templates') title = '模板管理';
+                else if (menu === 'upload') title = '上传骨架';
+                else if (menu === 'settings') title = '素材路径';
+                else if (menu === 'site') title = '站点设置';
+                else if (menu === 'logs') title = '生成记录';
+                else if (menu === 'users') title = '用户管理';
+                openTab(menu, title);
+            });
+        });
+
+        window.onload = () => {
+            openTab('dashboard', '数据看板');
+        };
+    </script>
+</body>
+</html>

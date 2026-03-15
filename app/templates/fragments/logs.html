@@ -1,0 +1,27 @@
+<div class="card">
+    <div class="page-title">📊 生成记录</div>
+    <table class="table" id="logsTable">
+        <thead>
+            <tr><th>模板名称</th><th>状态</th><th>草稿名</th><th>错误信息</th><th>用户</th><th>时间</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+<script>
+    async function loadLogs() {
+        const res = await fetch('/api/logs');
+        const logs = await res.json();
+        const tbody = document.querySelector('#logsTable tbody');
+        tbody.innerHTML = logs.map(log => `
+            <tr>
+                <td>${log.template_name}</td>
+                <td><span class="badge ${log.status === 'success' ? 'badge-success' : 'badge-danger'}">${log.status}</span></td>
+                <td>${log.draft_name || '-'}</td>
+                <td>${log.error_msg || '-'}</td>
+                <td>${log.username}</td>
+                <td>${log.created_at}</td>
+            </tr>
+        `).join('');
+    }
+    loadLogs();
+</script>

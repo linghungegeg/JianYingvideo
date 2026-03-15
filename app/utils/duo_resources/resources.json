@@ -1,0 +1,68 @@
+{
+  "version": "duo-api-sample-2026-03-15",
+  "items": [
+    {
+      "id": "txt_tpl_001",
+      "name": "清爽字幕条",
+      "category": "text_template",
+      "type": "text",
+      "mcp_text_animation_type": "TextIntro",
+      "mcp_text_animation_name": "淡入"
+    },
+    {
+      "id": "txt_tpl_002",
+      "name": "科技感标题",
+      "category": "text_template",
+      "type": "text",
+      "mcp_text_animation_type": "TextIntro",
+      "mcp_text_animation_name": "打字"
+    },
+    {
+      "id": "fx_vid_001",
+      "name": "轻微抖动",
+      "category": "video_effect",
+      "type": "video",
+      "mcp_effect_type": "轻微抖动"
+    },
+    {
+      "id": "fx_vid_002",
+      "name": "模糊",
+      "category": "video_effect",
+      "type": "video",
+      "mcp_effect_type": "模糊"
+    },
+    {
+      "id": "tr_001",
+      "name": "淡入淡出",
+      "category": "transition",
+      "type": "video",
+      "mcp_transition": "淡入淡出",
+      "duration": 0.5
+    },
+    {
+      "id": "tr_002",
+      "name": "滑动",
+      "category": "transition",
+      "type": "video",
+      "mcp_transition": "滑动",
+      "duration": 0.4
+    },
+    {
+      "id": "face_001",
+      "name": "美颜",
+      "category": "face_effect",
+      "type": "video",
+      "mcp_effect_type": "美颜",
+      "params": {
+        "smooth": 0.6,
+        "whiten": 0.4
+      }
+    },
+    {
+      "id": "sticker_001",
+      "name": "点赞贴纸",
+      "category": "sticker",
+      "type": "sticker"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+<div class="card">
+    <div class="page-title">📊 数据看板</div>
+    <div class="stats-grid" id="statsGrid">
+        <div class="stat-card"><div class="stat-title">📋 总模板数</div><div class="stat-value" id="totalTemplates">0</div></div>
+        <div class="stat-card"><div class="stat-title">✅ 已启用</div><div class="stat-value" id="activeTemplates">0</div></div>
+        <div class="stat-card"><div class="stat-title">⏱️ 总时长</div><div class="stat-value" id="totalDuration">0秒</div></div>
+        <div class="stat-card"><div class="stat-title">⚡ 生成次数</div><div class="stat-value" id="totalGenerates">0</div></div>
+    </div>
+    <h3>🏆 热门模板 TOP 5</h3>
+    <table class="table" id="hotTemplatesTable">
+        <thead><tr><th>名称</th><th>分类</th><th>生成次数</th></tr></thead>
+        <tbody></tbody>
+    </table>
+</div>
+<script>
+    async function loadDashboard() {
+        const res = await fetch('/api/dashboard-data');
+        const data = await res.json();
+        document.getElementById('totalTemplates').textContent = data.total_templates;
+        document.getElementById('activeTemplates').textContent = data.active_templates;
+        document.getElementById('totalDuration').textContent = data.total_duration + '秒';
+        document.getElementById('totalGenerates').textContent = data.total_generates;
+        const tbody = document.querySelector('#hotTemplatesTable tbody');
+        tbody.innerHTML = data.hot_templates.map(t => `
+            <tr><td>${t.name}</td><td>${t.category || '-'}</td><td>${t.generate_count}</td></tr>
+        `).join('');
+    }
+    loadDashboard();
+</script>

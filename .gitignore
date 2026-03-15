@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# SQLite database files
+*.db
+*.sqlite
+
+# Environment variables
+.env
+
+# Uploads
+app/uploads/
+
+# Logs
+logs/
+
+# IDE
+.vscode/
+.idea/
+venv/
+.tmp_duo_video/
+mcp_cache/
