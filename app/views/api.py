@@ -6,7 +6,8 @@ import base64
 import shutil
 import re
 import time
-from typing import List
+from collections import defaultdict
+from typing import List, Optional, Union
 import tkinter as tk
 import requests
 import logging
@@ -75,6 +76,10 @@ draft_logger = logging.getLogger("draft_inspect")
 draft_logger.setLevel(logging.INFO)
 
 _DRAFT_CONTENT_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "gbk")
+_IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')
+_VIDEO_EXTS = ('.mp4', '.mov', '.m4v', '.avi', '.mkv', '.flv', '.wmv')
+_AUDIO_EXTS = ('.mp3', '.wav', '.aac', '.m4a', '.ogg', '.flac')
+_ALL_MEDIA_EXTS = _IMAGE_EXTS + _VIDEO_EXTS + _AUDIO_EXTS
 
 _OPTIONAL_API_FEATURE_PREFIXES = {
     "DUO_FEATURES_ENABLED": ("/api/duo/",),
@@ -105,7 +110,13 @@ _QUOTA_REASON_LABELS = {
     "manga_generate": "AI 漫剧消耗",
     "license_activate": "激活授权",
     "refund": "失败返还",
+    "invite_referrer_reward": "邀请人奖励",
+    "invite_invitee_reward": "受邀注册奖励",
 }
+_RESOURCE_EXCHANGE_CONFIG_KEY = "resource_exchange_posts_v1"
+_RESOURCE_EXCHANGE_PROJECT_LIMIT = 15
+_RESOURCE_EXCHANGE_INTRO_LIMIT = 30
+_RESOURCE_EXCHANGE_PAGE_SIZE = 20
 
 
 def _raw_runtime_flags():
@@ -120,7 +131,7 @@ def _effective_runtime_features():
     return {
         "duo": raw["duo"],
         "openclaw": raw["openclaw"],
-        "manga": raw["manga"] and raw["openclaw"],
+        "manga": raw["manga"],
     }
 
 
@@ -149,7 +160,7 @@ def _guard_optional_api_features():
                         "error": f"{config_key.lower()} is disabled in this build",
                     }
                 ), 404
-    if path.startswith("/api/ai/manga/") and not raw_flags.get("openclaw", False):
+    if path == "/api/ai/manga/generate" and not raw_flags.get("openclaw", False):
         return jsonify(
             {
                 "ok": False,
@@ -166,6 +177,350 @@ def _dedupe_keep_order(items):
         seen.add(item)
         output.append(item)
     return output
+
+
+def _safe_int_config(key: str, default: int = 0) -> int:
+    try:
+        return int(get_config(key, str(default)) or default)
+    except Exception:
+        return default
+
+
+def _get_json_config(key: str, default):
+    raw = get_config(key, "")
+    if not raw:
+        return default
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return default
+    return data if isinstance(data, type(default)) else default
+
+
+def _set_json_config(key: str, value) -> None:
+    set_config(key, json.dumps(value, ensure_ascii=False))
+
+
+def _parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def _resource_exchange_membership_value(user: User, quota_payload: Optional[dict] = None) -> int:
+    payload = quota_payload or quota_to_dict(get_or_create_quota(user.id))
+    if user.role == "admin":
+        return 999999
+    if payload.get("is_vip"):
+        return 199
+    return 0
+
+
+def _resource_exchange_membership_label(user: User, quota_payload: Optional[dict] = None) -> str:
+    payload = quota_payload or quota_to_dict(get_or_create_quota(user.id))
+    if user.role == "admin":
+        return "管理员"
+    if payload.get("is_vip"):
+        return "VIP会员"
+    return "试用用户"
+
+
+def _load_resource_exchange_posts() -> list[dict]:
+    items = _get_json_config(_RESOURCE_EXCHANGE_CONFIG_KEY, [])
+    return items if isinstance(items, list) else []
+
+
+def _save_resource_exchange_posts(items: list[dict]) -> None:
+    _set_json_config(_RESOURCE_EXCHANGE_CONFIG_KEY, items if isinstance(items, list) else [])
+
+
+def _resource_exchange_sort_key(item: dict):
+    status = str(item.get("status") or "pending")
+    approved_at = _parse_iso_datetime(item.get("approved_at")) or _parse_iso_datetime(item.get("reviewed_at")) or _parse_iso_datetime(item.get("created_at")) or datetime.min
+    created_at = _parse_iso_datetime(item.get("created_at")) or datetime.min
+    return (
+        int(item.get("membership_value") or 0),
+        1 if status == "approved" else 0,
+        approved_at.timestamp() if approved_at != datetime.min else 0,
+        created_at.timestamp() if created_at != datetime.min else 0,
+    )
+
+
+def _paginate_items(items: list[dict], page: int = 1, per_page: int = _RESOURCE_EXCHANGE_PAGE_SIZE) -> dict:
+    clean_per_page = max(1, min(int(per_page or _RESOURCE_EXCHANGE_PAGE_SIZE), 100))
+    clean_page = max(1, int(page or 1))
+    total = len(items)
+    pages = max(1, (total + clean_per_page - 1) // clean_per_page)
+    if clean_page > pages:
+        clean_page = pages
+    start = (clean_page - 1) * clean_per_page
+    end = start + clean_per_page
+    return {
+        "items": items[start:end],
+        "pagination": {
+            "page": clean_page,
+            "per_page": clean_per_page,
+            "pages": pages,
+            "total": total,
+        },
+    }
+
+
+def _validate_resource_exchange_payload(data: dict) -> tuple[Optional[dict], Optional[str]]:
+    payload = data if isinstance(data, dict) else {}
+    project_name = (payload.get("project_name") or "").strip()
+    project_intro = (payload.get("project_intro") or "").strip()
+    contact = (payload.get("contact") or "").strip()
+    if not project_name or not project_intro or not contact:
+        return None, "所有字段都是必填项"
+    if len(project_name) > _RESOURCE_EXCHANGE_PROJECT_LIMIT:
+        return None, f"项目名称不能超过 {_RESOURCE_EXCHANGE_PROJECT_LIMIT} 个字"
+    if len(project_intro) > _RESOURCE_EXCHANGE_INTRO_LIMIT:
+        return None, f"项目介绍不能超过 {_RESOURCE_EXCHANGE_INTRO_LIMIT} 个字"
+    return {
+        "project_name": project_name,
+        "project_intro": project_intro,
+        "contact": contact,
+    }, None
+
+
+def _normalize_resource_exchange_post(item: dict) -> dict:
+    post = item if isinstance(item, dict) else {}
+    return {
+        "id": str(post.get("id") or uuid.uuid4().hex[:12]),
+        "user_id": int(post.get("user_id") or 0),
+        "username": str(post.get("username") or "").strip(),
+        "membership_label": str(post.get("membership_label") or "试用用户").strip() or "试用用户",
+        "membership_value": int(post.get("membership_value") or 0),
+        "project_name": str(post.get("project_name") or "").strip(),
+        "project_intro": str(post.get("project_intro") or "").strip(),
+        "contact": str(post.get("contact") or "").strip(),
+        "status": str(post.get("status") or "pending").strip() or "pending",
+        "created_at": str(post.get("created_at") or ""),
+        "reviewed_at": str(post.get("reviewed_at") or ""),
+        "approved_at": str(post.get("approved_at") or ""),
+        "review_reason": str(post.get("review_reason") or "").strip(),
+        "reviewer_id": int(post.get("reviewer_id") or 0),
+        "reviewer_name": str(post.get("reviewer_name") or "").strip(),
+    }
+
+
+def _build_resource_exchange_public_item(item: dict) -> dict:
+    post = _normalize_resource_exchange_post(item)
+    return {
+        "id": post["id"],
+        "membership_label": post["membership_label"],
+        "membership_value": post["membership_value"],
+        "project_name": post["project_name"],
+        "project_intro": post["project_intro"],
+        "contact": post["contact"],
+        "published_at": post["approved_at"] or post["created_at"],
+        "username": post["username"],
+    }
+
+
+def _manga_aspect_preset(aspect: str) -> tuple[int, int, str]:
+    normalized = (aspect or "portrait").strip().lower()
+    mapping = {
+        "portrait": (1080, 1920, "竖屏 9:16"),
+        "landscape": (1920, 1080, "横屏 16:9"),
+        "square": (1080, 1080, "方屏 1:1"),
+    }
+    return mapping.get(normalized, mapping["portrait"])
+
+
+def _clean_manga_scene_text(text: str) -> str:
+    value = str(text or "").strip()
+    value = re.sub(r"^\s*(?:第\s*\d+\s*[幕场集话]|[\d一二三四五六七八九十]+)\s*[\.\-、:：)]*\s*", "", value)
+    return value.strip()
+
+
+def _parse_manga_script_scenes(script: str) -> list[str]:
+    parts = []
+    for raw in re.split(r"[\r\n]+", str(script or "")):
+        text = _clean_manga_scene_text(raw)
+        if text:
+            parts.append(text)
+    if not parts:
+        single = _clean_manga_scene_text(script or "")
+        if single:
+            parts.append(single)
+    return parts
+
+
+def _normalize_manga_draft_scenes(data: dict) -> list[dict]:
+    payload = data if isinstance(data, dict) else {}
+    raw_scenes = payload.get("scenes") if isinstance(payload.get("scenes"), list) else []
+    default_duration = payload.get("scene_duration")
+    try:
+        default_duration = max(1.0, min(float(default_duration or 3), 30.0))
+    except Exception:
+        default_duration = 3.0
+
+    scenes: list[dict] = []
+    for index, item in enumerate(raw_scenes, start=1):
+        if isinstance(item, dict):
+            text = _clean_manga_scene_text(item.get("text") or item.get("title") or "")
+            duration_raw = item.get("duration")
+        else:
+            text = _clean_manga_scene_text(item)
+            duration_raw = None
+        if not text:
+            continue
+        try:
+            duration = max(1.0, min(float(duration_raw or default_duration), 30.0))
+        except Exception:
+            duration = default_duration
+        scenes.append({
+            "index": index,
+            "text": text,
+            "duration": duration,
+        })
+
+    if scenes:
+        return scenes[:50]
+
+    parsed = _parse_manga_script_scenes(payload.get("script") or "")
+    return [
+        {
+            "index": index,
+            "text": text,
+            "duration": default_duration,
+        }
+        for index, text in enumerate(parsed[:50], start=1)
+    ]
+
+
+def _manga_draft_asset_root(user_id: int) -> str:
+    return os.path.join(get_user_data_dir(user_id), "manga_draft_assets")
+
+
+def _manga_draft_cache_root(user_id: int) -> str:
+    return os.path.join(get_user_data_dir(user_id), "manga_draft_cache")
+
+
+def _ensure_manga_placeholder_video(user_id: int, width: int, height: int, duration: float) -> str:
+    ffmpeg, _source = find_ffmpeg_with_source()
+    if not ffmpeg:
+        raise ValueError("未找到 ffmpeg，暂时无法为 AI 漫剧草稿生成占位片段。")
+
+    asset_root = os.path.join(_manga_draft_asset_root(user_id), "placeholders")
+    os.makedirs(asset_root, exist_ok=True)
+    target_duration = max(1.0, float(duration or 1.0))
+    render_duration = round(target_duration + 1.0, 3)
+    duration_tag = str(int(round(render_duration * 10)))
+    output_path = os.path.join(asset_root, f"placeholder_{width}x{height}_{duration_tag}.mp4")
+    if os.path.exists(output_path):
+        return output_path
+
+    import subprocess
+
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=0xE2E8F0:s={width}x{height}:d={render_duration:.3f}",
+        "-r",
+        "30",
+        "-pix_fmt",
+        "yuv420p",
+        output_path,
+    ]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as exc:
+        raise ValueError(f"生成 AI 漫剧占位片段失败: {exc}") from exc
+    return output_path
+
+
+def _build_manga_material_workspace(user_id: int, project_id: str, project_name: str, scenes: list[dict]) -> dict:
+    safe_project = _safe_folder_name(project_name, project_id)
+    workspace_root = os.path.join(get_user_data_dir(user_id), "manga_projects", f"{safe_project}_{project_id}")
+    materials_root = os.path.join(workspace_root, "scene_materials")
+    os.makedirs(materials_root, exist_ok=True)
+
+    folders = []
+    notes = []
+    for scene in scenes:
+        index = int(scene.get("index") or len(folders) + 1)
+        title = str(scene.get("text") or f"场景 {index}").strip()
+        folder_name = _safe_folder_name(f"{index:02d}_{title[:12]}", f"{index:02d}_scene")
+        folder_path = os.path.join(materials_root, folder_name)
+        os.makedirs(folder_path, exist_ok=True)
+        folders.append({
+            "index": index,
+            "title": title,
+            "path": folder_path,
+        })
+        notes.append(f"{index:02d}. {title} | 参考时长 {float(scene.get('duration') or 3):.1f}s")
+
+    script_path = os.path.join(workspace_root, "scene_notes.txt")
+    with open(script_path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(notes) if notes else "暂无场景说明")
+
+    return {
+        "workspace_root": workspace_root,
+        "materials_root": materials_root,
+        "script_path": script_path,
+        "folders": folders,
+    }
+
+
+def _get_invite_settings() -> dict:
+    return {
+        "referrer_reward": max(0, _safe_int_config("invite_referrer_reward", 3)),
+        "invitee_reward": max(0, _safe_int_config("invite_invitee_reward", 2)),
+    }
+
+
+def _assistant_log_path(user_id: int) -> str:
+    return os.path.join(get_user_data_dir(user_id), "assistant.log")
+
+
+def _append_assistant_log(user_id: int, stage: str, payload: dict) -> None:
+    path = _assistant_log_path(user_id)
+    record = {
+        "id": uuid.uuid4().hex[:12],
+        "stage": stage,
+        "created_at": datetime.utcnow().isoformat(),
+        "payload": payload or {},
+    }
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _read_assistant_logs(user_id: int, limit: int = 20) -> list[dict]:
+    path = _assistant_log_path(user_id)
+    if not os.path.exists(path):
+        return []
+    items = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(data, dict):
+                    items.append(data)
+    except Exception:
+        return []
+    if limit and len(items) > limit:
+        items = items[-limit:]
+    return list(reversed(items))
+
+
+def _safe_folder_name(name: str, fallback: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", str(name or "").strip()).strip(" .")
+    return cleaned or fallback
 
 def _generate_ref_code() -> str:
     import secrets
@@ -195,6 +550,305 @@ def _ensure_user_ref_code(user, commit: bool = False) -> bool:
     else:
         db.session.flush()
     return True
+
+
+def _build_user_profile_payload(user: User, quota: Optional[UserQuota] = None) -> dict:
+    quota = quota or get_or_create_quota(user.id)
+    quota_payload = quota_to_dict(quota)
+    referrer = User.query.get(user.referrer_id) if getattr(user, "referrer_id", None) else None
+    invite_overview = _build_user_invite_overview(user)
+    membership_label = "管理员" if user.role == "admin" else ("VIP会员" if quota_payload["is_vip"] else "试用用户")
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "role": user.role,
+        "membership_label": membership_label,
+        "ref_code": user.ref_code,
+        "referrer_id": user.referrer_id,
+        "referrer_username": referrer.username if referrer else None,
+        "invite": invite_overview,
+        **quota_payload,
+    }
+
+
+def _build_user_invite_overview(user: Union[User, int, None]) -> dict:
+    user_id = user.id if isinstance(user, User) else int(user or 0)
+    if user_id <= 0:
+        settings = _get_invite_settings()
+        return {
+            "invited_count": 0,
+            "referrer_reward_total": 0,
+            "invitee_reward_total": 0,
+            "recent_invited_users": [],
+            "referrer_reward": settings["referrer_reward"],
+            "invitee_reward": settings["invitee_reward"],
+        }
+
+    settings = _get_invite_settings()
+    invitees = User.query.filter_by(referrer_id=user_id).order_by(User.created_at.desc(), User.id.desc()).limit(8).all()
+    referrer_reward_total = db.session.query(func.coalesce(func.sum(UserQuotaLog.change), 0)).filter(
+        UserQuotaLog.user_id == user_id,
+        UserQuotaLog.reason == "invite_referrer_reward",
+    ).scalar() or 0
+    invitee_reward_total = db.session.query(func.coalesce(func.sum(UserQuotaLog.change), 0)).filter(
+        UserQuotaLog.user_id == user_id,
+        UserQuotaLog.reason == "invite_invitee_reward",
+    ).scalar() or 0
+    invited_count = db.session.query(func.count(User.id)).filter(User.referrer_id == user_id).scalar() or 0
+    return {
+        "invited_count": int(invited_count),
+        "referrer_reward_total": int(referrer_reward_total),
+        "invitee_reward_total": int(invitee_reward_total),
+        "recent_invited_users": [
+            {
+                "id": item.id,
+                "username": item.username,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+            }
+            for item in invitees
+        ],
+        "referrer_reward": settings["referrer_reward"],
+        "invitee_reward": settings["invitee_reward"],
+    }
+
+
+def _build_vip_rules_summary() -> dict:
+    settings = get_license_settings()
+    invite_settings = _get_invite_settings()
+    return {
+        "default_user_quota": int(get_config("default_user_quota", str(current_app.config.get("DEFAULT_USER_QUOTA", 0))) or current_app.config.get("DEFAULT_USER_QUOTA", 0) or 0),
+        "daily_checkin_reward": _get_daily_checkin_reward(),
+        "license_points_ratio": int(settings.get("points_ratio", 1) or 1),
+        "manga_generate_cost": int(get_config("manga_generate_cost", "1") or 1),
+        "invite_referrer_reward": invite_settings["referrer_reward"],
+        "invite_invitee_reward": invite_settings["invitee_reward"],
+    }
+
+
+def _apply_invite_registration_rewards(user: User) -> dict:
+    if not user or not user.referrer_id or user.referrer_id == user.id:
+        return {"ok": False, "awards": {}}
+
+    referrer = User.query.get(user.referrer_id)
+    if not referrer:
+        return {"ok": False, "awards": {}}
+
+    settings = _get_invite_settings()
+    project_id = f"invite:{user.id}"
+    awards = {}
+
+    if settings["referrer_reward"] > 0:
+        existing = UserQuotaLog.query.filter_by(
+            user_id=referrer.id,
+            reason="invite_referrer_reward",
+            project_id=project_id,
+        ).first()
+        if not existing:
+            quota = get_or_create_quota(referrer.id)
+            quota.remaining = (quota.remaining or 0) + settings["referrer_reward"]
+            awards["referrer_reward"] = settings["referrer_reward"]
+            db.session.add(quota)
+            db.session.add(UserQuotaLog(
+                user_id=referrer.id,
+                change=settings["referrer_reward"],
+                reason="invite_referrer_reward",
+                project_id=project_id,
+                remaining_after=quota.remaining,
+            ))
+
+    if settings["invitee_reward"] > 0:
+        existing = UserQuotaLog.query.filter_by(
+            user_id=user.id,
+            reason="invite_invitee_reward",
+            project_id=project_id,
+        ).first()
+        if not existing:
+            quota = get_or_create_quota(user.id)
+            quota.remaining = (quota.remaining or 0) + settings["invitee_reward"]
+            awards["invitee_reward"] = settings["invitee_reward"]
+            db.session.add(quota)
+            db.session.add(UserQuotaLog(
+                user_id=user.id,
+                change=settings["invitee_reward"],
+                reason="invite_invitee_reward",
+                project_id=project_id,
+                remaining_after=quota.remaining,
+            ))
+
+    if awards:
+        db.session.commit()
+    return {"ok": bool(awards), "awards": awards, "referrer": referrer.username}
+
+
+def _build_material_layout(base_root: str, draft_name: str, strategy: str, slots: list[str]) -> dict:
+    if not base_root:
+        raise ValueError("请先选择素材根目录")
+    if not draft_name:
+        raise ValueError("缺少草稿名称")
+
+    safe_draft_name = _safe_folder_name(draft_name, "draft")
+    target_root = os.path.join(base_root, safe_draft_name)
+    os.makedirs(target_root, exist_ok=True)
+
+    normalized_slots = [item for item in (slots or []) if str(item or "").strip()]
+    if strategy == "mix":
+        normalized_slots = normalized_slots or ["素材池"]
+    elif not normalized_slots:
+        normalized_slots = ["槽位 1"]
+
+    created = []
+    for index, raw_name in enumerate(normalized_slots, start=1):
+        label = str(raw_name or "").strip() or f"槽位 {index}"
+        if strategy == "partition":
+            folder_name = _safe_folder_name(label, f"part_{index:02d}")
+        elif strategy == "mix":
+            folder_name = _safe_folder_name(label, "素材池")
+        else:
+            folder_name = _safe_folder_name(f"{index:02d}_{label}", f"{index:02d}")
+        folder_path = os.path.join(target_root, folder_name)
+        os.makedirs(folder_path, exist_ok=True)
+        created.append({"label": label, "path": folder_path})
+
+    return {
+        "root": target_root,
+        "folders": created,
+        "draft_name": safe_draft_name,
+        "strategy": strategy,
+    }
+
+
+def _assistant_route_preview(command: str, context: Optional[dict] = None) -> dict:
+    text = (command or "").strip()
+    lowered = text.lower()
+    ctx = context if isinstance(context, dict) else {}
+    draft_path = (ctx.get("draft_path") or "").strip()
+    materials_root = (ctx.get("materials_root") or "").strip()
+    slots = [str(item).strip() for item in (ctx.get("slots") or []) if str(item).strip()]
+    text_count = int(ctx.get("text_count") or 0)
+    strategy = (ctx.get("strategy") or "group").strip() or "group"
+
+    if not text:
+        return {
+            "ok": False,
+            "error": "请输入要执行的助手命令",
+        }
+
+    if ("分区" in text and "视频" in text) or "分区混剪" in text:
+        return {
+            "ok": True,
+            "intent": "open_partition_mix",
+            "summary": "打开批量混剪并切到“分区混剪裂变”。",
+            "requires_confirmation": False,
+            "impact": "仅导航，不会直接执行生成。",
+            "client_action": {
+                "type": "navigate",
+                "panel_id": "panel-materials",
+                "mix_target": "partition",
+                "anchor": "mix-mode-partition-anchor",
+            },
+        }
+
+    if ("按组" in text and "混剪" in text) or "精准替换" in text:
+        return {
+            "ok": True,
+            "intent": "open_group_mix",
+            "summary": "打开批量混剪并切到“按组精准替换”。",
+            "requires_confirmation": False,
+            "impact": "仅导航，不会直接执行生成。",
+            "client_action": {
+                "type": "navigate",
+                "panel_id": "panel-materials",
+                "mix_target": "group",
+                "anchor": "mix-mode-group-anchor",
+            },
+        }
+
+    if "导出" in text and "草稿" in text:
+        return {
+            "ok": True,
+            "intent": "open_export",
+            "summary": "打开批量导出页并准备导出当前已选草稿。",
+            "requires_confirmation": False,
+            "impact": "仅导航到导出页，真正导出仍需你确认执行。",
+            "client_action": {
+                "type": "navigate",
+                "panel_id": "panel-export",
+                "subtab_target": "export-settings",
+            },
+        }
+
+    if ("检查" in text or "查看" in text) and "草稿" in text and ("槽位" in text or "结构" in text):
+        return {
+            "ok": True,
+            "intent": "inspect_draft_slots",
+            "summary": "打开草稿结构检查入口，方便核对槽位与文字位置。",
+            "requires_confirmation": False,
+            "impact": "仅导航，不会修改草稿。",
+            "client_action": {
+                "type": "navigate",
+                "panel_id": "panel-split",
+                "subtab_target": "split-draft",
+            },
+        }
+
+    if "创建" in text and ("素材目录" in text or "素材文件夹" in text):
+        missing = []
+        if not draft_path:
+            missing.append("draft_path")
+        if not materials_root:
+            missing.append("materials_root")
+        if strategy != "mix" and not slots:
+            missing.append("slots")
+        return {
+            "ok": True,
+            "intent": "create_material_layout",
+            "summary": "按当前草稿和模式创建素材目录结构。",
+            "requires_confirmation": True,
+            "impact": "会在你选择的素材根目录下创建新的草稿素材目录。",
+            "missing": missing,
+            "client_action": {
+                "type": "create_material_layout",
+                "draft_path": draft_path,
+                "materials_root": materials_root,
+                "strategy": strategy,
+                "slots": slots,
+            },
+        }
+
+    if "生成" in text and "文字" in text and ("模板" in text or "替换" in text):
+        return {
+            "ok": True,
+            "intent": "build_text_template",
+            "summary": "为当前草稿生成一份可直接填写的文字替换模板。",
+            "requires_confirmation": False,
+            "impact": "仅生成模板内容，不会直接改写草稿。",
+            "client_action": {
+                "type": "fill_text_template",
+                "text_count": text_count,
+                "strategy": strategy,
+            },
+        }
+
+    if "助手" in text and ("日志" in text or "记录" in text):
+        return {
+            "ok": True,
+            "intent": "open_assistant_logs",
+            "summary": "打开助手日志面板。",
+            "requires_confirmation": False,
+            "impact": "仅导航。",
+            "client_action": {
+                "type": "navigate",
+                "panel_id": "panel-assistant",
+            },
+        }
+
+    return {
+        "ok": False,
+        "error": "暂未识别这条命令。当前优先支持：分区混剪、按组混剪、导出当前草稿、检查草稿槽位、创建素材目录、生成文字替换模板。",
+        "received": text,
+        "matched_hint": lowered,
+    }
 
 def _find_draft_content_files(template_path: str):
     if not template_path:
@@ -579,11 +1233,7 @@ def _extract_materials_from_meta(template_path: str):
 def _scan_material_files(template_path: str):
     if not template_path:
         return []
-    exts = {
-        ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif",
-        ".mp4", ".mov", ".m4v", ".avi", ".mkv",
-        ".mp3", ".wav", ".aac", ".m4a", ".ogg"
-    }
+    exts = set(_ALL_MEDIA_EXTS)
     skip_names = {
         "draft_cover.jpg",
         "cover.png",
@@ -609,6 +1259,90 @@ def _scan_material_files(template_path: str):
                     seen.add(name)
                     results.append(name)
     return results
+
+
+def _extract_template_material_entries(template_path: str) -> list[dict]:
+    data, err = _load_draft_content(template_path)
+    if err or not isinstance(data, dict):
+        materials, _texts, _extract_err = _extract_template_info(template_path)
+        return [{'name': name, 'source': None} for name in materials]
+
+    entries = []
+    seen = set()
+    mats = data.get('materials', {})
+    for media_type in ('videos', 'images', 'audios'):
+        for item in mats.get(media_type, []) or []:
+            if not isinstance(item, dict):
+                continue
+            path = (
+                item.get('path')
+                or item.get('file_path')
+                or item.get('file_Path')
+                or item.get('material_path')
+                or ''
+            )
+            name = os.path.basename(path) if path else ''
+            if not name:
+                name = (
+                    item.get('material_name')
+                    or item.get('name')
+                    or item.get('file_name')
+                    or item.get('extra_info')
+                    or ''
+                )
+                if name:
+                    name = os.path.basename(name)
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            entries.append({'name': name, 'source': media_type})
+    return entries
+
+
+def _template_material_matches_type(name: str, source: str | None, replace_type: str, replace_strategy: str | None = None) -> bool:
+    ext = os.path.splitext(name or '')[1].lower()
+    if replace_strategy == 'sequence':
+        if source:
+            return source == 'videos'
+        return ext in _VIDEO_EXTS
+    if replace_type == 'image':
+        if source == 'audios':
+            return False
+        if source == 'images':
+            return True
+        return ext in _IMAGE_EXTS
+    if replace_type == 'video':
+        if source:
+            return source == 'videos'
+        return ext in _VIDEO_EXTS
+    if replace_type == 'audio':
+        if source:
+            return source == 'audios'
+        return ext in _AUDIO_EXTS
+    if source in ('videos', 'images', 'audios'):
+        return True
+    return ext in _ALL_MEDIA_EXTS
+
+
+def _filter_replaceable_template_materials(
+    template_path: str,
+    replace_materials: bool,
+    replace_audios: bool,
+    replace_type: str,
+    replace_strategy: str,
+) -> list[str]:
+    items = []
+    for entry in _extract_template_material_entries(template_path):
+        name = entry.get('name') or ''
+        source = entry.get('source')
+        is_audio = source == 'audios'
+        if is_audio and not replace_audios:
+            continue
+        if not is_audio and not replace_materials:
+            continue
+        if _template_material_matches_type(name, source, replace_type, replace_strategy):
+            items.append(name)
+    return items
 
 
 def _extract_template_info(template_path):
@@ -751,6 +1485,68 @@ def _validate_mix_materials_root(materials_root, replace_strategy, replace_type,
         ]
         if empty_folders:
             return f'这些分组目录里还没有可用素材：{", ".join(empty_folders)}。'
+        return None
+
+    if replace_strategy == 'partition':
+        if not subfolders:
+            return '分区混剪需要先建立分区子文件夹，再开始生成。'
+        folder_map = {
+            _normalize_strategy_name(os.path.basename(folder)): folder
+            for folder in subfolders
+        }
+        required_names = [_normalize_strategy_name(name) for name in material_names]
+        missing = [name for name in required_names if name not in folder_map]
+        if missing:
+            return f'分区目录名还没对上草稿槽位：缺少 {", ".join(missing)}。请直接使用槽位名建目录，通常去掉扩展名即可。'
+        empty_folders = [
+            name for name in required_names
+            if not _list_media_files_for_strategy(folder_map[name], replace_type)
+        ]
+        if empty_folders:
+            return f'这些分区目录里还没有可用素材：{", ".join(empty_folders)}。'
+        return None
+
+    return None
+
+
+def _validate_mix_materials_root_v2(materials_root, replace_strategy, replace_type, material_names):
+    if not materials_root:
+        return '请先选择素材目录。'
+    if not os.path.exists(materials_root):
+        return '当前素材目录不存在，请重新选择。'
+
+    if replace_strategy == 'mix':
+        if not _list_media_files_for_strategy(materials_root, replace_type):
+            return '当前素材池里还没有可用素材，请先放入图片或视频后再生成。'
+        return None
+
+    subfolders = _list_strategy_subfolders(materials_root)
+    if replace_strategy == 'group':
+        if not subfolders:
+            return '按组精准替换需要在总目录下准备子文件夹，例如 01、02、03。'
+        if len(subfolders) < len(material_names):
+            return f'按组精准替换至少需要 {len(material_names)} 个子文件夹，当前只有 {len(subfolders)} 个。'
+        empty_folders = [
+            os.path.basename(folder)
+            for folder in subfolders[:len(material_names)]
+            if not _list_media_files_for_strategy(folder, replace_type)
+        ]
+        if empty_folders:
+            return f'这些分组目录里还没有可用素材：{", ".join(empty_folders)}。'
+        return None
+
+    if replace_strategy == 'sequence':
+        if not subfolders:
+            return '槽位拼接混剪需要在总目录下按槽位准备子文件夹，例如 01、02、03。'
+        if len(subfolders) < len(material_names):
+            return f'槽位拼接混剪至少需要 {len(material_names)} 个槽位子文件夹，当前只有 {len(subfolders)} 个。'
+        empty_folders = [
+            os.path.basename(folder)
+            for folder in subfolders[:len(material_names)]
+            if not _list_media_files_for_strategy(folder, 'video')
+        ]
+        if empty_folders:
+            return f'这些槽位目录里还没有可用视频素材：{", ".join(empty_folders)}。'
         return None
 
     if replace_strategy == 'partition':
@@ -1401,7 +2197,7 @@ def runtime_features():
         'requirements': {
             'duo': ['DUO_FEATURES_ENABLED'],
             'openclaw': ['OPENCLAW_FEATURES_ENABLED'],
-            'manga': ['MANGA_FEATURES_ENABLED', 'OPENCLAW_FEATURES_ENABLED'],
+            'manga': ['MANGA_FEATURES_ENABLED'],
         },
     })
 
@@ -1737,6 +2533,7 @@ def _build_user_points_overview(user_id: int):
         UserQuotaLog.id.desc(),
     ).limit(8).all()
     settings = get_license_settings()
+    user = User.query.get(user_id)
     return {
         "quota": quota_to_dict(quota),
         "checked_in_today": bool(today_checkin),
@@ -1747,6 +2544,8 @@ def _build_user_points_overview(user_id: int):
         "points_ratio": int(settings.get("points_ratio", 1) or 1),
         "recent_logs": [_serialize_quota_log(item) for item in recent_logs],
         "server_day": local_day,
+        "invite": _build_user_invite_overview(user),
+        "vip_rules": _build_vip_rules_summary(),
     }
 
 
@@ -1851,6 +2650,13 @@ def license_activate():
             add_times = int(cdk.bonus_points / max(ratio, 1))
             if add_times:
                 quota.remaining = (quota.remaining or 0) + add_times
+                db.session.add(UserQuotaLog(
+                    user_id=user.id,
+                    change=add_times,
+                    reason='license_activate',
+                    project_id=code,
+                    remaining_after=quota.remaining,
+                ))
         db.session.add(quota)
         db.session.commit()
     else:
@@ -1998,6 +2804,11 @@ def admin_quota_summary():
     quota_users = db.session.query(func.count(UserQuota.user_id)).scalar() or 0
     active_trial_users = db.session.query(func.count(UserQuota.user_id)).filter(UserQuota.remaining > 0).scalar() or 0
     total_users = db.session.query(func.count(User.id)).scalar() or 0
+    total_invited_users = db.session.query(func.count(User.id)).filter(User.referrer_id.isnot(None)).scalar() or 0
+    total_invite_reward = db.session.query(func.coalesce(func.sum(UserQuotaLog.change), 0)).filter(
+        UserQuotaLog.reason == 'invite_referrer_reward'
+    ).scalar() or 0
+    invite_settings = _get_invite_settings()
 
     return jsonify({
         'ok': True,
@@ -2006,6 +2817,11 @@ def admin_quota_summary():
         'quota_users': int(quota_users),
         'active_trial_users': int(active_trial_users),
         'total_users': int(total_users),
+        'total_invited_users': int(total_invited_users),
+        'total_invite_reward': int(total_invite_reward),
+        'default_user_quota': int(get_config('default_user_quota', str(current_app.config.get('DEFAULT_USER_QUOTA', 0))) or current_app.config.get('DEFAULT_USER_QUOTA', 0) or 0),
+        'invite_referrer_reward': invite_settings['referrer_reward'],
+        'invite_invitee_reward': invite_settings['invitee_reward'],
     })
 
 
@@ -2016,12 +2832,24 @@ def admin_license_settings():
         return err
     if request.method == 'POST':
         data = request.get_json() or {}
-        for key in ("license_offline_hours", "license_transfer_cooldown_hours", "license_code_length", "license_points_ratio", "manga_generate_cost", "daily_checkin_reward"):
+        for key in (
+            "license_offline_hours",
+            "license_transfer_cooldown_hours",
+            "license_code_length",
+            "license_points_ratio",
+            "manga_generate_cost",
+            "daily_checkin_reward",
+            "default_user_quota",
+            "invite_referrer_reward",
+            "invite_invitee_reward",
+        ):
             if key in data:
                 set_config(key, str(data.get(key)))
     settings = get_license_settings()
     settings['manga_generate_cost'] = int(get_config('manga_generate_cost', '1') or 1)
-    return jsonify({"ok": True, "settings": settings})
+    settings['default_user_quota'] = int(get_config('default_user_quota', str(current_app.config.get('DEFAULT_USER_QUOTA', 0))) or current_app.config.get('DEFAULT_USER_QUOTA', 0) or 0)
+    settings['invite_referrer_reward'] = _safe_int_config('invite_referrer_reward', 3)
+    settings['invite_invitee_reward'] = _safe_int_config('invite_invitee_reward', 2)
     return jsonify({"ok": True, "settings": settings})
 
 
@@ -2249,18 +3077,102 @@ def admin_users_search():
     if err:
         return err
     kw = (request.args.get("kw") or "").strip()
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+    except Exception:
+        page = 1
+    try:
+        per_page = int(request.args.get("per_page") or get_config("admin_user_page_size", "20") or 20)
+    except Exception:
+        per_page = 20
+    per_page = max(1, min(per_page, 50))
     if not kw:
-        return jsonify({"ok": True, "items": []})
-    query = User.query
-    if kw.isdigit():
-        query = query.filter(User.id == int(kw))
+        query = User.query
     else:
-        like = f"%{kw}%"
-        query = query.filter(or_(User.username.like(like), User.email.like(like)))
+        query = User.query
+        if kw.isdigit():
+            query = query.filter(User.id == int(kw))
+        else:
+            like = f"%{kw}%"
+            query = query.filter(or_(User.username.like(like), User.email.like(like)))
+    total = query.count()
+    pages = max(1, (total + per_page - 1) // per_page)
+    if page > pages:
+        page = pages
+    users = query.order_by(User.id.desc()).offset((page - 1) * per_page).limit(per_page).all()
+    user_ids = [item.id for item in users]
+    quotas = {}
+    referrer_map = {}
+    invite_count_map = defaultdict(int)
+    invite_reward_map = defaultdict(int)
+    invitee_reward_map = defaultdict(int)
+    if user_ids:
+        quotas = {
+            item.user_id: item
+            for item in UserQuota.query.filter(UserQuota.user_id.in_(user_ids)).all()
+        }
+        for referrer_id, count in db.session.query(User.referrer_id, func.count(User.id)).filter(
+            User.referrer_id.in_(user_ids)
+        ).group_by(User.referrer_id).all():
+            if referrer_id:
+                invite_count_map[referrer_id] = int(count or 0)
+        reward_rows = db.session.query(
+            UserQuotaLog.user_id,
+            UserQuotaLog.reason,
+            func.coalesce(func.sum(UserQuotaLog.change), 0),
+        ).filter(
+            UserQuotaLog.user_id.in_(user_ids),
+            UserQuotaLog.reason.in_(("invite_referrer_reward", "invite_invitee_reward")),
+        ).group_by(UserQuotaLog.user_id, UserQuotaLog.reason).all()
+        for user_id, reason, total in reward_rows:
+            if reason == "invite_referrer_reward":
+                invite_reward_map[user_id] = int(total or 0)
+            elif reason == "invite_invitee_reward":
+                invitee_reward_map[user_id] = int(total or 0)
+        referrer_ids = [item.referrer_id for item in users if item.referrer_id]
+        if referrer_ids:
+            referrer_map = {
+                item.id: item.username
+                for item in User.query.filter(User.id.in_(list(set(referrer_ids)))).all()
+            }
     items = []
-    for u in query.limit(20).all():
-        items.append({"id": u.id, "username": u.username, "email": u.email, "ref_code": u.ref_code})
-    return jsonify({"ok": True, "items": items})
+    for u in users:
+        quota = quotas.get(u.id)
+        quota_data = quota_to_dict(quota) if quota else {
+            "total_generated": 0,
+            "remaining": 0,
+            "vip_expire_at": None,
+            "is_vip": False,
+        }
+        membership_label = "管理员" if u.role == "admin" else ("VIP会员" if quota_data["is_vip"] else "试用用户")
+        items.append({
+            "id": u.id,
+            "username": u.username,
+            "email": u.email,
+            "ref_code": u.ref_code,
+            "role": u.role,
+            "remaining": quota_data["remaining"],
+            "total_generated": quota_data["total_generated"],
+            "vip_expire_at": quota_data["vip_expire_at"],
+            "is_vip": quota_data["is_vip"],
+            "membership_label": membership_label,
+            "referrer_id": u.referrer_id,
+            "referrer_username": referrer_map.get(u.referrer_id),
+            "invite_count": invite_count_map.get(u.id, 0),
+            "invite_reward_total": invite_reward_map.get(u.id, 0),
+            "invitee_reward_total": invitee_reward_map.get(u.id, 0),
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+        })
+    return jsonify({
+        "ok": True,
+        "items": items,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "pages": pages,
+            "total": total,
+        }
+    })
 
 
 @api_bp.route('/admin/logs', methods=['GET'])
@@ -2431,6 +3343,256 @@ def user_materials():
             "created_at": m.created_at.isoformat() if m.created_at else None,
         })
     return jsonify({'ok': True, 'items': data})
+
+
+@api_bp.route('/resource-exchange/list', methods=['GET'])
+def resource_exchange_list():
+    try:
+        page = int(request.args.get('page') or 1)
+    except Exception:
+        page = 1
+    approved_items = [
+        _normalize_resource_exchange_post(item)
+        for item in _load_resource_exchange_posts()
+        if str((item or {}).get('status') or '') == 'approved'
+    ]
+    approved_items.sort(key=_resource_exchange_sort_key, reverse=True)
+    items = [_build_resource_exchange_public_item(item) for item in approved_items]
+    payload = _paginate_items(items, page=page, per_page=_RESOURCE_EXCHANGE_PAGE_SIZE)
+    return jsonify({'ok': True, 'items': payload['items'], 'pagination': payload['pagination']})
+
+
+@api_bp.route('/resource-exchange/my-posts', methods=['GET'])
+def resource_exchange_my_posts():
+    user, err = get_auth_user()
+    if err:
+        return err
+    items = [
+        _normalize_resource_exchange_post(item)
+        for item in _load_resource_exchange_posts()
+        if int((item or {}).get('user_id') or 0) == user.id
+    ]
+    items.sort(key=_resource_exchange_sort_key, reverse=True)
+    return jsonify({'ok': True, 'items': items})
+
+
+@api_bp.route('/resource-exchange/publish', methods=['POST'])
+def resource_exchange_publish():
+    user, err = get_auth_user()
+    if err:
+        return err
+    payload, validation_error = _validate_resource_exchange_payload(request.get_json(silent=True) or {})
+    if validation_error:
+        return jsonify({'ok': False, 'error': validation_error}), 400
+
+    items = [_normalize_resource_exchange_post(item) for item in _load_resource_exchange_posts()]
+    start_utc, end_utc, _server_day = _china_day_bounds()
+    today_posts = [
+        item for item in items
+        if item['user_id'] == user.id
+        and (_parse_iso_datetime(item.get('created_at')) or datetime.min) >= start_utc
+        and (_parse_iso_datetime(item.get('created_at')) or datetime.min) < end_utc
+    ]
+    if today_posts:
+        return jsonify({'ok': False, 'error': '每个用户每天只能发布一条资源互换信息'}), 400
+
+    quota_payload = quota_to_dict(get_or_create_quota(user.id))
+    now = _now().isoformat()
+    post = {
+        'id': uuid.uuid4().hex[:12],
+        'user_id': user.id,
+        'username': user.username,
+        'membership_label': _resource_exchange_membership_label(user, quota_payload),
+        'membership_value': _resource_exchange_membership_value(user, quota_payload),
+        'project_name': payload['project_name'],
+        'project_intro': payload['project_intro'],
+        'contact': payload['contact'],
+        'status': 'pending',
+        'created_at': now,
+        'reviewed_at': '',
+        'approved_at': '',
+        'review_reason': '',
+        'reviewer_id': 0,
+        'reviewer_name': '',
+    }
+    items.append(post)
+    _save_resource_exchange_posts(items)
+    return jsonify({'ok': True, 'item': _normalize_resource_exchange_post(post)})
+
+
+@api_bp.route('/admin/resource-exchange/posts', methods=['GET'])
+def admin_resource_exchange_posts():
+    user, err = get_auth_user(require_admin=True)
+    if err:
+        return err
+    try:
+        page = int(request.args.get('page') or 1)
+    except Exception:
+        page = 1
+    status = (request.args.get('status') or 'pending').strip().lower()
+    keyword = (request.args.get('kw') or '').strip().lower()
+    items = [_normalize_resource_exchange_post(item) for item in _load_resource_exchange_posts()]
+    if status and status != 'all':
+        items = [item for item in items if item['status'] == status]
+    if keyword:
+        items = [
+            item for item in items
+            if keyword in (item['username'] or '').lower()
+            or keyword in (item['project_name'] or '').lower()
+            or keyword in (item['project_intro'] or '').lower()
+            or keyword in (item['contact'] or '').lower()
+        ]
+    items.sort(key=_resource_exchange_sort_key, reverse=True)
+    payload = _paginate_items(items, page=page, per_page=_RESOURCE_EXCHANGE_PAGE_SIZE)
+    return jsonify({'ok': True, 'items': payload['items'], 'pagination': payload['pagination']})
+
+
+@api_bp.route('/admin/resource-exchange/<post_id>/review', methods=['POST'])
+def admin_resource_exchange_review(post_id):
+    admin, err = get_auth_user(require_admin=True)
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    action = (data.get('action') or '').strip().lower()
+    reason = (data.get('reason') or '').strip()
+    if action not in ('approve', 'reject'):
+        return jsonify({'ok': False, 'error': '审核动作无效'}), 400
+    if action == 'reject' and not reason:
+        return jsonify({'ok': False, 'error': '拒绝时必须填写原因'}), 400
+
+    items = [_normalize_resource_exchange_post(item) for item in _load_resource_exchange_posts()]
+    target = next((item for item in items if item['id'] == str(post_id)), None)
+    if not target:
+        return jsonify({'ok': False, 'error': '发布记录不存在'}), 404
+
+    reviewed_at = _now().isoformat()
+    target['status'] = 'approved' if action == 'approve' else 'rejected'
+    target['reviewed_at'] = reviewed_at
+    target['approved_at'] = reviewed_at if action == 'approve' else ''
+    target['review_reason'] = '' if action == 'approve' else reason
+    target['reviewer_id'] = admin.id
+    target['reviewer_name'] = admin.username
+    _save_resource_exchange_posts(items)
+    return jsonify({'ok': True, 'item': target})
+
+
+@api_bp.route('/materials/create-layout', methods=['POST'])
+def materials_create_layout():
+    user, err = get_auth_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    draft_path = (data.get('draft_path') or '').strip()
+    materials_root = (data.get('materials_root') or '').strip()
+    strategy = (data.get('strategy') or 'group').strip() or 'group'
+    slots = [str(item).strip() for item in (data.get('slots') or []) if str(item).strip()]
+
+    if not draft_path:
+        return jsonify({'ok': False, 'error': '缺少草稿路径'}), 400
+    if not materials_root:
+        return jsonify({'ok': False, 'error': '缺少素材根目录'}), 400
+
+    draft_name = os.path.basename(os.path.normpath(draft_path))
+    try:
+        layout = _build_material_layout(materials_root, draft_name, strategy, slots)
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+
+    _append_assistant_log(user.id, 'materials_layout', {
+        'draft_path': draft_path,
+        'materials_root': materials_root,
+        'strategy': strategy,
+        'folders': layout.get('folders', []),
+    })
+    return jsonify({'ok': True, 'layout': layout})
+
+
+@api_bp.route('/assistant/logs', methods=['GET'])
+def assistant_logs():
+    user, err = get_auth_user()
+    if err:
+        return err
+    try:
+        limit = max(1, min(int(request.args.get('limit') or 20), 100))
+    except Exception:
+        limit = 20
+    return jsonify({'ok': True, 'items': _read_assistant_logs(user.id, limit=limit)})
+
+
+@api_bp.route('/assistant/command/preview', methods=['POST'])
+def assistant_command_preview():
+    user, err = get_auth_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    command = (data.get('command') or '').strip()
+    context = data.get('context') or {}
+    preview = _assistant_route_preview(command, context)
+    _append_assistant_log(user.id, 'preview', {
+        'command': command,
+        'context': context,
+        'preview': preview,
+    })
+    return jsonify(preview)
+
+
+@api_bp.route('/assistant/command/execute', methods=['POST'])
+def assistant_command_execute():
+    user, err = get_auth_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    command = (data.get('command') or '').strip()
+    context = data.get('context') or {}
+    confirmed = bool(data.get('confirmed', False))
+    preview = _assistant_route_preview(command, context)
+    if not preview.get('ok'):
+        return jsonify(preview), 400
+    if preview.get('requires_confirmation') and not confirmed:
+        return jsonify({'ok': False, 'error': '该命令需要确认后才能执行', 'preview': preview}), 400
+
+    action = (preview.get('client_action') or {}).get('type')
+    response_payload = {
+        'ok': True,
+        'summary': preview.get('summary'),
+        'client_action': preview.get('client_action'),
+        'impact': preview.get('impact'),
+    }
+
+    if action == 'create_material_layout':
+        client_action = preview.get('client_action') or {}
+        draft_path = (client_action.get('draft_path') or '').strip()
+        materials_root = (client_action.get('materials_root') or '').strip()
+        strategy = (client_action.get('strategy') or 'group').strip() or 'group'
+        slots = [str(item).strip() for item in (client_action.get('slots') or []) if str(item).strip()]
+        if not draft_path or not materials_root:
+            return jsonify({'ok': False, 'error': '创建素材目录前请先选草稿并指定素材目录', 'preview': preview}), 400
+        draft_name = os.path.basename(os.path.normpath(draft_path))
+        try:
+            layout = _build_material_layout(materials_root, draft_name, strategy, slots)
+        except Exception as exc:
+            return jsonify({'ok': False, 'error': str(exc), 'preview': preview}), 400
+        response_payload['layout'] = layout
+        response_payload['client_action'] = {
+            'type': 'material_layout_created',
+            'layout': layout,
+        }
+    elif action == 'fill_text_template':
+        text_count = int(((preview.get('client_action') or {}).get('text_count') or 0))
+        total = max(1, min(text_count or 6, 20))
+        template_lines = [f'第 {index} 段文字示例' for index in range(1, total + 1)]
+        response_payload['template_lines'] = template_lines
+        response_payload['client_action'] = {
+            'type': 'fill_text_template',
+            'lines': template_lines,
+        }
+
+    _append_assistant_log(user.id, 'execute', {
+        'command': command,
+        'context': context,
+        'response': response_payload,
+    })
+    return jsonify(response_payload)
 
 
 @api_bp.route('/manga/batch/set-duration', methods=['POST'])
@@ -2767,7 +3929,12 @@ def manga_history():
             'id': log.id,
             'project_id': log.project_id,
             'project_name': log.project_name,
+            'mode': params.get('mode') or 'openclaw',
             'params': params,
+            'draft_name': params.get('draft_name') or '',
+            'draft_path': params.get('draft_path') or '',
+            'workspace_root': params.get('workspace_root') or '',
+            'scene_count': len(params.get('scenes') or []) if isinstance(params.get('scenes'), list) else 0,
             'first_material_id': log.first_material_id,
             'status': log.status,
             'error_msg': log.error_msg,
@@ -2790,6 +3957,20 @@ def manga_history_regenerate(log_id):
             params = json.loads(log.params_json)
         except Exception:
             params = {}
+    if params.get('mode') == 'draft_builder':
+        data = {
+            'project_name': params.get('project_name') or log.project_name or '',
+            'script': params.get('script') or '',
+            'aspect': params.get('aspect') or 'portrait',
+            'scene_duration': params.get('scene_duration') or 3,
+            'scenes': params.get('scenes') or [],
+            'output_dir': params.get('output_dir') or '',
+        }
+        try:
+            with current_app.test_request_context(json=data, headers={'Authorization': request.headers.get('Authorization', '')}):
+                return ai_manga_generate_draft()
+        except Exception as e:
+            return jsonify({'ok': False, 'error': f'重新生成草稿失败: {e}'}), 500
     character_path = params.get('character_image_path') or ''
     if character_path:
         params['character_image'] = _encode_file_to_data_uri(character_path)
@@ -3342,6 +4523,110 @@ def _enqueue_ai_task(user, key, task_type, payload, save_text_file=False):
     return task_id
 
 
+def _build_manga_draft_result(user: User, data: dict) -> dict:
+    payload = data if isinstance(data, dict) else {}
+    project_name = (payload.get("project_name") or "").strip() or f"AI漫剧草稿_{_china_now().strftime('%m%d_%H%M')}"
+    aspect = (payload.get("aspect") or "portrait").strip().lower() or "portrait"
+    width, height, aspect_label = _manga_aspect_preset(aspect)
+    scenes = _normalize_manga_draft_scenes(payload)
+    if not scenes:
+        raise ValueError("请先填写脚本，至少准备 1 个场景。")
+
+    output_dir = (payload.get("output_dir") or "").strip() or (get_drafts_folder() or "").strip()
+    if not output_dir:
+        output_dir = os.path.join(get_user_data_dir(user.id), "manga_exports")
+    os.makedirs(output_dir, exist_ok=True)
+
+    default_duration = max(float(scene.get("duration") or 3.0) for scene in scenes)
+    placeholder_path = _ensure_manga_placeholder_video(user.id, width, height, default_duration)
+    project_id = f"manga_draft_{_china_now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    workspace = _build_manga_material_workspace(user.id, project_id, project_name, scenes)
+
+    from app.services.jianying_service import JianYingService
+
+    save_path = _manga_draft_cache_root(user.id)
+    os.makedirs(save_path, exist_ok=True)
+    svc = JianYingService(save_path=save_path, output_path=output_dir)
+    draft_name = _safe_folder_name(project_name, project_id)
+    create_resp = svc.create_draft(draft_name=draft_name, width=width, height=height, fps=30)
+    if not create_resp.ok:
+        raise ValueError(create_resp.message or "创建 AI 漫剧草稿失败")
+
+    draft_id = str((create_resp.data or {}).get("draft_id") or "").strip()
+    if not draft_id:
+        raise ValueError("创建 AI 漫剧草稿后未返回 draft_id")
+
+    video_track_resp = svc.create_track(draft_id, "video", "main")
+    if not video_track_resp.ok:
+        raise ValueError(video_track_resp.message or "创建 AI 漫剧视频轨道失败")
+    video_track_name = ((video_track_resp.data or {}).get("track_name") or "main").strip() or "main"
+
+    text_track_resp = svc.create_track(draft_id, "text", "scene_notes")
+    text_track_name = ((text_track_resp.data or {}).get("track_name") or "scene_notes").strip() or "scene_notes"
+
+    cursor = 0.0
+    scene_items = []
+    for scene in scenes:
+        duration = max(1.0, min(float(scene.get("duration") or default_duration), 30.0))
+        scene_text = str(scene.get("text") or "").strip()
+        target_timerange = f"{cursor:.3f}s-{duration:.3f}s"
+        segment_resp = svc.add_video_segment(
+            draft_id,
+            placeholder_path,
+            target_timerange,
+            source_timerange=f"0.000s-{duration:.3f}s",
+            track_name=video_track_name,
+        )
+        if not segment_resp.ok:
+            raise ValueError(segment_resp.message or f"创建场景 {scene.get('index')} 占位片段失败")
+
+        if scene_text:
+            text_resp = svc.add_text_segment(
+                draft_id,
+                f"{int(scene.get('index') or 0):02d}. {scene_text}",
+                target_timerange,
+                track_name=text_track_name,
+            )
+            if not text_resp.ok:
+                raise ValueError(text_resp.message or f"创建场景 {scene.get('index')} 说明文字失败")
+
+        scene_items.append({
+            "index": int(scene.get("index") or len(scene_items) + 1),
+            "text": scene_text,
+            "duration": duration,
+            "folder_path": next(
+                (item["path"] for item in workspace["folders"] if int(item.get("index") or 0) == int(scene.get("index") or 0)),
+                "",
+            ),
+        })
+        cursor += duration
+
+    export_resp = svc.export_draft(draft_id, jianying_draft_path=output_dir)
+    if not export_resp.ok:
+        raise ValueError(export_resp.message or "导出 AI 漫剧草稿失败")
+
+    export_data = export_resp.data or {}
+    draft_path = str(export_data.get("output") or "").strip()
+    exported_name = str(export_data.get("draft_name") or draft_name).strip() or draft_name
+    return {
+        "project_id": project_id,
+        "project_name": project_name,
+        "draft_id": draft_id,
+        "draft_name": exported_name,
+        "draft_path": draft_path,
+        "output_dir": output_dir,
+        "aspect": aspect,
+        "aspect_label": aspect_label,
+        "scene_count": len(scene_items),
+        "scene_duration": default_duration,
+        "total_duration": round(cursor, 3),
+        "workspace": workspace,
+        "scenes": scene_items,
+        "placeholder_path": placeholder_path,
+        "script": "\n".join(scene["text"] for scene in scene_items if scene.get("text")),
+    }
+
+
 
 @api_bp.route('/openclaw/logs', methods=['GET'])
 def openclaw_logs():
@@ -3376,6 +4661,87 @@ def openclaw_test():
     if ok:
         return jsonify({'ok': True})
     return jsonify({'ok': False, 'error': 'Connection failed'}), 400
+
+
+@api_bp.route('/ai/manga/generate-draft', methods=['POST'])
+def ai_manga_generate_draft():
+    user, err = get_auth_user()
+    if err:
+        return err
+    if not _effective_runtime_features().get("manga"):
+        return jsonify({'ok': False, 'error': 'AI manga feature is disabled in this build'}), 404
+
+    cost = int(get_config('manga_generate_cost', '1') or 1)
+    quota = get_or_create_quota(user.id)
+    if quota.remaining < cost:
+        return jsonify({'ok': False, 'error': '额度不足，无法继续生成 AI 漫剧草稿。', **quota_to_dict(quota)}), 403
+
+    data = request.get_json(silent=True) or {}
+    try:
+        result = _build_manga_draft_result(user, data)
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': f'生成 AI 漫剧草稿失败: {exc}'}), 500
+
+    params_for_log = {
+        'mode': 'draft_builder',
+        'project_name': result['project_name'],
+        'script': result['script'],
+        'aspect': result['aspect'],
+        'aspect_label': result['aspect_label'],
+        'scene_duration': result['scene_duration'],
+        'scene_count': result['scene_count'],
+        'total_duration': result['total_duration'],
+        'draft_name': result['draft_name'],
+        'draft_path': result['draft_path'],
+        'output_dir': result['output_dir'],
+        'workspace_root': result['workspace']['workspace_root'],
+        'materials_root': result['workspace']['materials_root'],
+        'script_path': result['workspace']['script_path'],
+        'scenes': result['scenes'],
+    }
+    log = MangaGenerationLog(
+        user_id=user.id,
+        project_id=result['project_id'],
+        project_name=result['project_name'],
+        params_json=json.dumps(params_for_log, ensure_ascii=False),
+        first_material_id=None,
+        status='success',
+        created_at=datetime.utcnow(),
+    )
+    db.session.add(log)
+
+    quota.remaining = max(0, (quota.remaining or 0) - cost)
+    quota.total_generated = (quota.total_generated or 0) + cost
+    db.session.add(quota)
+    db.session.add(UserQuotaLog(
+        user_id=user.id,
+        change=-cost,
+        reason='manga_generate',
+        project_id=result['project_id'],
+        remaining_after=quota.remaining,
+    ))
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'mode': 'draft_builder',
+        'project_id': result['project_id'],
+        'project_name': result['project_name'],
+        'draft_id': result['draft_id'],
+        'draft_name': result['draft_name'],
+        'draft_path': result['draft_path'],
+        'output_dir': result['output_dir'],
+        'aspect': result['aspect'],
+        'aspect_label': result['aspect_label'],
+        'scene_count': result['scene_count'],
+        'total_duration': result['total_duration'],
+        'workspace': result['workspace'],
+        'scenes': result['scenes'],
+        'quota': quota_to_dict(quota),
+        'message': f"已生成 {result['scene_count']} 个场景的剪映草稿，可继续往场景目录里放素材。",
+    })
 
 
 @api_bp.route('/ai/manga/generate', methods=['POST'])
@@ -4064,21 +5430,14 @@ def api_register():
     _ensure_user_ref_code(user)
     db.session.commit()
 
+    _apply_invite_registration_rewards(user)
     quota = get_or_create_quota(user.id)
     token_obj = issue_token(user.id) if auto_login else None
     return jsonify({
         'ok': True,
         'message': 'register success',
         'token': token_obj.token if token_obj else None,
-        'user': {
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'role': user.role,
-            'ref_code': user.ref_code,
-            'referrer_id': user.referrer_id,
-            **quota_to_dict(quota)
-        }
+        'user': _build_user_profile_payload(user, quota)
     })
 
 
@@ -4100,15 +5459,7 @@ def api_login():
     return jsonify({
         'ok': True,
         'token': token_obj.token,
-        'user': {
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'role': user.role,
-            'ref_code': user.ref_code,
-            'referrer_id': user.referrer_id,
-            **quota_to_dict(quota)
-        }
+        'user': _build_user_profile_payload(user, quota)
     })
 
 
@@ -4121,15 +5472,7 @@ def api_user_info():
     quota = get_or_create_quota(user.id)
     return jsonify({
         'ok': True,
-        'user': {
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'role': user.role,
-            'ref_code': user.ref_code,
-            'referrer_id': user.referrer_id,
-            **quota_to_dict(quota)
-        }
+        'user': _build_user_profile_payload(user, quota)
     })
 
 
@@ -4375,6 +5718,7 @@ def generate_batch_api():
     replace_type = data.get('replace_type', 'both')
     replace_mode = data.get('replace_mode', 'order')
     replace_strategy = data.get('replace_strategy', 'group')
+    sequence_clip_count = data.get('sequence_clip_count', 3)
     audio_enabled = data.get('audio_enabled', False)
     audio_root = data.get('audio_root')
     export_enabled = data.get('export_enabled', False)
@@ -4403,17 +5747,33 @@ def generate_batch_api():
         return jsonify({'error': 'draft_path is required'}), 400
     template_path = draft_path
 
+    try:
+        sequence_clip_count = int(sequence_clip_count)
+    except Exception:
+        return jsonify({'error': 'invalid sequence_clip_count'}), 400
+    if sequence_clip_count < 2 or sequence_clip_count > 12:
+        return jsonify({'error': 'sequence_clip_count out of range'}), 400
+
+    if replace_strategy == 'sequence':
+        if not replace_materials:
+            return jsonify({'error': 'sequence mode requires replace_materials'}), 400
+        replace_type = 'video'
+
     if replace_materials:
-        materials, _texts, extract_err = _extract_template_info(template_path)
-        if extract_err:
-            return jsonify({'error': extract_err}), 400
-        if not materials:
+        replaceable_materials = _filter_replaceable_template_materials(
+            template_path,
+            replace_materials,
+            replace_audios,
+            replace_type,
+            replace_strategy,
+        )
+        if not replaceable_materials:
             return jsonify({'error': 'no replaceable materials found in draft'}), 400
-        validation_error = _validate_mix_materials_root(
+        validation_error = _validate_mix_materials_root_v2(
             materials_root,
             replace_strategy,
             replace_type,
-            materials,
+            replaceable_materials,
         )
         if validation_error:
             return jsonify({'error': validation_error}), 400
@@ -4445,6 +5805,7 @@ def generate_batch_api():
         replace_type,
         replace_mode,
         replace_strategy,
+        sequence_clip_count,
         audio_enabled,
         audio_root,
         export_enabled,

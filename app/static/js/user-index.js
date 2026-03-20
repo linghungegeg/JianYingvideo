@@ -20,11 +20,33 @@
         let runtimeFeatureRequirements = {
             duo: ['DUO_FEATURES_ENABLED'],
             openclaw: ['OPENCLAW_FEATURES_ENABLED'],
-            manga: ['MANGA_FEATURES_ENABLED', 'OPENCLAW_FEATURES_ENABLED']
+            manga: ['MANGA_FEATURES_ENABLED']
         };
         let currentUserInfo = null;
         let accountOverview = null;
         let activeDraftShell = null;
+        let assistantPreviewState = null;
+        let resourceExchangeState = {
+            page: 1,
+            pages: 1,
+            total: 0,
+            items: [],
+            myPosts: []
+        };
+
+        const ACCOUNT_TUTORIAL_ENTRIES = [
+            {title: '智能助手', keywords: '智能助手 命令中心 创建素材目录 分区 混剪 导出 草稿', body: '输入自然语言命令后，助手会先预览动作，再决定是否执行。适合快速跳转到分区混剪、导出当前草稿、创建素材目录等已存在能力。'},
+            {title: '批量混剪', keywords: '批量混剪 按组精准替换 混剪裂变替换 分区混剪裂变 槽位拼接混剪', body: '先选草稿，再按当前模式准备素材目录或文字，确认替换规则后开始生成。前三种模式保持每次每槽位只取 1 个素材，槽位拼接混剪是独立第四种模式。'},
+            {title: 'AI 成片', keywords: 'AI 成片 即梦 火山 TTS AI 文案 AI账号管理', body: 'AI 成片依赖软件设置里的 AI 账号管理。账号配置完成后，再回到本页执行图生视频、语音合成或文案生成。'},
+            {title: 'AI 漫剧', keywords: 'AI 漫剧 草稿 分镜 脚本 场景目录', body: 'AI 漫剧现在直接生成剪映草稿与场景素材目录。按行填写脚本后，系统会产出带占位片段和文字轨道的草稿，便于你后续手动补素材。'},
+            {title: '批量效果', keywords: '批量效果 Duo 资源 贴纸 转场', body: '选择草稿后，可以对视频、文字、音频统一追加效果。Duo 资源只在当前封包能力开启时显示。'},
+            {title: '批量分割', keywords: '批量分割 文件分割 草稿处理 批量查看', body: '支持按时长、场景、静音、字幕等方式切分文件，也能把当前草稿主轨道拆成多个片段。'},
+            {title: '片段微调', keywords: '片段微调 节奏变速 画面校正 摇晃关键帧', body: '对已有片段继续做节奏、转场、校正和关键帧微调，适合出片前做细节修正。'},
+            {title: '批量导出', keywords: '批量导出 导出设置 多草稿 片段导出', body: '把当前草稿或多个草稿加入队列，统一导出；也支持单独导出主要视频片段。'},
+            {title: '账户中心', keywords: '账户中心 账户信息 VIP说明 邀请码中心 授权激活 使用教程', body: '这里汇总会员等级、剩余次数、签到、邀请码奖励、CDK 激活与全站教程。执行前会同步显示最新会员和剩余次数。'},
+            {title: '资源互换', keywords: '资源互换 资源大厅 互换发布 审核 免费', body: '资源互换是免费功能。资源大厅只展示管理员审核通过的内容；互换发布要求每天每个用户最多提交 1 条，可在这里查看自己的审核状态与拒绝原因。'},
+            {title: '软件设置', keywords: '软件设置 工作台设置 路径与目录 AI账号管理 OpenClaw', body: '工作台设置、默认路径与 AI 账号统一放在这里。OpenClaw 只保留必要接入，不再作为主链路入口。'}
+        ];
 
         const tokenKey = 'vf_token';
         const themeKey = 'vf_theme';
@@ -141,9 +163,19 @@
                 partition: {
                     short: '每个分区目录每次只取 1 个素材；同名分区目录里素材多时，会随批量数量顺序轮换。',
                     detail: '当前不是把同一分区目录里的多段视频自动拼到一个槽位里，而是每次生成为该分区取 1 个素材。想覆盖更多素材，同样要靠批量数量推进。'
+                },
+                sequence: {
+                    short: '每个槽位目录每次会连续取多段视频，先在槽位内拼接，再写回草稿；默认每槽拼接 3 段。',
+                    detail: '这是独立的第四种模式。只有它会把同一槽位目录里的多段视频先拼成一个槽位素材，前三种模式仍然保持每次只取 1 个素材。'
                 }
             };
             return hintMap[strategy] || hintMap.group;
+        }
+
+        function isMixMaterialsRootRequired(strategy = getSelectedReplaceStrategy()) {
+            const replaceMaterials = !!document.getElementById('replace_materials')?.checked;
+            const replaceAudios = !!document.getElementById('replace_audios')?.checked;
+            return strategy === 'sequence' || replaceMaterials || replaceAudios;
         }
 
         function toggleDraftCompactSection(button) {
@@ -159,11 +191,12 @@
             const copy = getMixModeCopy();
             const cards = materials.map((name, index) => {
                 const hiddenClass = index >= limit ? ' is-extra' : '';
+                const slotLabel = getPartitionFolderLabel(name, index);
                 return `
-                    <div class="material-pill-card${hiddenClass}">
+                    <button class="material-pill-card${hiddenClass}" type="button" title="${escapeHtml(slotLabel)}">
                         <strong>槽位 ${index + 1}</strong>
-                        <span>${escapeHtml(name)}</span>
-                    </div>
+                        <span>${escapeHtml(slotLabel)}</span>
+                    </button>
                 `;
             }).join('');
             return `
@@ -187,7 +220,7 @@
                 return `
                     <div class="text-strip-item${hiddenClass}">
                         <label for="text_${index}">第 ${index + 1} 段文字</label>
-                        <input type="text" id="text_${index}" value="${escapeHtml(defaultValue)}" placeholder="请输入新文字">
+                        <textarea id="text_${index}" rows="3" placeholder="请输入新文字">${escapeHtml(defaultValue)}</textarea>
                     </div>
                 `;
             }).join('');
@@ -200,9 +233,119 @@
                             ${toggle}
                         </div>
                     </div>
+                    <div class="tool-result">支持多行粘贴，也支持 txt / csv 导入。每行会依次填入一个文字槽。</div>
+                    <div class="inline-actions">
+                        <button class="effect-add" type="button" onclick="applyBatchTextTemplate()">批量导入文字</button>
+                        <button class="effect-add" type="button" onclick="importTextTemplateFile()">导入 txt/csv</button>
+                    </div>
+                    <div class="form-group">
+                        <label for="text_batch_input">批量文字输入</label>
+                        <textarea id="text_batch_input" rows="4" placeholder="每行一段，或直接粘贴 csv / txt 内容"></textarea>
+                    </div>
                     <div class="text-strip" data-compact-section="texts">${cards}</div>
                 </div>
             `;
+        }
+
+        function renderPartitionTextInputs(partitions = [], textCount = 0) {
+            const normalized = [];
+            const used = new Set();
+            partitions.forEach((item, index) => {
+                const label = getPartitionFolderLabel(item, index);
+                const key = String(label || '').trim().toLowerCase();
+                if (!key || used.has(key)) return;
+                used.add(key);
+                normalized.push(label);
+            });
+            const cards = normalized.map((name, index) => `
+                <div class="partition-text-card">
+                    <label for="partition_text_${index}">${escapeHtml(name)}</label>
+                    <textarea id="partition_text_${index}" rows="4" placeholder="每行一段文字，提交时会按分区顺序依次写入前 ${textCount} 个文字槽"></textarea>
+                </div>
+            `).join('');
+            return `
+                <div class="materials-strip-card">
+                    <div class="strip-head">
+                        <h3>按分区整理文字</h3>
+                        <div class="strip-head-meta">
+                            <span>适合分区混剪时按片头、主体、片尾这类顺序逐段整理文案。</span>
+                        </div>
+                    </div>
+                    <div class="tool-result">先按分区分别整理，再批量写回对应文字槽。也支持多行粘贴或文件导入。</div>
+                    <div class="inline-actions">
+                        <button class="effect-add" type="button" onclick="applyPartitionBatchTextTemplate()">按分区批量导入</button>
+                    </div>
+                    <div class="form-group">
+                        <label for="partition_text_batch_input">分区批量输入</label>
+                        <textarea id="partition_text_batch_input" rows="4" placeholder="格式示例：片头: 第一段文字\n片中: 第二段文字\n片尾: 第三段文字"></textarea>
+                    </div>
+                    <div class="partition-text-grid">${cards}</div>
+                </div>
+            `;
+        }
+
+        function parseImportedTextLines(raw = '') {
+            return String(raw || '')
+                .replace(/\uFEFF/g, '')
+                .split(/\r?\n/)
+                .flatMap((line) => line.split(/,(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)|，/))
+                .map((item) => item.replace(/^"|"$/g, '').trim())
+                .filter(Boolean);
+        }
+
+        function fillTextInputsFromLines(lines = []) {
+            const values = Array.isArray(lines) ? lines : [];
+            document.querySelectorAll('#texts_area textarea[id^="text_"]').forEach((node, index) => {
+                if (values[index] !== undefined) node.value = values[index];
+            });
+        }
+
+        function applyBatchTextTemplate() {
+            const raw = document.getElementById('text_batch_input')?.value || '';
+            const lines = parseImportedTextLines(raw);
+            if (!lines.length) {
+                notify('请先输入要导入的文字。', 'warn');
+                return;
+            }
+            fillTextInputsFromLines(lines);
+            notify(`已导入 ${lines.length} 段文字。`, 'success');
+        }
+
+        function applyPartitionBatchTextTemplate() {
+            const raw = document.getElementById('partition_text_batch_input')?.value || '';
+            const rows = String(raw || '').replace(/\uFEFF/g, '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+            if (!rows.length) {
+                notify('请先输入分区文字。', 'warn');
+                return;
+            }
+            const textareas = Array.from(document.querySelectorAll('[id^="partition_text_"]'));
+            rows.forEach((row) => {
+                const parts = row.split(/[:：]/);
+                if (parts.length < 2) return;
+                const key = parts.shift().trim();
+                const value = parts.join(':').trim();
+                const target = textareas.find((item) => {
+                    const label = item.closest('.partition-text-card')?.querySelector('label')?.textContent?.trim() || '';
+                    return label === key;
+                });
+                if (target && value) target.value = value;
+            });
+            notify('已按分区写入批量文字。', 'success');
+        }
+
+        async function importTextTemplateFile() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.txt,.csv,text/plain,text/csv';
+            input.addEventListener('change', async (event) => {
+                const file = event.target.files && event.target.files[0];
+                if (!file) return;
+                const text = await file.text();
+                const box = document.getElementById('text_batch_input');
+                if (box) box.value = text;
+                applyBatchTextTemplate();
+            });
+            input.click();
         }
 
         function getWorkspaceSettings() {
@@ -354,8 +497,8 @@
         function buildRuntimeSummaryText() {
             const items = [
                 `Duo ${runtimeFeatures.duo ? '已开启' : '未开启'}`,
-                `AI 漫剧 ${runtimeFeatures.manga ? '已开启' : '未开启'}`,
-                `AI 漫剧服务 ${runtimeFeatures.openclaw ? '已开启' : '未开启'}`
+                `AI 漫剧草稿 ${runtimeFeatures.manga ? '已开启' : '未开启'}`,
+                `OpenClaw 接入 ${runtimeFeatures.openclaw ? '保留' : '隐藏'}`
             ];
             return items.join(' / ');
         }
@@ -363,15 +506,15 @@
         function renderCommercialSummary() {
             const lockedRuntime = document.getElementById('lockedFeatureRuntime');
             const accountFeatureStatus = document.getElementById('accountFeatureStatus');
+            const workspaceQuotaBadge = document.getElementById('workspaceQuotaBadge');
 
             const runtimeText = buildRuntimeSummaryText();
             const disabledFlags = [];
             if (!runtimeFeatures.duo) disabledFlags.push(`Duo 资源需 ${getRuntimeRequirementText('duo')}`);
             if (!runtimeFeatures.manga) disabledFlags.push(`AI 漫剧需 ${getRuntimeRequirementText('manga')}`);
-            if (!runtimeFeatures.openclaw) disabledFlags.push(`AI 漫剧服务需 ${getRuntimeRequirementText('openclaw')}`);
             const disabledHint = disabledFlags.length
                 ? `未开启项：${disabledFlags.join(' / ')}`
-                : '当前可选功能均可正常使用。';
+                : (runtimeFeatures.openclaw ? '当前可选功能均可正常使用。' : '当前主链路功能均可使用，OpenClaw 已降级为隐藏接入。');
 
             if (lockedRuntime) {
                 lockedRuntime.textContent = `${runtimeText}。${disabledHint}`;
@@ -380,13 +523,82 @@
             if (accountFeatureStatus) {
                 accountFeatureStatus.textContent = `${runtimeText}\n${disabledHint}`;
             }
+
+            if (workspaceQuotaBadge) {
+                if (!currentUserInfo) {
+                    workspaceQuotaBadge.textContent = '登录后显示会员与次数';
+                    workspaceQuotaBadge.className = 'workspace-badge workspace-badge-soft';
+                } else {
+                    const tier = currentUserInfo.is_vip ? 'VIP会员' : '试用用户';
+                    const remain = Number(currentUserInfo.remaining ?? 0);
+                    workspaceQuotaBadge.textContent = `${tier} / 剩余 ${remain} 次`;
+                    workspaceQuotaBadge.className = remain > 0
+                        ? 'workspace-badge workspace-badge-accent'
+                        : 'workspace-badge workspace-badge-warn';
+                }
+            }
+        }
+
+        function renderVipRules() {
+            const rules = accountOverview?.vip_rules || {};
+            const defaultQuota = rules.default_user_quota ?? 0;
+            const checkinReward = rules.daily_checkin_reward ?? 0;
+            const inviteReferrer = rules.invite_referrer_reward ?? 0;
+            const inviteeReward = rules.invite_invitee_reward ?? 0;
+            const mangaCost = rules.manga_generate_cost ?? 0;
+            const defaultQuotaEl = document.getElementById('accountDefaultQuota');
+            const checkinRewardEl = document.getElementById('accountCheckinReward');
+            const inviteRuleEl = document.getElementById('accountInviteRule');
+            const mangaCostEl = document.getElementById('accountMangaCost');
+            const rulesText = document.getElementById('accountVipRulesText');
+            if (defaultQuotaEl) defaultQuotaEl.textContent = `${defaultQuota} 次`;
+            if (checkinRewardEl) checkinRewardEl.textContent = `${checkinReward} 次`;
+            if (inviteRuleEl) inviteRuleEl.textContent = `${inviteReferrer} / ${inviteeReward}`;
+            if (mangaCostEl) mangaCostEl.textContent = `${mangaCost} 次`;
+            if (rulesText) {
+                rulesText.textContent = [
+                    `新用户默认试用：${defaultQuota} 次`,
+                    `每日签到奖励：${checkinReward} 次`,
+                    `邀请奖励：邀请人 +${inviteReferrer} 次 / 新用户 +${inviteeReward} 次`,
+                    `AI 漫剧消耗：每次 ${mangaCost} 次`,
+                    'CDK 激活会延长 VIP 有效期，并按后台配置把赠送积分折算为次数。'
+                ].join('\n');
+            }
+        }
+
+        function renderInviteOverview(source = null) {
+            const invite = source || currentUserInfo?.invite || accountOverview?.invite || {};
+            const inviteCountEl = document.getElementById('inviteCount');
+            const inviteRewardEl = document.getElementById('inviteRewardTotal');
+            const inviteSummary = document.getElementById('inviteSummaryText');
+            const inviteRecent = document.getElementById('inviteRecentList');
+            const referrerName = document.getElementById('userReferrerName');
+            if (inviteCountEl) inviteCountEl.textContent = invite.invited_count ?? 0;
+            if (inviteRewardEl) inviteRewardEl.textContent = invite.referrer_reward_total ?? 0;
+            if (referrerName) {
+                const name = currentUserInfo?.referrer_username || '-';
+                referrerName.textContent = name === '-' || !name ? '未绑定邀请人' : `邀请人：${name}`;
+            }
+            if (inviteSummary) {
+                inviteSummary.textContent = [
+                    `邀请人奖励：每邀请 1 位新用户到账 ${invite.referrer_reward ?? 0} 次`,
+                    `新用户奖励：完成注册到账 ${invite.invitee_reward ?? 0} 次`,
+                    `我的累计邀请奖励：${invite.referrer_reward_total ?? 0} 次`,
+                    `我的受邀注册奖励：${invite.invitee_reward_total ?? 0} 次`
+                ].join('\n');
+            }
+            if (inviteRecent) {
+                const items = Array.isArray(invite.recent_invited_users) ? invite.recent_invited_users : [];
+                inviteRecent.textContent = items.length
+                    ? items.map((item) => `${item.username || '未命名用户'}  ${item.created_at ? new Date(item.created_at).toLocaleString() : '-'}`).join('\n')
+                    : '还没有邀请记录。';
+            }
         }
 
         function applyRuntimeFeatureVisibility() {
             const mangaNotice = document.getElementById('mangaFeatureNotice');
             const mangaContent = document.getElementById('mangaFeatureContent');
             const mangaSidebarLink = document.getElementById('aiMangaSidebarLink');
-            const openclawBtn = document.getElementById('openclawConfigBtn');
             const duoSection = document.getElementById('duoSection');
             const duoNotice = document.getElementById('duoFeatureNotice');
             const duoSidebarLink = document.getElementById('duoSidebarLink');
@@ -402,10 +614,6 @@
                 if (mangaNotice) mangaNotice.style.display = 'none';
                 if (mangaContent) mangaContent.style.display = 'block';
                 if (mangaSidebarLink) mangaSidebarLink.classList.remove('is-disabled');
-            }
-
-            if (!runtimeFeatures.openclaw && openclawBtn) {
-                openclawBtn.style.display = 'none';
             }
 
             if (!runtimeFeatures.duo) {
@@ -442,7 +650,7 @@
             const badge = document.getElementById('workspaceDraftBadge');
             if (!badge) return;
             if (!currentDraftPath) {
-                badge.textContent = '当前未选择草稿';
+                badge.textContent = '未选草稿';
                 return;
             }
             const name = currentDraftPath.split(/[\\/]/).filter(Boolean).pop() || currentDraftPath;
@@ -451,7 +659,7 @@
                 jianying: '剪映',
                 capcut: 'CapCut 国际版'
             };
-            badge.textContent = `${versionMap[currentDraftVersion] || '自动识别'} / ${name}`;
+            badge.textContent = `草稿 ${versionMap[currentDraftVersion] || '自动识别'} / ${name}`;
         }
 
         function getActiveWorkspacePanel() {
@@ -593,7 +801,8 @@
             const draftPath = getDraftElement('path')?.value?.trim();
             const folderPath = document.getElementById('folder_path')?.value?.trim();
             const ready = currentDraftPath && currentDraftPath === draftPath;
-            submitBtn.disabled = !(hasToken && draftPath && folderPath && ready);
+            const needsFolder = isMixMaterialsRootRequired();
+            submitBtn.disabled = !(hasToken && draftPath && ready && (!needsFolder || folderPath));
         }
 
         function getSelectedReplaceStrategy() {
@@ -614,42 +823,162 @@
                     panelSub: '参考草稿确定槽位后，每个槽位按独立素材目录严格对应替换，每次生成每槽只取一个素材。',
                     primaryTitle: '按组精准替换',
                     primaryDesc: '先选参考草稿，再按槽位准备素材目录，最后批量生成。',
-                    materialsTitle: '第 3 步：确认草稿槽位顺序',
+                    materialsTitle: '第 2 步：确认草稿槽位顺序',
                     materialsDesc: '已识别槽位，后续目录需要一一对应',
-                    folderTitle: '第 4 步：选择素材总目录',
+                    folderTitle: '第 3 步：选择素材总目录',
                     folderDesc: '总目录下请按槽位拆分子目录，顺序与草稿槽位保持一致。每个子目录可放多条视频，系统会按批量数量轮换。',
-                    advancedTitle: '第 5 步：生成与替换设置',
+                    advancedTitle: '第 4 步：生成与替换设置',
                 },
                 mix: {
                     panelTitle: '混剪裂变替换',
                     panelSub: '所有片段共用一个素材池，系统会按规则随机组合生成多条成片，但每次生成每槽只取一个素材。',
                     primaryTitle: '混剪裂变替换',
                     primaryDesc: '先选参考草稿，再选择统一素材池目录，最后批量裂变生成。',
-                    materialsTitle: '第 3 步：确认草稿可替换槽位',
+                    materialsTitle: '第 2 步：确认草稿可替换槽位',
                     materialsDesc: '已识别槽位，系统会从同一素材池随机组合',
-                    folderTitle: '第 4 步：选择素材池目录',
+                    folderTitle: '第 3 步：选择素材池目录',
                     folderDesc: '一个目录即可放入全部候选素材，图片和视频可混放。素材越多，批量裂变空间越大。',
-                    advancedTitle: '第 5 步：裂变与高级设置',
+                    advancedTitle: '第 4 步：裂变与高级设置',
                 },
                 partition: {
                     panelTitle: '分区混剪裂变',
                     panelSub: '按片头、主体、片尾这类分区精准匹配素材，同时保持原始顺序，每次生成每分区只取一个素材。',
                     primaryTitle: '分区混剪裂变',
                     primaryDesc: '先选参考草稿，再按分区准备目录，最后批量生成。',
-                    materialsTitle: '第 3 步：确认分区槽位',
+                    materialsTitle: '第 2 步：确认分区槽位',
                     materialsDesc: '已识别分区槽位，目录名称需与分区保持一致',
-                    folderTitle: '第 4 步：选择分区总目录',
+                    folderTitle: '第 3 步：选择分区总目录',
                     folderDesc: '总目录下请按分区名称建立子目录，适合片头主体片尾不能混用的场景。每个分区目录可放多条视频轮换。',
-                    advancedTitle: '第 5 步：分区高级设置',
+                    advancedTitle: '第 4 步：分区高级设置',
+                },
+                sequence: {
+                    panelTitle: '槽位拼接混剪',
+                    panelSub: '每个槽位仍按独立目录准备，但生成时会先在该槽位内连续取多段视频拼接，再写回草稿。',
+                    primaryTitle: '槽位拼接混剪',
+                    primaryDesc: '先选参考草稿，再按槽位准备视频目录，设置单槽拼接段数后开始生成。',
+                    materialsTitle: '第 2 步：确认草稿视频槽位',
+                    materialsDesc: '已识别可拼接的视频槽位，后续目录需要一一对应',
+                    folderTitle: '第 3 步：选择槽位总目录',
+                    folderDesc: '总目录下请按槽位拆分子目录。每个槽位目录里可放多段视频，系统会先拼成一个槽位素材再写回草稿。',
+                    advancedTitle: '第 4 步：拼接与高级设置',
                 }
             };
             return copyMap[strategy] || copyMap.group;
         }
 
         function setMixStrategy(strategy = 'group') {
-            const next = ['group', 'mix', 'partition'].includes(strategy) ? strategy : 'group';
+            const next = ['group', 'mix', 'partition', 'sequence'].includes(strategy) ? strategy : 'group';
             currentMixStrategy = next;
             updateMixModeUI();
+        }
+
+        function syncMixStepVisibility() {
+            const dom = getDraftDom();
+            const strategy = getSelectedReplaceStrategy();
+            const currentCopy = getMixModeCopy(strategy);
+            const needsFolder = isMixMaterialsRootRequired(strategy);
+            if (dom.folderSection) {
+                const shouldShow = needsFolder && (materialsConfig.length > 0 || textsConfig.length > 0);
+                dom.folderSection.style.display = shouldShow ? 'block' : 'none';
+            }
+            const advancedTitle = document.getElementById('mixAdvancedTitle');
+            if (advancedTitle && currentCopy.advancedTitle) {
+                advancedTitle.textContent = needsFolder ? currentCopy.advancedTitle : currentCopy.advancedTitle.replace('第 4 步', '第 3 步');
+            }
+        }
+
+        function renderMixModeStatus(strategy = getSelectedReplaceStrategy(), rootLabelMap = null) {
+            const currentCopy = getMixModeCopy(strategy);
+            const labels = rootLabelMap || {
+                group: '素材总目录',
+                mix: '素材池目录',
+                partition: '分区总目录',
+                sequence: '槽位总目录'
+            };
+            const modeStatusTitle = document.getElementById('mixModeStatusTitle');
+            const modeStatusTag = document.getElementById('mixModeStatusTag');
+            const modeStatusDetail = document.getElementById('mixModeStatusDetail');
+            if (modeStatusTitle) {
+                modeStatusTitle.textContent = `${currentCopy.primaryTitle}的实际替换规则`;
+            }
+            if (modeStatusTag) {
+                modeStatusTag.textContent = strategy === 'sequence' ? '每个槽位会先拼接多段视频' : '每次每槽位只取 1 个素材';
+            }
+            if (modeStatusDetail) {
+                const folderTip = isMixMaterialsRootRequired(strategy)
+                    ? `当前模式仍需要准备${labels[strategy] || '素材目录'}。`
+                    : '当前只替换文字时，不必再选素材目录。';
+                modeStatusDetail.textContent = `${getMixConsumptionHint(strategy).detail} ${folderTip}`;
+            }
+        }
+
+        function syncMixReplaceControls() {
+            const strategy = getSelectedReplaceStrategy();
+            const replaceMaterialsInput = document.getElementById('replace_materials');
+            const replaceTextsInput = document.getElementById('replace_texts');
+            const replaceAudiosInput = document.getElementById('replace_audios');
+            const replaceMaterials = !!document.getElementById('replace_materials')?.checked;
+            const replaceAudios = !!document.getElementById('replace_audios')?.checked;
+            const replaceTypeField = document.getElementById('replaceTypeField');
+            const replaceModeField = document.getElementById('replaceModeField');
+            const replaceType = document.getElementById('replace_type');
+            const sequenceClipField = document.getElementById('sequenceClipField');
+            const partitionTextModeField = document.getElementById('partitionTextModeField');
+
+            if (replaceMaterialsInput) {
+                if (strategy === 'sequence') {
+                    replaceMaterialsInput.checked = true;
+                    replaceMaterialsInput.disabled = true;
+                } else {
+                    replaceMaterialsInput.disabled = false;
+                }
+            }
+            if (replaceTextsInput && strategy !== 'sequence') {
+                replaceTextsInput.disabled = false;
+            }
+            if (replaceAudiosInput && strategy !== 'sequence') {
+                replaceAudiosInput.disabled = false;
+            }
+            if (replaceType) {
+                if (strategy === 'sequence') {
+                    replaceType.value = 'video';
+                    replaceType.disabled = true;
+                } else {
+                    replaceType.disabled = false;
+                }
+            }
+
+            if (replaceTypeField) {
+                replaceTypeField.style.display = (replaceMaterialsInput?.checked || strategy === 'sequence') ? '' : 'none';
+            }
+            if (replaceModeField) {
+                replaceModeField.style.display = ((replaceMaterialsInput?.checked || strategy === 'sequence') || replaceAudios) ? '' : 'none';
+            }
+            if (!replaceMaterials && replaceAudios && replaceType) {
+                replaceType.value = 'audio';
+            }
+            if (sequenceClipField) {
+                sequenceClipField.style.display = strategy === 'sequence' ? '' : 'none';
+            }
+            if (partitionTextModeField) {
+                partitionTextModeField.style.display = strategy === 'partition' && textsConfig.length ? '' : 'none';
+            }
+            renderMixModeStatus(strategy);
+            syncMixStepVisibility();
+            updatePrimaryActionState();
+            syncPartitionTextStrategy();
+        }
+
+        function syncPartitionTextStrategy() {
+            const strategy = getSelectedReplaceStrategy();
+            const dom = getDraftDom();
+            const partitionMode = document.getElementById('partition_text_mode')?.value || 'global';
+            if (dom.textsArea) {
+                dom.textsArea.style.display = textsConfig.length && !(strategy === 'partition' && partitionMode === 'partition') ? 'block' : 'none';
+            }
+            if (dom.partitionTextsArea) {
+                dom.partitionTextsArea.style.display = strategy === 'partition' && partitionMode === 'partition' && textsConfig.length ? 'block' : 'none';
+            }
         }
 
         function updateMixModeUI() {
@@ -657,7 +986,8 @@
             const rootLabelMap = {
                 group: '素材总目录',
                 mix: '素材池目录',
-                partition: '分区总目录'
+                partition: '分区总目录',
+                sequence: '槽位总目录'
             };
             const label = document.getElementById('materialsRootLabel');
             if (label) label.textContent = rootLabelMap[strategy] || '素材目录';
@@ -688,10 +1018,16 @@
             const replaceMode = document.getElementById('replace_mode');
             const advancedHint = document.getElementById('mixAdvancedHint');
             if (replaceTypeLabel) {
-                replaceTypeLabel.textContent = strategy === 'partition' ? '分区素材类型' : '素材类型';
+                replaceTypeLabel.textContent = strategy === 'partition' ? '分区素材类型' : strategy === 'sequence' ? '拼接素材类型' : '素材类型';
             }
             if (replaceModeLabel) {
-                replaceModeLabel.textContent = strategy === 'group' ? '槽位分配方式' : strategy === 'mix' ? '裂变分配方式' : '分区分配方式';
+                replaceModeLabel.textContent = strategy === 'group'
+                    ? '槽位分配方式'
+                    : strategy === 'mix'
+                        ? '裂变分配方式'
+                        : strategy === 'partition'
+                            ? '分区分配方式'
+                            : '拼接取样方式';
             }
             if (replaceMode) {
                 replaceMode.value = strategy === 'mix' ? 'random' : 'order';
@@ -699,10 +1035,9 @@
             if (advancedHint) {
                 advancedHint.textContent = getMixConsumptionHint(strategy).short;
             }
+            renderMixModeStatus(strategy, rootLabelMap);
 
-            document.querySelectorAll('[data-mix-panel]').forEach((node) => {
-                node.classList.toggle('active', node.getAttribute('data-mix-panel') === strategy);
-            });
+            syncMixReplaceControls();
         }
 
         function renderMixGuideModal() {
@@ -722,7 +1057,8 @@
             const advancedTipMap = {
                 group: '适合一组素材严格对应一个槽位，先确认总目录下已经按 01、02、03 这类子目录分好。',
                 mix: '适合同一素材池反复裂变，目录里可以同时放图片和视频。',
-                partition: '适合多分区模板，每个槽位都要有同名目录，否则后端会直接拦截并提示。'
+                partition: '适合多分区模板，每个槽位都要有同名目录；如果文案也按分区整理，可以切到“按分区整理文字”。',
+                sequence: '适合一个槽位需要连续吃掉多段短视频的场景。它是独立第四种模式，不会改动前三种的一次取 1 个素材规则。'
             };
             const consumption = getMixConsumptionHint(strategy);
 
@@ -766,21 +1102,30 @@
                 const vipBadge = document.getElementById('vipBadge');
                 const refCodeEl = document.getElementById('userRefCode');
                 const referrerEl = document.getElementById('userReferrer');
+                const membershipHintEl = document.getElementById('accountMembershipHint');
                 if (nameEl) nameEl.textContent = user.username || '-';
                 if (remainEl) remainEl.textContent = user.remaining ?? 0;
                 if (totalEl) totalEl.textContent = user.total_generated ?? 0;
                 if (vipEl) vipEl.textContent = user.vip_expire_at ? new Date(user.vip_expire_at).toLocaleString() : '-';
                 if (refCodeEl) refCodeEl.textContent = user.ref_code || '-';
-                if (referrerEl) referrerEl.textContent = user.referrer_id ? `已绑定上级 #${user.referrer_id}` : '未绑定上级';
+                if (referrerEl) referrerEl.textContent = user.referrer_id ? `已绑定 #${user.referrer_id}` : '未绑定上级';
+                if (membershipHintEl) {
+                    membershipHintEl.textContent = user.is_vip
+                        ? '当前账号拥有 VIP 时效'
+                        : '当前账号按试用规则计次';
+                }
                 const copyBtn = document.getElementById('copyRefCodeBtn');
                 if (copyBtn) copyBtn.disabled = !user.ref_code;
                 if (vipBadge) {
-                    vipBadge.textContent = user.is_vip ? 'VIP' : '普通用户';
-                    vipBadge.style.background = user.is_vip ? '#dbeafe' : '#e2e8f0';
-                    vipBadge.style.color = user.is_vip ? '#1d4ed8' : '#475569';
+                    vipBadge.textContent = user.is_vip ? 'VIP会员' : '试用用户';
+                    vipBadge.style.background = user.is_vip ? '#e8f1ff' : '#eef3f8';
+                    vipBadge.style.color = user.is_vip ? '#1557d6' : '#475569';
                 }
+                renderInviteOverview(user.invite || null);
                 loadLicenseStatus();
                 loadPointsOverview();
+                fillResourceMembership();
+                loadResourceExchangeMyPosts();
                 closeAuthModal();
                 if (document.getElementById('workbenchApp')) {
                     showWorkspacePanel('panel-account');
@@ -799,6 +1144,9 @@
                 if (checkinActionMsg) checkinActionMsg.textContent = '';
                 const copyBtn = document.getElementById('copyRefCodeBtn');
                 if (copyBtn) copyBtn.disabled = true;
+                renderInviteOverview(null);
+                fillResourceMembership();
+                renderResourceMyPosts([]);
             }
             toggleProtectedUI(!!user);
             renderCommercialSummary();
@@ -849,9 +1197,11 @@
             if (actionMsg && currentUserInfo) {
                 actionMsg.textContent = checkedIn
                     ? `今天已完成签到，连续签到 ${overview.streak_days ?? 0} 天。`
-                    : `今天签到可领取 ${overview.checkin_reward ?? 0} 奖励值。服务器日期：${overview.server_day || '-'}`;
+                    : `今天签到可领取 ${overview.checkin_reward ?? 0} 次。服务器日期：${overview.server_day || '-'}`;
             }
             renderPointsLogList(overview.recent_logs || []);
+            renderVipRules();
+            renderInviteOverview(overview.invite || currentUserInfo?.invite || null);
             renderCommercialSummary();
         }
 
@@ -1092,8 +1442,8 @@
                 list.innerHTML = '<div class="tool-result">登录后可自动发现剪映与国际版草稿。</div>';
                 return;
             }
-            summary.textContent = '正在查找本机草稿...';
-            list.innerHTML = '<div class="tool-result">正在查找本机草稿...</div>';
+            summary.textContent = '正在读取最近草稿，请稍候...';
+            list.innerHTML = '<div class="tool-result">正在读取最近草稿...</div>';
             try {
                 const res = await authFetch('/api/drafts/discover?limit=20');
                 const data = await res.json();
@@ -1113,10 +1463,10 @@
                 }
                 const visibleDrafts = renderInModal ? filteredDrafts : filteredDrafts.slice(0, 3);
                 summary.textContent = renderInModal
-                    ? `当前已发现 ${filteredDrafts.length} 个草稿，选择后会自动带回当前模块。`
+                    ? `已发现 ${filteredDrafts.length} 个草稿，选择后会自动带回当前模块。`
                     : (filteredDrafts.length > visibleDrafts.length
-                        ? `当前模块已发现 ${filteredDrafts.length} 个草稿，默认先展示最近 ${visibleDrafts.length} 个。`
-                        : `当前模块已发现 ${filteredDrafts.length} 个最近草稿，可直接选择。`);
+                        ? `已发现 ${filteredDrafts.length} 个草稿，当前先展示最近 ${visibleDrafts.length} 个。`
+                        : `已发现 ${filteredDrafts.length} 个最近草稿，可直接选择。`);
                 list.innerHTML = visibleDrafts.map((item, idx) => `
                     <div class="draft-item ${activePath && activePath === item.path ? 'active' : ''}" data-draft-index="${idx}" role="button" tabindex="0">
                         <div class="draft-item-head"><strong>${item.name || '未命名草稿'}</strong><span class="draft-use-tag">点击即用</span></div>
@@ -1344,7 +1694,7 @@
                 return;
             }
             if (!draftPath || !currentDraftPath || currentDraftPath !== draftPath) {
-                setToolResult('clip_result', '请先读取当前草稿，再应用微调。');
+                setToolResult('clip_result', '请先读取已选草稿，再应用微调。');
                 return;
             }
             setToolResult('clip_result', '正在应用微调，请稍候...');
@@ -1366,7 +1716,7 @@
                 const summary = data.summary || {};
                 const lines = [
                     '微调已完成。',
-                    `草稿：${data.draft_name || summary.draft_name || '已更新当前草稿'}`,
+                    `草稿：${data.draft_name || summary.draft_name || '已更新已选草稿'}`,
                     summary.export_format ? `导出格式：${summary.export_format}` : '导出格式：未指定',
                     summary.warnings && summary.warnings.length ? `警告：${summary.warnings.join(' | ')}` : '警告：无'
                 ];
@@ -1431,7 +1781,7 @@
         function addCurrentDraftToExportQueue() {
             const draftPath = getDraftElement('path')?.value?.trim() || currentDraftPath || '';
             if (!draftPath) {
-                setToolResult('export_result', '请先选择当前草稿，再加入待导出列表。');
+                setToolResult('export_result', '请先选择已选草稿，再加入待导出列表。');
                 return;
             }
             const exists = exportDraftQueue.some((item) => item.path === draftPath);
@@ -1443,13 +1793,13 @@
                 });
             }
             renderExportDraftQueue();
-                setToolResult('export_result', '当前草稿已加入待导出列表。');
+                setToolResult('export_result', '已选草稿已加入待导出列表。');
         }
 
         function addDiscoveredDraftsToExportQueue() {
             const drafts = Array.isArray(window.__vfDiscoveredDrafts) ? window.__vfDiscoveredDrafts : [];
             if (!drafts.length) {
-                setToolResult('export_result', '当前没有最近发现草稿，请先刷新草稿列表。');
+                setToolResult('export_result', '还没有最近发现的草稿，请先打开草稿选择器刷新。');
                 return;
             }
             drafts.forEach((item) => {
@@ -1498,7 +1848,7 @@
         function addDiscoveredDraftsToSplitQueue() {
             const drafts = Array.isArray(window.__vfDiscoveredDrafts) ? window.__vfDiscoveredDrafts : [];
             if (!drafts.length) {
-                setToolResult('split_multi_result', '当前没有最近发现草稿，请先刷新草稿列表。');
+                setToolResult('split_multi_result', '还没有最近发现的草稿，请先打开草稿选择器刷新。');
                 return;
             }
             drafts.forEach((item) => {
@@ -1736,6 +2086,7 @@
                 materialsArea: document.getElementById('materials_area'),
                 materialsList: document.getElementById('materials_list'),
                 textsArea: document.getElementById('texts_area'),
+                partitionTextsArea: document.getElementById('partition_texts_area'),
                 folderSection: document.getElementById('folder_section'),
                 optionsSection: document.getElementById('options_section'),
                 effectsSection: document.getElementById('effects_section')
@@ -1754,6 +2105,10 @@
             if (dom.textsArea) {
                 dom.textsArea.innerHTML = '';
                 dom.textsArea.style.display = 'none';
+            }
+            if (dom.partitionTextsArea) {
+                dom.partitionTextsArea.innerHTML = '';
+                dom.partitionTextsArea.style.display = 'none';
             }
             if (dom.folderSection) dom.folderSection.style.display = 'none';
             if (dom.optionsSection) {
@@ -1784,7 +2139,7 @@
                 toggleProtectedUI(false);
                 return;
             }
-            if (dom.draftStatus) dom.draftStatus.textContent = '正在整理当前草稿内容...';
+            if (dom.draftStatus) dom.draftStatus.textContent = '正在整理已选草稿内容...';
 
             try {
                 const res = await authFetch('/api/draft/inspect', {
@@ -1820,14 +2175,16 @@
                 if (textsConfig.length > 0) {
                     if (dom.textsArea) {
                         dom.textsArea.innerHTML = renderCompactTexts(textsConfig);
-                        dom.textsArea.style.display = 'block';
+                    }
+                    if (dom.partitionTextsArea) {
+                        dom.partitionTextsArea.innerHTML = renderPartitionTextInputs(materialsConfig, textsConfig.length);
                     }
                 } else {
                     if (dom.textsArea) dom.textsArea.style.display = 'none';
+                    if (dom.partitionTextsArea) dom.partitionTextsArea.style.display = 'none';
                 }
 
                 if (materialsConfig.length > 0 || textsConfig.length > 0) {
-                    if (dom.folderSection) dom.folderSection.style.display = 'block';
                     if (dom.optionsSection) {
                         dom.optionsSection.style.display = 'block';
                         dom.optionsSection.open = true;
@@ -1857,6 +2214,8 @@
                 toggleProtectedUI(!!getToken());
                 updatePrimaryActionState();
                 updateMixModeUI();
+                syncMixStepVisibility();
+                syncPartitionTextStrategy();
             } catch (error) {
                 resetDraftInfo(`草稿读取失败：${error.message}`);
             }
@@ -1871,6 +2230,59 @@
                 setWorkspaceSettings({last_materials_root: data.folder});
             }
             updatePrimaryActionState();
+        }
+
+        function buildAssistantContext() {
+            return {
+                draft_path: getDraftElement('path')?.value?.trim() || currentDraftPath || '',
+                materials_root: document.getElementById('folder_path')?.value?.trim() || '',
+                strategy: getSelectedReplaceStrategy(),
+                slots: materialsConfig.slice(),
+                text_count: textsConfig.length
+            };
+        }
+
+        async function createMaterialLayout() {
+            if (!getToken()) {
+                notify('请先登录后再创建素材目录。', 'warn');
+                return;
+            }
+            const statusEl = document.getElementById('materialLayoutStatus');
+            const context = buildAssistantContext();
+            if (!context.draft_path) {
+                if (statusEl) statusEl.textContent = '请先选择草稿。';
+                notify('请先选择草稿。', 'warn');
+                return;
+            }
+            if (!context.materials_root) {
+                if (statusEl) statusEl.textContent = '请先选择素材根目录。';
+                notify('请先选择素材根目录。', 'warn');
+                return;
+            }
+            if (statusEl) statusEl.textContent = '正在创建素材目录...';
+            try {
+                const res = await authFetch('/api/materials/create-layout', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(context)
+                });
+                const data = await res.json();
+                if (!res.ok || !data.ok) throw new Error(data.error || '创建失败');
+                const layout = data.layout || {};
+                const folderInput = document.getElementById('folder_path');
+                if (folderInput && layout.root) {
+                    folderInput.value = layout.root;
+                    pushRecentMaterialFolder(layout.root);
+                    setWorkspaceSettings({last_materials_root: layout.root});
+                }
+                const folderNames = Array.isArray(layout.folders) ? layout.folders.map((item) => item.label || item.path).join(' / ') : '';
+                if (statusEl) statusEl.textContent = layout.root ? `已创建：${layout.root}${folderNames ? `\n${folderNames}` : ''}` : '素材目录已创建';
+                updatePrimaryActionState();
+                notify('素材目录已按草稿创建。', 'success');
+            } catch (e) {
+                if (statusEl) statusEl.textContent = `创建失败：${e.message || e}`;
+                notify(e.message || '创建素材目录失败', 'warn');
+            }
         }
 
         async function selectAudioFolder() {
@@ -2124,24 +2536,13 @@
                 return;
             }
             if (!currentDraftPath || currentDraftPath !== draftPath) {
-                notify('当前草稿状态已变化，请重新选择后再试。', 'warn');
-                return;
-            }
-            const folderPath = document.getElementById('folder_path').value;
-            if (!folderPath) {
-                notify('请先选择素材目录。', 'warn');
+                notify('草稿状态已变化，请重新选择后再试。', 'warn');
                 return;
             }
             const batchCount = parseInt(document.getElementById('batch_count').value) || 1;
             if (batchCount < 1 || batchCount > 100) {
                 notify('批量生成数量需要在 1 到 100 之间。', 'warn');
                 return;
-            }
-
-            const textsInput = [];
-            for (let i = 0; i < textsConfig.length; i++) {
-                const input = document.getElementById(`text_${i}`);
-                if (input) textsInput.push({ index: i, contents: [input.value], rule: 'order' });
             }
 
             const replaceMaterials = document.getElementById('replace_materials').checked;
@@ -2154,6 +2555,9 @@
             const replaceType = document.getElementById('replace_type')?.value || 'both';
             const replaceMode = document.getElementById('replace_mode')?.value || 'order';
             const replaceStrategy = getSelectedReplaceStrategy();
+            const folderPath = document.getElementById('folder_path')?.value?.trim() || '';
+            const partitionTextMode = document.getElementById('partition_text_mode')?.value || 'global';
+            const sequenceClipCount = parseInt(document.getElementById('sequence_clip_count')?.value || '3', 10) || 3;
             const audioEnabled = !!document.getElementById('audio_enabled')?.checked;
             const audioFolderPath = document.getElementById('audio_folder_path')?.value?.trim();
             const exportEnabled = !!document.getElementById('export_enable')?.checked;
@@ -2161,6 +2565,35 @@
             const exportFormat = document.getElementById('export_format')?.value || 'mp4';
             const exportResolution = document.getElementById('export_resolution')?.value || '1080p';
             const exportFps = parseInt(document.getElementById('export_fps')?.value || '30', 10);
+
+            if (replaceStrategy === 'sequence' && (sequenceClipCount < 2 || sequenceClipCount > 12)) {
+                notify('槽位拼接段数需要在 2 到 12 之间。', 'warn');
+                return;
+            }
+            if (isMixMaterialsRootRequired(replaceStrategy) && !folderPath) {
+                notify('请先选择素材目录。', 'warn');
+                return;
+            }
+
+            const textsInput = [];
+            if (replaceTexts) {
+                const globalTexts = [];
+                for (let i = 0; i < textsConfig.length; i++) {
+                    const input = document.getElementById(`text_${i}`);
+                    globalTexts.push(input ? input.value : '');
+                }
+                let finalTexts = globalTexts.slice();
+                if (replaceStrategy === 'partition' && partitionTextMode === 'partition') {
+                    const partitionValues = Array.from(document.querySelectorAll('[id^="partition_text_"]'))
+                        .flatMap((node) => (node.value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+                    partitionValues.slice(0, textsConfig.length).forEach((value, index) => {
+                        finalTexts[index] = value;
+                    });
+                }
+                finalTexts.forEach((value, index) => {
+                    textsInput.push({index, contents: [value], rule: 'order'});
+                });
+            }
 
             const payload = {
                 draft_path: draftPath,
@@ -2173,6 +2606,8 @@
                 replace_type: replaceType,
                 replace_mode: replaceMode,
                 replace_strategy: replaceStrategy,
+                partition_text_mode: partitionTextMode,
+                sequence_clip_count: sequenceClipCount,
                 audio_enabled: audioEnabled,
                 audio_root: audioFolderPath || null,
                 export_enabled: exportEnabled,
@@ -2594,6 +3029,7 @@
                     await Promise.all([loadAiProviders(), loadAiKeys()]);
                     closeAuthModal();
                     discoverDrafts();
+                    loadAssistantLogs();
                 } else {
                     setAuthMessage(data.error || '登录失败');
                 }
@@ -2621,6 +3057,7 @@
                     await Promise.all([loadAiProviders(), loadAiKeys()]);
                     closeAuthModal();
                     discoverDrafts();
+                    loadAssistantLogs();
                 } else {
                     setAuthMessage(data.error || '注册失败');
                 }
@@ -3157,7 +3594,7 @@ async function renameUserMaterialProject() {
                 return;
             }
             if (!draftPath || !currentDraftPath || currentDraftPath !== draftPath) {
-                setToolResult('export_result', '请先读取当前草稿，再导出主视频片段。');
+                setToolResult('export_result', '请先读取已选草稿，再导出主视频片段。');
                 return;
             }
             if (!exportDir) {
@@ -3202,10 +3639,10 @@ async function renameUserMaterialProject() {
                 return;
             }
             if (!draftPath || !currentDraftPath || currentDraftPath !== draftPath) {
-                setToolResult('split_draft_result', '请先读取当前草稿。');
+                setToolResult('split_draft_result', '请先读取已选草稿。');
                 return;
             }
-            setToolResult('split_draft_result', '正在查看当前草稿的内容结构...');
+            setToolResult('split_draft_result', '正在查看已选草稿的内容结构...');
             try {
                 const res = await authFetch('/api/draft/timeline-summary', {
                     method: 'POST',
@@ -3245,7 +3682,7 @@ async function renameUserMaterialProject() {
                 setToolResult('split_multi_result', '请先加入要查看的草稿。');
                 return;
             }
-            setToolResult('split_multi_result', '正在查看多份草稿的内容结构...');
+            setToolResult('split_multi_result', '正在批量查看草稿结构...');
             try {
                 const res = await authFetch('/api/drafts/timeline-summary', {
                     method: 'POST',
@@ -3256,12 +3693,12 @@ async function renameUserMaterialProject() {
                 if (!res.ok || !data.ok) {
                     throw new Error(data.error || '读取失败');
                 }
-                const lines = [];
+                const lines = [`共 ${data.items?.length || 0} 个草稿：`];
                 (data.items || []).forEach((item) => {
                     if (item.ok) {
-                        lines.push(`${item.draft_name}：视频轨道 ${item.video_track_count || 0} 条 / 字幕轨道 ${item.text_track_count || 0} 条 / 主视频片段 ${item.main_track_segments || 0} 段`);
+                        lines.push(`${item.draft_name} | 视频 ${item.video_track_count || 0} | 字幕 ${item.text_track_count || 0} | 主片段 ${item.main_track_segments || 0}`);
                     } else {
-                        lines.push(`${item.draft_name}：读取失败 -> ${item.error || '未知错误'}`);
+                        lines.push(`${item.draft_name} | 读取失败：${item.error || '未知错误'}`);
                     }
                 });
                 setToolResult('split_multi_result', lines.join('\n'));
@@ -3279,7 +3716,7 @@ async function renameUserMaterialProject() {
                 return;
             }
             if (!draftPath || !currentDraftPath || currentDraftPath !== draftPath) {
-                setToolResult('split_draft_result', '请先读取当前草稿。');
+                setToolResult('split_draft_result', '请先读取已选草稿。');
                 return;
             }
             if (!(segmentSeconds > 0)) {
@@ -3351,6 +3788,11 @@ async function renameUserMaterialProject() {
                 if (versionField) versionField.style.display = 'none';
                 const pathField = getDraftElement('path', shell)?.closest('.form-group');
                 if (pathField) pathField.classList.add('full');
+                const summary = getDraftElement('summary', shell);
+                if (summary && !summary.dataset.refined) {
+                    summary.dataset.refined = 'true';
+                    summary.textContent = '点击“选择草稿”查看最近草稿，并自动带回当前模块。';
+                }
                 const readBtn = selectedBar?.querySelector('button[onclick="loadDraftInfo()"]');
                 if (readBtn) readBtn.remove();
                 if (selectedBar && !selectedBar.querySelector('.draft-picker-trigger')) {
@@ -3367,6 +3809,7 @@ async function renameUserMaterialProject() {
                 });
             });
             getDraftRefreshButtons().forEach((button) => {
+                button.textContent = '选择草稿';
                 button.addEventListener('click', () => openDraftPicker(button.closest('[data-draft-shell="true"]')));
             });
             document.getElementById('draftPickerRefreshBtn')?.addEventListener('click', () => discoverDrafts(activeDraftShell, true));
@@ -3388,6 +3831,10 @@ async function renameUserMaterialProject() {
             renderRecentMaterialFolders();
             renderExportDraftQueue();
             renderSplitDraftQueue();
+            document.getElementById('replace_materials')?.addEventListener('change', syncMixReplaceControls);
+            document.getElementById('replace_texts')?.addEventListener('change', syncMixReplaceControls);
+            document.getElementById('replace_audios')?.addEventListener('change', syncMixReplaceControls);
+            document.getElementById('partition_text_mode')?.addEventListener('change', syncPartitionTextStrategy);
             updateMixModeUI();
         }
 
@@ -3403,7 +3850,8 @@ async function renameUserMaterialProject() {
                 items: {
                     group: {kind: 'mix', focusId: 'mix-mode-group-anchor', mixTarget: 'group'},
                     mix: {kind: 'mix', focusId: 'mix-mode-mix-anchor', mixTarget: 'mix'},
-                    partition: {kind: 'mix', focusId: 'mix-mode-partition-anchor', mixTarget: 'partition'}
+                    partition: {kind: 'mix', focusId: 'mix-mode-partition-anchor', mixTarget: 'partition'},
+                    sequence: {kind: 'mix', focusId: 'mix-mode-sequence-anchor', mixTarget: 'sequence'}
                 }
             },
             ai: {
@@ -3461,12 +3909,30 @@ async function renameUserMaterialProject() {
                     'settings-ai-section': {kind: 'section', sectionId: 'settings-ai-section'}
                 }
             },
+            assistant: {
+                panelId: 'panel-assistant',
+                defaultItem: 'assistant-main',
+                items: {
+                    'assistant-main': {kind: 'panel', panelId: 'panel-assistant'}
+                }
+            },
             account: {
                 panelId: 'panel-account',
                 defaultItem: 'account-profile-section',
                 items: {
                     'account-profile-section': {kind: 'section', sectionId: 'account-profile-section'},
-                    'account-license-section': {kind: 'section', sectionId: 'account-license-section'}
+                    'account-vip-section': {kind: 'section', sectionId: 'account-vip-section'},
+                    'account-invite-section': {kind: 'section', sectionId: 'account-invite-section'},
+                    'account-license-section': {kind: 'section', sectionId: 'account-license-section'},
+                    'account-tutorial-section': {kind: 'section', sectionId: 'account-tutorial-section'}
+                }
+            },
+            resource: {
+                panelId: 'panel-resource-exchange',
+                defaultItem: 'resource-square-section',
+                items: {
+                    'resource-square-section': {kind: 'section', sectionId: 'resource-square-section'},
+                    'resource-publish-section': {kind: 'section', sectionId: 'resource-publish-section'}
                 }
             }
         };
@@ -3760,6 +4226,7 @@ async function renameUserMaterialProject() {
                 });
             });
             activateHardSection('panel-account', 'account-profile-section');
+            activateHardSection('panel-resource-exchange', 'resource-square-section');
             activateHardSection('panel-settings', 'settings-basic-section');
             applyWorkspaceNavigation('mix', 'group', {openActiveGroup: true, scroll: false});
         }
@@ -3791,6 +4258,152 @@ async function renameUserMaterialProject() {
             }
         }
 
+        function initAssistantWorkspace() {
+            document.getElementById('assistantPreviewBtn')?.addEventListener('click', previewAssistantCommand);
+            document.getElementById('assistantExecuteBtn')?.addEventListener('click', executeAssistantCommand);
+            document.getElementById('assistantRefreshLogsBtn')?.addEventListener('click', loadAssistantLogs);
+            loadAssistantLogs();
+        }
+
+        function buildTutorialSearchQuery() {
+            return (document.getElementById('accountTutorialSearch')?.value || '').trim().toLowerCase();
+        }
+
+        function renderAccountTutorial() {
+            const box = document.getElementById('accountTutorialList');
+            if (!box) return;
+            const query = buildTutorialSearchQuery();
+            const items = ACCOUNT_TUTORIAL_ENTRIES.filter((item) => {
+                if (!query) return true;
+                return `${item.title} ${item.keywords} ${item.body}`.toLowerCase().includes(query);
+            });
+            box.innerHTML = items.length
+                ? items.map((item) => `<article class="tutorial-card"><h4>${escapeHtml(item.title)}</h4><p>${escapeHtml(item.body)}</p><div class="tutorial-keywords">${escapeHtml(item.keywords)}</div></article>`).join('')
+                : '<div class="tool-result">没有找到匹配的教程关键词。</div>';
+        }
+
+        function initAccountTutorial() {
+            const input = document.getElementById('accountTutorialSearch');
+            if (input && !input.dataset.boundTutorial) {
+                input.addEventListener('input', renderAccountTutorial);
+                input.dataset.boundTutorial = '1';
+            }
+            renderAccountTutorial();
+        }
+
+        function formatResourceExchangeStatus(status) {
+            const mapping = {
+                approved: '已通过',
+                rejected: '已拒绝',
+                pending: '待审核'
+            };
+            return mapping[status] || status || '待审核';
+        }
+
+        function renderResourceExchangeList(items = []) {
+            const box = document.getElementById('resourceExchangeList');
+            const pager = document.getElementById('resourceExchangePagerInfo');
+            const prevBtn = document.getElementById('resourceExchangePrevBtn');
+            const nextBtn = document.getElementById('resourceExchangeNextBtn');
+            if (!box) return;
+            box.innerHTML = items.length
+                ? items.map((item) => `<article class="resource-post-card"><div class="resource-post-head"><span class="resource-level-badge">${escapeHtml(item.membership_label || '试用用户')}</span><span class="resource-post-time">${escapeHtml(item.published_at ? new Date(item.published_at).toLocaleString() : '-')}</span></div><h4>${escapeHtml(item.project_name || '-')}</h4><p>${escapeHtml(item.project_intro || '-')}</p><div class="resource-post-meta"><span>联系方式：${escapeHtml(item.contact || '-')}</span><span>发布者：${escapeHtml(item.username || '-')}</span></div></article>`).join('')
+                : '<div class="tool-result">当前还没有通过审核的资源互换内容。</div>';
+            if (pager) pager.textContent = `第 ${resourceExchangeState.page} / ${resourceExchangeState.pages} 页，共 ${resourceExchangeState.total} 条`;
+            if (prevBtn) prevBtn.disabled = resourceExchangeState.page <= 1;
+            if (nextBtn) nextBtn.disabled = resourceExchangeState.page >= resourceExchangeState.pages;
+        }
+
+        function renderResourceMyPosts(items = []) {
+            const box = document.getElementById('resourceMyPostsList');
+            if (!box) return;
+            box.innerHTML = items.length
+                ? items.map((item) => `<article class="resource-post-card is-owned"><div class="resource-post-head"><span class="resource-level-badge">${escapeHtml(item.membership_label || '试用用户')}</span><span class="resource-post-status ${escapeHtml(item.status || 'pending')}">${escapeHtml(formatResourceExchangeStatus(item.status))}</span></div><h4>${escapeHtml(item.project_name || '-')}</h4><p>${escapeHtml(item.project_intro || '-')}</p><div class="resource-post-meta"><span>联系方式：${escapeHtml(item.contact || '-')}</span><span>发布时间：${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : '-')}</span></div><div class="resource-review-note">${item.status === 'rejected' ? `拒绝原因：${escapeHtml(item.review_reason || '管理员未填写')}` : (item.status === 'approved' ? '审核已通过，内容已在资源大厅展示。' : '等待管理员审核通过后展示。')}</div></article>`).join('')
+                : '<div class="tool-result">你今天还没有发布资源互换内容。</div>';
+        }
+
+        async function loadResourceExchangeList(page = resourceExchangeState.page || 1) {
+            const safePage = Math.max(1, Number(page) || 1);
+            const res = await fetch(`/api/resource-exchange/list?page=${safePage}`);
+            const data = await res.json();
+            if (!res.ok || data.ok === false) {
+                const box = document.getElementById('resourceExchangeList');
+                if (box) box.innerHTML = `<div class="tool-result">${escapeHtml(data.error || '资源互换列表加载失败')}</div>`;
+                return;
+            }
+            const pagination = data.pagination || {};
+            resourceExchangeState.page = pagination.page || safePage;
+            resourceExchangeState.pages = pagination.pages || 1;
+            resourceExchangeState.total = pagination.total || 0;
+            resourceExchangeState.items = Array.isArray(data.items) ? data.items : [];
+            renderResourceExchangeList(resourceExchangeState.items);
+        }
+
+        async function loadResourceExchangeMyPosts() {
+            const box = document.getElementById('resourceMyPostsList');
+            if (!getToken()) {
+                if (box) box.innerHTML = '<div class="tool-result">登录后查看自己的发布记录。</div>';
+                return;
+            }
+            const res = await authFetch('/api/resource-exchange/my-posts');
+            const data = await res.json();
+            if (!res.ok || data.ok === false) {
+                if (box) box.innerHTML = `<div class="tool-result">${escapeHtml(data.error || '发布记录加载失败')}</div>`;
+                return;
+            }
+            resourceExchangeState.myPosts = Array.isArray(data.items) ? data.items : [];
+            renderResourceMyPosts(resourceExchangeState.myPosts);
+        }
+
+        async function publishResourceExchange() {
+            const statusEl = document.getElementById('resourcePublishStatus');
+            if (!getToken()) {
+                if (statusEl) statusEl.textContent = '请先登录后再发布。';
+                return;
+            }
+            const payload = {
+                project_name: document.getElementById('resourceProjectName')?.value?.trim() || '',
+                project_intro: document.getElementById('resourceProjectIntro')?.value?.trim() || '',
+                contact: document.getElementById('resourceContact')?.value?.trim() || ''
+            };
+            if (statusEl) statusEl.textContent = '正在提交...';
+            const res = await authFetch('/api/resource-exchange/publish', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!res.ok || data.ok === false) {
+                if (statusEl) statusEl.textContent = data.error || '发布失败';
+                return;
+            }
+            if (statusEl) statusEl.textContent = '发布成功，等待管理员审核。';
+            if (document.getElementById('resourceProjectName')) document.getElementById('resourceProjectName').value = '';
+            if (document.getElementById('resourceProjectIntro')) document.getElementById('resourceProjectIntro').value = '';
+            if (document.getElementById('resourceContact')) document.getElementById('resourceContact').value = '';
+            notify('资源互换已提交审核', 'success');
+            await Promise.all([loadResourceExchangeMyPosts(), loadResourceExchangeList(1)]);
+        }
+
+        function fillResourceMembership() {
+            const input = document.getElementById('resourcePublishMembership');
+            if (!input) return;
+            input.value = currentUserInfo?.membership_label || (currentUserInfo?.is_vip ? 'VIP会员' : '试用用户');
+        }
+
+        function initResourceExchangeWorkspace() {
+            document.getElementById('resourceExchangeRefreshBtn')?.addEventListener('click', () => loadResourceExchangeList(1));
+            document.getElementById('resourceExchangePrevBtn')?.addEventListener('click', () => loadResourceExchangeList(resourceExchangeState.page - 1));
+            document.getElementById('resourceExchangeNextBtn')?.addEventListener('click', () => loadResourceExchangeList(resourceExchangeState.page + 1));
+            document.getElementById('resourcePublishBtn')?.addEventListener('click', publishResourceExchange);
+            document.getElementById('resourceMyPostsRefreshBtn')?.addEventListener('click', loadResourceExchangeMyPosts);
+            fillResourceMembership();
+            loadResourceExchangeList(1);
+            if (getToken()) {
+                loadResourceExchangeMyPosts();
+            }
+        }
+
         async function initWorkspacePage() {
             await loadSiteSettings();
             initTheme();
@@ -3800,6 +4413,9 @@ async function renameUserMaterialProject() {
             initWorkspaceSidebar();
             initDraftWorkspace();
             initEffectWorkspace();
+            initAssistantWorkspace();
+            initResourceExchangeWorkspace();
+            initAccountTutorial();
             initSplitWorkspace();
             initSecondaryTabs('panel-split', [
                 {id: 'split-file', label: '文件分割', indexes: [0]},
@@ -3932,6 +4548,176 @@ function setInlineMessage(element, message, level = 'info') {
 
 async function confirmAction(message) {
     return window.confirm(message || '确认执行此操作吗？');
+}
+
+function renderAssistantPreview(data = null) {
+    const box = document.getElementById('assistantPreviewBox');
+    if (!box) return;
+    if (!data) {
+        box.textContent = '助手会先回显将调用的功能、参数和影响范围。';
+        return;
+    }
+    if (!data.ok) {
+        box.textContent = data.error || '命令预览失败。';
+        return;
+    }
+    const action = data.client_action || {};
+    const lines = [
+        `动作：${data.summary || '-'}`,
+        `影响：${data.impact || '未说明'}`,
+        `确认：${data.requires_confirmation ? '需要' : '不需要'}`,
+        `类型：${action.type || '-'}`
+    ];
+    if (Array.isArray(data.missing) && data.missing.length) {
+        lines.push(`缺少参数：${data.missing.join(', ')}`);
+    }
+    if (action.mix_target) lines.push(`目标模式：${action.mix_target}`);
+    if (action.panel_id) lines.push(`目标面板：${action.panel_id}`);
+    box.textContent = lines.join('\n');
+}
+
+function renderAssistantLogs(items = []) {
+    const box = document.getElementById('assistantLogList');
+    if (!box) return;
+    if (!items.length) {
+        box.textContent = '登录后可查看助手预览和执行记录。';
+        return;
+    }
+    box.textContent = items.map((item) => {
+        const payload = item.payload || {};
+        const summary = payload.command || payload.summary || payload.response?.summary || '-';
+        const timeText = item.created_at ? new Date(item.created_at).toLocaleString() : '-';
+        return `[${item.stage || '-'}] ${timeText}\n${summary}`;
+    }).join('\n\n');
+}
+
+async function loadAssistantLogs() {
+    if (!getToken()) {
+        renderAssistantLogs([]);
+        return;
+    }
+    try {
+        const res = await authFetch('/api/assistant/logs?limit=12');
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || '日志读取失败');
+        renderAssistantLogs(data.items || []);
+    } catch (e) {
+        renderAssistantLogs([{stage: 'error', created_at: new Date().toISOString(), payload: {command: e.message || String(e)}}]);
+    }
+}
+
+function applyAssistantClientAction(action = {}) {
+    if (!action || typeof action !== 'object') return;
+    if (action.type === 'navigate') {
+        if (action.mix_target) {
+            applyWorkspaceNavigation('mix', action.mix_target, {openActiveGroup: true});
+            return;
+        }
+        if (action.subtab_target && action.panel_id === 'panel-export') {
+            applyWorkspaceNavigation('export', action.subtab_target, {openActiveGroup: true});
+            return;
+        }
+        if (action.subtab_target && action.panel_id === 'panel-split') {
+            applyWorkspaceNavigation('split', action.subtab_target, {openActiveGroup: true});
+            return;
+        }
+        if (action.section_id && action.section_id.startsWith('settings-')) {
+            openWorkspaceSettingsSection(action.section_id);
+            return;
+        }
+        if (action.section_id && action.section_id.startsWith('account-')) {
+            showWorkspacePanel('panel-account');
+            activateHardSection('panel-account', action.section_id);
+            return;
+        }
+        if (action.panel_id) {
+            showWorkspacePanel(action.panel_id, action.anchor || '');
+        }
+        return;
+    }
+    if (action.type === 'material_layout_created') {
+        const layout = action.layout || {};
+        if (layout.root && document.getElementById('folder_path')) {
+            document.getElementById('folder_path').value = layout.root;
+            updatePrimaryActionState();
+        }
+        const status = document.getElementById('materialLayoutStatus');
+        if (status && layout.root) {
+            status.textContent = `已创建：${layout.root}`;
+        }
+        return;
+    }
+    if (action.type === 'fill_text_template') {
+        const lines = Array.isArray(action.lines) ? action.lines : [];
+        const box = document.getElementById('text_batch_input');
+        if (box) box.value = lines.join('\n');
+        fillTextInputsFromLines(lines);
+    }
+}
+
+async function previewAssistantCommand() {
+    const input = document.getElementById('assistantCommandInput');
+    const command = input?.value?.trim() || '';
+    if (!command) {
+        renderAssistantPreview({ok: false, error: '请输入要执行的命令。'});
+        return;
+    }
+    try {
+        const res = await authFetch('/api/assistant/command/preview', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({command, context: buildAssistantContext()})
+        });
+        const data = await res.json();
+        assistantPreviewState = data;
+        renderAssistantPreview(data);
+        await loadAssistantLogs();
+    } catch (e) {
+        assistantPreviewState = null;
+        renderAssistantPreview({ok: false, error: e.message || String(e)});
+    }
+}
+
+async function executeAssistantCommand() {
+    const command = document.getElementById('assistantCommandInput')?.value?.trim() || '';
+    if (!command) {
+        renderAssistantPreview({ok: false, error: '请输入要执行的命令。'});
+        return;
+    }
+    const preview = assistantPreviewState && assistantPreviewState.ok ? assistantPreviewState : null;
+    if (!preview) {
+        await previewAssistantCommand();
+        if (!assistantPreviewState?.ok) return;
+    }
+    const requiresConfirmation = !!assistantPreviewState?.requires_confirmation;
+    if (requiresConfirmation) {
+        const ok = await confirmAction(`${assistantPreviewState.summary || '确认执行'}\n${assistantPreviewState.impact || ''}`);
+        if (!ok) return;
+    }
+    try {
+        const res = await authFetch('/api/assistant/command/execute', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                command,
+                context: buildAssistantContext(),
+                confirmed: true
+            })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || '执行失败');
+        renderAssistantPreview({
+            ok: true,
+            summary: data.summary,
+            impact: data.impact,
+            requires_confirmation: false,
+            client_action: data.client_action || {}
+        });
+        applyAssistantClientAction(data.client_action || {});
+        await loadAssistantLogs();
+    } catch (e) {
+        renderAssistantPreview({ok: false, error: e.message || String(e)});
+    }
 }
 
 function mapAiKeyOptions(selectId, providerCode) {
@@ -4228,7 +5014,7 @@ async function startAiVideo() {
         }
     };
     if (!payload.key_id || !payload.prompt) {
-        document.getElementById('ai_jimeng_status').textContent = '请先选择账号并填写提示词';
+        document.getElementById('ai_jimeng_status').textContent = '请先到“软件设置 → AI账号管理”准备默认可用账号，再填写提示词。';
         return;
     }
     document.getElementById('ai_jimeng_status').textContent = '正在提交，请稍候...';
@@ -4248,7 +5034,7 @@ async function startAiAudio() {
         voice_type: document.getElementById('ai_volc_voice')?.value || ''
     };
     if (!payload.key_id || !payload.text || !payload.voice_type) {
-        document.getElementById('ai_volc_status').textContent = '请先把参数填写完整';
+        document.getElementById('ai_volc_status').textContent = '请先到“软件设置 → AI账号管理”准备默认可用账号，再把参数填写完整。';
         return;
     }
     document.getElementById('ai_volc_status').textContent = '正在提交，请稍候...';
@@ -4267,7 +5053,7 @@ async function startAiText() {
         prompt: `${document.getElementById('ai_text_prompt')?.value?.trim() || ''}\n\n字数:${document.getElementById('ai_text_length')?.value || '50'}`
     };
     if (!payload.key_id || !payload.prompt.trim()) {
-        document.getElementById('ai_text_status').textContent = '请先把参数填写完整';
+        document.getElementById('ai_text_status').textContent = '请先到“软件设置 → AI账号管理”准备默认可用账号，再填写文案需求。';
         return;
     }
     document.getElementById('ai_text_status').textContent = '正在提交，请稍候...';
@@ -4283,7 +5069,7 @@ async function startAiText() {
 function fillTextPanelFromAi() {
     const text = document.getElementById('ai_text_result')?.value?.trim();
     if (!text) return;
-    const firstInput = document.querySelector('#texts_area input[type="text"]');
+    const firstInput = document.querySelector('#texts_area textarea[id^="text_"], #texts_area input[type="text"]');
     if (firstInput) firstInput.value = text;
 }
 
@@ -4428,10 +5214,6 @@ async function testOpenclawConfig() {
     if (statusEl) statusEl.textContent = data.ok ? 'AI 漫剧服务连接成功' : (data.error || '连接失败');
 }
 
-function collectShotTypes() {
-    return Array.from(document.querySelectorAll('#manga_shot_types input[type="checkbox"]')).filter((item) => item.checked).map((item) => item.value);
-}
-
 function setMangaStatus(message) {
     const el = document.getElementById('manga_status');
     if (el) el.textContent = message || '';
@@ -4478,41 +5260,25 @@ async function startMangaGenerate() {
         setMangaStatus('请先填写分镜脚本');
         return;
     }
-    try {
-        const settings = await loadWorkspaceSettingsConfig();
-        const service = (settings.services || {}).openclaw || {};
-        if (!service.base_url) {
-            setMangaStatus('请先到“软件设置 -> AI 漫剧服务”填写服务地址');
-            openWorkspaceSettingsSection('settings-service-section');
-            return;
-        }
-    } catch (e) {
-        setMangaStatus(`读取 AI 漫剧服务失败：${e.message || e}`);
-        return;
-    }
     setMangaUiRunning(true);
-    setMangaStatus('生成中...');
+    setMangaStatus('正在生成剪映草稿...');
     startMangaProgress();
     mangaAbortController = new AbortController();
     const payload = {
-        character_image: mangaCharacterBase64 || '',
+        project_name: document.getElementById('manga_project_name')?.value?.trim() || '',
         script,
-        style: document.getElementById('manga_style')?.value || '',
-        shot_types: collectShotTypes(),
-        frame_count: parseInt(document.getElementById('manga_frame_count')?.value || '5', 10),
-        image_resolution: document.getElementById('manga_image_resolution')?.value || '768x768',
-        video_bitrate: parseInt(document.getElementById('manga_video_bitrate')?.value || '2000', 10)
+        scene_duration: parseFloat(document.getElementById('manga_scene_duration')?.value || '3'),
+        aspect: document.getElementById('manga_aspect')?.value || 'portrait'
     };
     try {
-        const res = await authFetch('/api/ai/manga/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: mangaAbortController.signal });
+        const res = await authFetch('/api/ai/manga/generate-draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: mangaAbortController.signal });
         const data = await res.json();
         if (!res.ok || data.ok === false) throw new Error(data.error || '生成失败');
-        renderMangaResult(data.frames || [], data.video || null);
+        renderMangaDraftResult(data);
         setMangaStatus(data.message || '生成完成');
-        await refreshAiMaterials();
         await loadMangaHistory();
     } catch (e) {
-        setMangaStatus(e.message || '生成失败');
+        setMangaStatus(e.name === 'AbortError' ? '已取消' : (e.message || '生成失败'));
     } finally {
         setMangaUiRunning(false);
         stopMangaProgress();
@@ -4526,22 +5292,44 @@ function cancelMangaGenerate() {
     setMangaStatus('已取消');
 }
 
-function renderMangaResult(frames, video) {
-    const frameBox = document.getElementById('manga_result_frames');
-    const videoBox = document.getElementById('manga_result_video');
-    const token = getToken();
-    const withToken = (url) => url ? `${url}?token=${encodeURIComponent(token)}` : '';
-    if (videoBox) videoBox.innerHTML = video ? `<video class="manga-video" src="${withToken(video.preview_url)}" controls></video>` : '<div class="hint">暂无视频</div>';
-    if (frameBox) frameBox.innerHTML = Array.isArray(frames) && frames.length ? frames.map((item) => `<div class="manga-thumb"><img src="${withToken(item.preview_url)}" alt="frame"></div>`).join('') : '<div class="hint">暂无帧图</div>';
+function renderMangaDraftResult(result = {}) {
+    const box = document.getElementById('mangaDraftResult');
+    if (!box) return;
+    if (!result || (!result.draft_path && !result.workspace && !result.scenes)) {
+        box.innerHTML = '生成成功后，这里会显示草稿路径、场景目录和分镜摘要。';
+        return;
+    }
+    const workspace = result.workspace || {};
+    const scenes = Array.isArray(result.scenes) ? result.scenes : [];
+    box.innerHTML = [
+        `<div><strong>草稿名称：</strong>${escapeHtml(result.draft_name || '-')}</div>`,
+        `<div><strong>草稿路径：</strong>${escapeHtml(result.draft_path || '-')}</div>`,
+        `<div><strong>场景目录：</strong>${escapeHtml(workspace.materials_root || '-')}</div>`,
+        `<div><strong>分镜说明：</strong>${escapeHtml(workspace.script_path || '-')}</div>`,
+        `<div><strong>场景数量：</strong>${escapeHtml(String(result.scene_count || scenes.length || 0))} / <strong>总时长：</strong>${escapeHtml(String(result.total_duration || 0))} 秒</div>`,
+        scenes.length ? `<div class="manga-scene-preview">${scenes.slice(0, 6).map((item) => `<span>${escapeHtml(`${item.index}. ${item.text}`)}</span>`).join('')}</div>` : ''
+    ].join('');
+}
+
+function fillMangaFormFromParams(params = {}, autoRun = false) {
+    if (document.getElementById('manga_project_name')) document.getElementById('manga_project_name').value = params.project_name || '';
+    if (document.getElementById('manga_script')) document.getElementById('manga_script').value = params.script || '';
+    if (document.getElementById('manga_scene_duration') && params.scene_duration) document.getElementById('manga_scene_duration').value = params.scene_duration;
+    if (document.getElementById('manga_aspect') && params.aspect) document.getElementById('manga_aspect').value = params.aspect;
+    if (autoRun) startMangaGenerate();
 }
 
 async function loadMangaTemplates() {
     const box = document.getElementById('manga_template_list');
-    if (!box || !getToken()) return;
+    if (!box) return;
+    if (!getToken()) {
+        box.innerHTML = '登录后可保存自己的脚本模板。';
+        return;
+    }
     const res = await authFetch('/api/manga/templates');
     const data = await res.json();
     mangaTemplatesCache = Array.isArray(data.items) ? data.items : [];
-    box.innerHTML = mangaTemplatesCache.length ? mangaTemplatesCache.map((item) => `<div class="key-item"><div class="key-row"><strong>${item.name}</strong><span class="key-badge">${item.usage_count || 0}</span></div><div class="key-actions"><button class="effect-add" type="button" onclick="applyMangaTemplate(${item.id}, false)">填充</button><button class="effect-add" type="button" onclick="applyMangaTemplate(${item.id}, true)">直接生成</button></div></div>`).join('') : '暂无模板';
+    box.innerHTML = mangaTemplatesCache.length ? mangaTemplatesCache.map((item) => `<div class="key-item"><div class="key-row"><strong>${escapeHtml(item.name)}</strong><span class="key-badge">${item.usage_count || 0}</span></div><div class="key-actions"><button class="effect-add" type="button" onclick="applyMangaTemplate(${item.id}, false)">填充</button><button class="effect-add" type="button" onclick="applyMangaTemplate(${item.id}, true)">直接生成</button></div></div>`).join('') : '暂无模板';
 }
 
 async function saveMangaTemplate() {
@@ -4553,12 +5341,10 @@ async function saveMangaTemplate() {
     const payload = {
         name,
         params: {
+            project_name: document.getElementById('manga_project_name')?.value?.trim() || '',
             script: document.getElementById('manga_script')?.value?.trim() || '',
-            style: document.getElementById('manga_style')?.value || '',
-            shot_types: collectShotTypes(),
-            frame_count: parseInt(document.getElementById('manga_frame_count')?.value || '5', 10),
-            image_resolution: document.getElementById('manga_image_resolution')?.value || '768x768',
-            video_bitrate: parseInt(document.getElementById('manga_video_bitrate')?.value || '2000', 10)
+            scene_duration: parseFloat(document.getElementById('manga_scene_duration')?.value || '3'),
+            aspect: document.getElementById('manga_aspect')?.value || 'portrait'
         }
     };
     const res = await authFetch('/api/manga/templates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -4576,22 +5362,27 @@ async function applyMangaTemplate(templateId, autoRun) {
     const res = await authFetch(`/api/manga/templates/${templateId}/use`, { method: 'POST' });
     const data = await res.json();
     if (!res.ok || data.ok === false) return;
-    const params = data.params || {};
-    if (document.getElementById('manga_script')) document.getElementById('manga_script').value = params.script || '';
-    if (document.getElementById('manga_style') && params.style) document.getElementById('manga_style').value = params.style;
-    if (document.getElementById('manga_frame_count') && params.frame_count) document.getElementById('manga_frame_count').value = params.frame_count;
-    if (document.getElementById('manga_image_resolution') && params.image_resolution) document.getElementById('manga_image_resolution').value = params.image_resolution;
-    if (document.getElementById('manga_video_bitrate') && params.video_bitrate) document.getElementById('manga_video_bitrate').value = params.video_bitrate;
-    if (autoRun) startMangaGenerate();
+    fillMangaFormFromParams(data.params || {}, autoRun);
 }
 
 async function loadMangaHistory() {
     const box = document.getElementById('manga_history_list');
-    if (!box || !getToken()) return;
+    if (!box) return;
+    if (!getToken()) {
+        box.innerHTML = '登录后查看最近生成的漫剧草稿。';
+        return;
+    }
     const res = await authFetch('/api/manga/history');
     const data = await res.json();
     mangaHistoryCache = Array.isArray(data.items) ? data.items : [];
-    box.innerHTML = mangaHistoryCache.length ? mangaHistoryCache.map((item) => `<div class="key-item"><div class="key-row"><strong>${item.project_name || item.project_id || '历史记录'}</strong><span class="key-badge">${item.created_at || '-'}</span></div><div class="key-actions"><button class="effect-add" type="button" onclick="regenerateFromHistory(${item.id})">重新生成</button><button class="effect-add" type="button" onclick="redownloadFromHistory(${item.id})">重新下载</button></div></div>`).join('') : '暂无历史';
+    box.innerHTML = mangaHistoryCache.length ? mangaHistoryCache.map((item) => `<div class="key-item"><div class="key-row"><strong>${escapeHtml(item.project_name || item.project_id || '历史记录')}</strong><span class="key-badge">${escapeHtml(item.mode === 'draft_builder' ? `草稿 ${item.scene_count || 0} 场` : '素材')}</span></div><div class="muted">${escapeHtml(item.draft_name || item.created_at || '-')}</div><div class="key-actions"><button class="effect-add" type="button" onclick="fillMangaHistory(${item.id})">带入脚本</button><button class="effect-add" type="button" onclick="regenerateFromHistory(${item.id})">重新生成</button></div></div>`).join('') : '暂无历史';
+}
+
+function fillMangaHistory(id) {
+    const item = mangaHistoryCache.find((entry) => Number(entry.id) === Number(id));
+    if (!item) return;
+    fillMangaFormFromParams(item.params || {}, false);
+    setMangaStatus('已带入历史脚本，可继续修改后重新生成。');
 }
 
 async function regenerateFromHistory(id) {
@@ -4601,8 +5392,9 @@ async function regenerateFromHistory(id) {
         setMangaStatus(data.error || '重新生成失败');
         return;
     }
-    renderMangaResult(data.frames || [], data.video || null);
+    renderMangaDraftResult(data);
     setMangaStatus(data.message || '已重新生成');
+    await loadMangaHistory();
 }
 
 async function redownloadFromHistory(id) {
@@ -4612,8 +5404,8 @@ async function redownloadFromHistory(id) {
         setMangaStatus(data.error || '重新下载失败');
         return;
     }
-    renderMangaResult(data.frames || [], data.video || null);
-    setMangaStatus(data.message || '已重新下载');
+    renderMangaDraftResult(data);
+    setMangaStatus(data.message || '已重新生成');
 }
 
 async function openOpenclawLogModal() {
@@ -4640,34 +5432,12 @@ async function copyOpenclawLogPath() {
     await navigator.clipboard.writeText(text);
 }
 
-function buildMangaShotTypes() {
-    const box = document.getElementById('manga_shot_types');
-    if (!box || box.children.length) return;
-    const shots = ['特写', '近景', '中景', '远景', '推镜', '摇镜'];
-    box.innerHTML = shots.map((item, index) => `<label><input type="checkbox" value="${item}" ${index < 2 ? 'checked' : ''}> ${item}</label>`).join(' ');
-}
-
 function initAiWorkspace() {
     refreshAiMaterials();
     document.getElementById('ai_provider_select')?.addEventListener('change', updateAiProviderGuideHint);
     if (runtimeFeatures.manga) {
         loadMangaTemplates();
         loadMangaHistory();
-        buildMangaShotTypes();
-    }
-    const mangaFile = document.getElementById('manga_character_file');
-    if (mangaFile && !mangaFile.dataset.bound) {
-        mangaFile.dataset.bound = 'true';
-        mangaFile.addEventListener('change', async (event) => {
-            const file = event.target.files && event.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = () => {
-                mangaCharacterBase64 = reader.result || '';
-                const img = document.getElementById('manga_character_preview');
-                if (img) img.src = mangaCharacterBase64;
-            };
-            reader.readAsDataURL(file);
-        });
+        renderMangaDraftResult({});
     }
 }

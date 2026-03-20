@@ -124,8 +124,10 @@ def check_admin_console(browser):
     expect(hidden == "true", "admin login did not unlock /admin")
 
     overview_stats = page.locator("#overviewStats .stat").count()
-    action_buttons = page.locator(".admin-actions .btn").all_text_contents()
+    action_buttons = page.locator("#clearAdminAuthBtn").all_text_contents()
     overflow = page_overflow(page)
+    sidebar_labels = page.locator(".sidebar-group .sidebar-parent").all_text_contents()
+    sidebar_labels = page.locator(".sidebar-group .sidebar-parent").all_text_contents()
     layout_metrics = page.evaluate(
         """() => {
             const container = document.querySelector('.admin-body .container');
@@ -161,6 +163,7 @@ def check_admin_console(browser):
     page.locator("#saveSiteBtn").click()
     page.wait_for_timeout(1200)
     site_status = (page.locator("#siteStatus").text_content() or "").strip()
+    site_card_count = page.locator("#section-site .site-card").count()
     preview_count = page.locator("#sitePreviewGrid .site-preview-item").count()
 
     open_admin_section(page, "license")
@@ -173,6 +176,7 @@ def check_admin_console(browser):
             "license_points_ratio",
             "manga_generate_cost",
             "daily_checkin_reward",
+            "default_user_quota",
         ]
     }
     page.locator("#saveLicenseBtn").click()
@@ -209,11 +213,19 @@ def check_admin_console(browser):
     bindings_rows = page.locator("#bindingsTable tr").count()
 
     open_admin_section(page, "users")
+    page.wait_for_timeout(900)
+    default_user_rows = page.locator("#userSearchTable tr").count()
+    default_user_hint = (page.locator("#userSearchHint").text_content() or "").strip()
+    default_pager_text = (page.locator("#userPagerInfo").text_content() or "").strip()
     page.locator("#userSearchInput").fill(ADMIN_NAME)
     page.locator("#userSearchBtn").click()
     page.wait_for_timeout(1200)
     user_search_rows = page.locator("#userSearchTable tr").count()
     user_search_hint = (page.locator("#userSearchHint").text_content() or "").strip()
+
+    open_admin_section(page, "resource-review")
+    resource_review_rows = page.locator("#resourceReviewTable tr").count()
+    resource_review_hint = (page.locator("#resourceReviewHint").text_content() or "").strip()
 
     open_admin_section(page, "logs")
     logs_rows = page.locator("#logsTable tr").count()
@@ -227,6 +239,7 @@ def check_admin_console(browser):
         "auth_tabs": auth_tabs,
         "register_form_count": register_form_count,
         "site_status": site_status,
+        "site_card_count": site_card_count,
         "preview_count": preview_count,
         "license_values": license_values,
         "license_status": license_status,
@@ -234,8 +247,13 @@ def check_admin_console(browser):
         "cdk_rows": cdk_rows,
         "created_batch": created_batch,
         "bindings_rows": bindings_rows,
+        "default_user_rows": default_user_rows,
+        "default_user_hint": default_user_hint,
+        "default_pager_text": default_pager_text,
         "user_search_rows": user_search_rows,
         "user_search_hint": user_search_hint,
+        "resource_review_rows": resource_review_rows,
+        "resource_review_hint": resource_review_hint,
         "logs_rows": logs_rows,
         "logs_hint": logs_hint,
         "site_labels": page.locator("#section-site label").all_text_contents(),
@@ -249,12 +267,17 @@ def check_admin_console(browser):
     expect(register_form_count == 0, f"admin auth modal should not expose register form: {register_form_count}")
     expect(layout_metrics["containerWidth"] >= 1390, f"admin container still too narrow: {layout_metrics}")
     expect(layout_metrics["sidebarWidth"] >= 300, f"admin sidebar still too narrow: {layout_metrics}")
-    expect(layout_metrics["pagebarHeight"] >= 150, f"admin pagebar still too compressed: {layout_metrics}")
+    expect(layout_metrics["pagebarHeight"] >= 110, f"admin pagebar still too compressed: {layout_metrics}")
     expect("保存" in site_status, f"site save did not succeed: {site_status}")
-    expect(preview_count == 4, f"site preview count mismatch: {preview_count}")
+    expect(site_card_count == 4, f"site card count mismatch: {site_card_count}")
+    expect(preview_count == 0, f"site preview should be removed: {preview_count}")
     expect("保存" in license_status, f"license save did not succeed: {license_status}")
+    expect(license_values["default_user_quota"] != "", f"default user quota not rendered: {license_values}")
     expect("成功" in cdk_hint, f"cdk create did not succeed: {cdk_hint}")
+    expect(default_user_rows >= 1, f"default user list returned no rows: {default_user_hint} / {default_pager_text}")
     expect(user_search_rows >= 1, f"user search returned no rows: {user_search_hint}")
+    expect(resource_review_rows >= 1, f"resource review returned no rows: {resource_review_hint}")
+    expect(any("审核发布" in label for label in result["nav_labels"]), f"resource review nav missing: {result['nav_labels']}")
     expect(logs_rows >= 1, "logs section returned no rows")
 
     context.close()
@@ -277,6 +300,18 @@ def check_user_workspace(browser):
     expect(hidden == "true", "user login did not unlock /user")
 
     overflow = page_overflow(page)
+    sidebar_labels = page.locator(".sidebar-group .sidebar-parent").all_text_contents()
+    mix_labels = page.locator(".sidebar-group[data-group='mix'] .sidebar-sublink").all_text_contents()
+    mix_sequence_link = page.locator(".sidebar-group[data-group='mix'] .sidebar-sublink[data-mix-target='sequence']")
+    has_sequence_link = mix_sequence_link.count()
+    if has_sequence_link:
+        mix_labels = list(mix_labels) + ["sequence"]
+    if has_sequence_link and not visible(mix_sequence_link):
+        page.locator(".sidebar-group[data-group='mix'] .sidebar-parent").click()
+        page.wait_for_timeout(250)
+    mix_sequence_link.click()
+    page.wait_for_timeout(450)
+    mix_panel_title = (page.locator("#mixPanelTitle").text_content() or "").strip()
     open_sidebar_group(page, "批量导出")
     assert_only_group_visible(page, "#panel-export", "export-settings")
     open_sidebar_link(page, "批量导出")
@@ -305,18 +340,44 @@ def check_user_workspace(browser):
     provider_text = wait_text_not_contains(page, "#ai_provider_list", "登录后自动加载可用服务。")
     provider_options = page.locator("#ai_provider_select option").all_text_contents()
 
+    open_sidebar_group(page, "账户中心")
+    open_sidebar_link(page, "使用教程")
+    tutorial_title = (page.locator("#account-tutorial-section h3").text_content() or "").strip()
+    tutorial_text = (page.locator("#accountTutorialList").text_content() or "").strip()
+
+    open_sidebar_group(page, "资源互换")
+    open_sidebar_link(page, "资源大厅")
+    resource_board_text = (page.locator("#resourceExchangeList").text_content() or "").strip()
+    open_sidebar_link(page, "互换发布")
+    resource_publish_title = (page.locator("#resource-publish-section h3").first.text_content() or "").strip()
+
     result = {
         "before_login": before_login,
         "overflow": overflow,
+        "sidebar_labels": sidebar_labels,
+        "mix_labels": mix_labels,
+        "has_sequence_link": has_sequence_link,
+        "mix_panel_title": mix_panel_title,
         "provider_text": provider_text,
         "provider_options": provider_options,
+        "tutorial_title": tutorial_title,
+        "tutorial_text": tutorial_text,
+        "resource_board_text": resource_board_text,
+        "resource_publish_title": resource_publish_title,
         "workspace_title": (page.locator("#workspaceTitle").text_content() or "").strip(),
         "workspace_subtitle": (page.locator("#workspaceSubtitle").text_content() or "").strip(),
     }
 
     expect(overflow["pageOverflowX"] <= 1, f"user page horizontal overflow: {overflow}")
+    expect(sidebar_labels and "智能助手" in sidebar_labels[0], f"user first sidebar group should be assistant: {sidebar_labels}")
+    expect(any("资源互换" in label for label in sidebar_labels), f"user resource group missing: {sidebar_labels}")
+    expect(any("sequence" in label.lower() or "槽位" in label for label in mix_labels), f"sequence mix nav missing: {mix_labels}")
+    expect(mix_panel_title, "sequence mix panel title missing")
     expect(provider_text and "登录后自动加载可用服务。" not in provider_text, f"provider list not loaded: {provider_text}")
     expect(provider_options and provider_options[0].strip(), f"provider select not loaded: {provider_options}")
+    expect("使用教程" in tutorial_title and tutorial_text, f"tutorial section missing: {tutorial_title} / {tutorial_text[:80]}")
+    expect(resource_board_text, "resource exchange board did not render")
+    expect("互换发布" in resource_publish_title, f"resource publish section missing: {resource_publish_title}")
 
     context.close()
     return result

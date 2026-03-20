@@ -5,6 +5,7 @@ import json
 import random
 import logging
 import threading
+import subprocess
 
 try:
     from rq import get_current_job
@@ -22,6 +23,10 @@ from app.utils.ffmpeg_utils import find_ffmpeg
 # MCP 路径当前不匹配实际目录结构，避免误用导致退回字符串替换
 MCP_AVAILABLE = False
 _LOCAL_TASK_CONTEXT = threading.local()
+_IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')
+_VIDEO_EXTS = ('.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v')
+_AUDIO_EXTS = ('.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac')
+_ALL_MEDIA_EXTS = _IMAGE_EXTS + _VIDEO_EXTS + _AUDIO_EXTS
 
 def _build_file_index(root_path):
     index = {}
@@ -35,21 +40,17 @@ def _build_file_index(root_path):
 def _list_media_files(root_path, replace_type):
     if not root_path or not os.path.exists(root_path):
         return []
-    exts_img = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')
-    exts_vid = ('.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v')
-    exts_aud = ('.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac')
-    exts = exts_img + exts_vid + exts_aud
     files = []
     for root, _dirs, fnames in os.walk(root_path):
         for fname in fnames:
             ext = os.path.splitext(fname)[1].lower()
-            if replace_type == 'image' and ext not in exts_img:
+            if replace_type == 'image' and ext not in _IMAGE_EXTS:
                 continue
-            if replace_type == 'video' and ext not in exts_vid:
+            if replace_type == 'video' and ext not in _VIDEO_EXTS:
                 continue
-            if replace_type == 'audio' and ext not in exts_aud:
+            if replace_type == 'audio' and ext not in _AUDIO_EXTS:
                 continue
-            if replace_type == 'both' and ext not in exts:
+            if replace_type == 'both' and ext not in _ALL_MEDIA_EXTS:
                 continue
             files.append(os.path.join(root, fname))
     return files
@@ -68,6 +69,39 @@ def _list_subfolders(root_path):
 def _normalize_name(name):
     return os.path.splitext(name or '')[0].strip().lower()
 
+
+def _template_material_matches_type(name, source_kind, replace_type, replace_strategy=None):
+    ext = os.path.splitext(name or '')[1].lower()
+    if replace_strategy == 'sequence':
+        if source_kind:
+            return source_kind == 'videos'
+        return ext in _VIDEO_EXTS
+    if replace_type == 'image':
+        if source_kind == 'audios':
+            return False
+        if source_kind == 'images':
+            return True
+        return ext in _IMAGE_EXTS
+    if replace_type == 'video':
+        if source_kind:
+            return source_kind == 'videos'
+        return ext in _VIDEO_EXTS
+    if replace_type == 'audio':
+        if source_kind:
+            return source_kind == 'audios'
+        return ext in _AUDIO_EXTS
+    if source_kind in ('videos', 'images', 'audios'):
+        return True
+    return ext in _ALL_MEDIA_EXTS
+
+
+def _build_sequence_output_path(draft_root, fname, source_files, slot_index):
+    seq_root = os.path.join(draft_root, "_sequence_slots")
+    os.makedirs(seq_root, exist_ok=True)
+    source_ext = os.path.splitext((source_files or [''])[0])[1].lower() or '.mp4'
+    base_name = _normalize_name(fname) or f"slot_{slot_index + 1}"
+    return os.path.join(seq_root, f"{slot_index + 1:02d}_{base_name}{source_ext}")
+
 def _build_partition_folder_map(root_path):
     folders = _list_subfolders(root_path)
     mapping = {}
@@ -83,6 +117,72 @@ def _pick_from_list(files, mode, seed_index):
     if mode == 'random':
         return random.choice(files)
     return files[seed_index % len(files)]
+
+
+def _pick_sequence_files(files, mode, seed_index, clip_count):
+    if not files:
+        return []
+    if mode == 'random':
+        if len(files) >= clip_count:
+            return random.sample(files, clip_count)
+        return [random.choice(files) for _ in range(clip_count)]
+    return [files[(seed_index + offset) % len(files)] for offset in range(clip_count)]
+
+
+def _find_material_target_file(root_path, fname, material_map):
+    for root, _dirs, files in os.walk(root_path):
+        if fname in files:
+            return os.path.join(root, fname)
+    internal_id = material_map.get(fname)
+    if internal_id:
+        for root, _dirs, files in os.walk(root_path):
+            if internal_id in files:
+                return os.path.join(root, internal_id)
+    return None
+
+
+def _compose_slot_sequence(files, output_path):
+    if not files or not output_path:
+        return None
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    if len(files) == 1:
+        shutil.copy2(files[0], output_path)
+        return output_path
+
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        shutil.copy2(files[0], output_path)
+        return output_path
+
+    list_file = os.path.join(
+        os.path.dirname(output_path),
+        f"_sequence_{uuid.uuid4().hex[:8]}.txt",
+    )
+    try:
+        with open(list_file, 'w', encoding='utf-8') as fh:
+            for item in files:
+                safe_path = os.path.abspath(item).replace("'", "'\\''")
+                fh.write(f"file '{safe_path}'\n")
+
+        commands = [
+            [ffmpeg, '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', output_path],
+            [ffmpeg, '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-b:a', '192k', output_path],
+        ]
+        for cmd in commands:
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return output_path
+    except Exception as exc:
+        logging.warning("compose slot sequence failed: %s", exc)
+    finally:
+        try:
+            if os.path.exists(list_file):
+                os.remove(list_file)
+        except Exception:
+            pass
+
+    shutil.copy2(files[0], output_path)
+    return output_path
 
 def _update_material_paths(draft_data, file_index):
     materials = draft_data.get('materials', {})
@@ -176,17 +276,18 @@ def _safe_update_style_ranges(styles, total_len):
 def _extract_template_runtime_info(template_path):
     materials = []
     material_map = {}
+    material_sources = {}
     texts_info = []
     if not template_path:
-        return materials, material_map, texts_info
+        return materials, material_map, texts_info, material_sources
     draft_content = os.path.join(template_path, 'draft_content.json')
     if not os.path.exists(draft_content):
-        return materials, material_map, texts_info
+        return materials, material_map, texts_info, material_sources
     try:
         with open(draft_content, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except Exception:
-        return materials, material_map, texts_info
+        return materials, material_map, texts_info, material_sources
 
     mats = data.get('materials', {})
     for media_type in ('videos', 'images', 'audios'):
@@ -199,6 +300,8 @@ def _extract_template_runtime_info(template_path):
                 name = os.path.basename(path)
                 if name and name not in materials:
                     materials.append(name)
+                if name and name not in material_sources:
+                    material_sources[name] = media_type
                 if name and mid:
                     material_map[name] = mid
 
@@ -212,7 +315,7 @@ def _extract_template_runtime_info(template_path):
             'material_id': item.get('id')
         })
 
-    return materials, material_map, texts_info
+    return materials, material_map, texts_info, material_sources
 
     if not styles:
         return
@@ -437,6 +540,7 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                         replace_materials=True, replace_texts=True,
                         replace_audios=False,
                         replace_type='both', replace_mode='order', replace_strategy='group',
+                        sequence_clip_count=3,
                         audio_enabled=False, audio_root=None, export_enabled=False, export_path=None, export_format=None,
                         export_resolution=None, export_fps=None,
                         effects_config=None, duo_config=None, user_id=None, template_path=None,
@@ -458,28 +562,21 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
 
                 template_path = template.template_path
 
-            materials, material_map, texts_info = _extract_template_runtime_info(template_path)
+            materials, material_map, texts_info, material_sources = _extract_template_runtime_info(template_path)
 
             # 素材映射（用于素材替换）
             all_material_names = list(material_map.keys())
 
             def filter_by_type(fname):
-                ext = os.path.splitext(fname)[1].lower()
-                is_img = ext in ('.jpg','.jpeg','.png','.bmp','.gif','.webp')
-                is_vid = ext in ('.mp4','.mov','.avi','.mkv','.flv','.wmv','.m4v')
-                is_aud = ext in ('.mp3','.wav','.m4a','.aac','.ogg','.flac')
-                if replace_type == 'image':
-                    return is_img
-                elif replace_type == 'video':
-                    return is_vid
-                elif replace_type == 'audio':
-                    return is_aud
-                else:
-                    return is_img or is_vid or is_aud
+                return _template_material_matches_type(
+                    fname,
+                    material_sources.get(fname),
+                    replace_type,
+                    replace_strategy,
+                )
             material_names = []
             for fname in all_material_names:
-                ext = os.path.splitext(fname)[1].lower()
-                is_audio = ext in ('.mp3','.wav','.m4a','.aac','.ogg','.flac')
+                is_audio = material_sources.get(fname) == 'audios'
                 if is_audio and not replace_audios:
                     continue
                 if not is_audio and not replace_materials:
@@ -545,6 +642,30 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                         user_file = None
                         if replace_strategy == 'mix':
                             user_file = _pick_from_list(pool_files, replace_mode, i + idx)
+                        elif replace_strategy == 'sequence':
+                            if not group_folders:
+                                group_folders = _list_subfolders(materials_root)
+                            if idx < len(group_folders):
+                                folder = group_folders[idx]
+                                files = folder_cache.get(folder)
+                                if files is None:
+                                    files = _list_media_files(folder, 'video')
+                                    folder_cache[folder] = files
+                                sequence_files = _pick_sequence_files(files, replace_mode, i, sequence_clip_count)
+                                if sequence_files:
+                                    composed_target = _build_sequence_output_path(
+                                        new_draft_path,
+                                        fname,
+                                        sequence_files,
+                                        idx,
+                                    )
+                                    composed_file = _compose_slot_sequence(sequence_files, composed_target)
+                                    if composed_file:
+                                        user_files[fname.lower()] = composed_file
+                                        print(f"[DEBUG] 拼接槽位素材: {sequence_files} -> {composed_file}")
+                                        update_task_meta({'progress': f'拼接槽位素材: {fname}'})
+                                        continue
+                                user_file = sequence_files[0] if sequence_files else None
                         elif replace_strategy == 'partition':
                             folder = partition_map.get(_normalize_name(fname))
                             if folder:

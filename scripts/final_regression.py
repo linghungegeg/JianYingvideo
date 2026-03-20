@@ -76,6 +76,7 @@ def main():
             'id="authModal"',
             'class="auth-modal open"',
             'id="workbenchApp"',
+            'id="panel-assistant"',
             'id="panel-materials"',
             'id="panel-ai-make"',
             'id="panel-ai-manga"',
@@ -83,8 +84,12 @@ def main():
             'id="panel-split"',
             'id="panel-clip"',
             'id="panel-export"',
+            'id="panel-resource-exchange"',
             'id="panel-settings"',
             'id="panel-account"',
+            'id="account-tutorial-section"',
+            'data-group="assistant"',
+            'data-group="resource"',
             '按组精准替换',
             '混剪裂变替换',
             '分区混剪裂变',
@@ -98,7 +103,13 @@ def main():
     )
     expect("顶部品牌条" not in user_html, "/user still contains old top brand copy")
     expect('id="panel-material-capture"' not in user_html, "/user still contains removed material capture panel")
+    expect('id="partition_text_mode"' in user_html, "/user missing partition text mode select")
+    expect('id="sequence_clip_count"' in user_html, "/user missing sequence clip count input")
+    expect('data-mix-target="sequence"' in user_html, "/user missing sequence mix mode entry")
     expect("素材获得" not in user_html, "/user still contains removed capture navigation copy")
+    expect('data-hard-section="settings-service-section"' not in user_html, "/user sidebar still exposes AI manga service entry")
+    expect(user_html.find('data-group="assistant"') < user_html.find('data-group="mix"'), "/user assistant group is not before mix")
+    expect(user_html.find('data-group="resource"') < user_html.find('data-group="settings"'), "/user resource group is not before settings")
     ensure_groups(
         user_html,
         r'data-subtab-group="(export-[^"]+)"',
@@ -137,11 +148,13 @@ def main():
             'data-section="cdk"',
             'data-section="bindings"',
             'data-section="users"',
+            'data-section="resource-review"',
             'data-section="logs"',
-            '运营控制台',
-            '站点管理',
-            '授权激活',
-            '退出后台',
+            'id="section-overview"',
+            'id="section-site"',
+            'id="section-license"',
+            'id="section-resource-review"',
+            'id="clearAdminAuthBtn"',
         ],
         "/admin",
     )
@@ -155,7 +168,15 @@ def main():
 
     authed_checks = [
         ("GET", "/api/user/info", admin_headers, 200, lambda d: d.get("ok") and d.get("user", {}).get("role") == "admin"),
-        ("GET", "/api/runtime-features", None, 200, lambda d: d.get("ok") and all(d.get("features", {}).get(k) for k in ("duo", "openclaw", "manga"))),
+        (
+            "GET",
+            "/api/runtime-features",
+            None,
+            200,
+            lambda d: d.get("ok")
+            and all(d.get("features", {}).get(k) for k in ("duo", "openclaw", "manga"))
+            and d.get("requirements", {}).get("manga") == ["MANGA_FEATURES_ENABLED"],
+        ),
         ("GET", "/api/site-settings", None, 200, lambda d: isinstance(d, dict)),
         (
             "GET",
@@ -176,13 +197,17 @@ def main():
         ("GET", "/api/admin/quota-summary", admin_headers, 200, lambda d: d.get("ok") and all(k in d for k in ("total_remaining", "total_generated", "active_trial_users", "quota_users"))),
         ("GET", "/api/admin/cdk/list", admin_headers, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list)),
         ("GET", "/api/admin/license/bindings", admin_headers, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list)),
-        ("GET", f"/api/admin/users/search?kw={ADMIN_USER}", admin_headers, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list)),
+        ("GET", "/api/admin/users/search", admin_headers, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list) and isinstance(d.get("pagination"), dict)),
+        ("GET", f"/api/admin/users/search?kw={ADMIN_USER}", admin_headers, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list) and isinstance(d.get("pagination"), dict)),
         ("GET", "/api/admin/logs", admin_headers, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list)),
         ("GET", "/api/openclaw/logs", admin_headers, 200, lambda d: d.get("ok") is True),
         ("GET", "/api/ai/providers", admin_headers, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list)),
         ("GET", "/api/ai/keys", admin_headers, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list)),
         ("GET", "/api/user/points/overview", admin_headers, 200, lambda d: d.get("ok") is True),
         ("GET", "/api/license/status", admin_headers, 200, lambda d: isinstance(d, dict)),
+        ("GET", "/api/resource-exchange/list", None, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list) and isinstance(d.get("pagination"), dict)),
+        ("GET", "/api/resource-exchange/my-posts", normal_headers, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list)),
+        ("GET", "/api/admin/resource-exchange/posts", admin_headers, 200, lambda d: d.get("ok") and isinstance(d.get("items"), list) and isinstance(d.get("pagination"), dict)),
     ]
 
     for method, url, headers, expected_status, validator in authed_checks:

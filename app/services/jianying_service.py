@@ -239,16 +239,18 @@ class JianYingService:
             require_timerange(target_timerange)
         except Exception as e:
             return ServiceResult(False, str(e), code="validation_error")
-        return add_video_segment_service(
-            draft_id=draft_id,
-            material=material,
-            target_timerange=target_timerange,
-            source_timerange=source_timerange,
-            speed=speed,
-            volume=volume,
-            change_pitch=change_pitch,
-            clip_settings=clip_settings,
-            track_name=track_name,
+        return from_tool_response(
+            add_video_segment_service(
+                draft_id=draft_id,
+                material=material,
+                target_timerange=target_timerange,
+                source_timerange=source_timerange,
+                speed=speed,
+                volume=volume,
+                change_pitch=change_pitch,
+                clip_settings=clip_settings,
+                track_name=track_name,
+            )
         )
 
     def add_video_animation(
