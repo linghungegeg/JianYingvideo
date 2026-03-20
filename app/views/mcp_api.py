@@ -6,7 +6,10 @@ from flask import Blueprint, request, jsonify, send_from_directory
 
 from app.services.jianying_service import JianYingService
 from app.services.jianying.usage import check_and_increment
-from app.services.jianying.batch_service import enqueue_batch_generation
+from app.services.jianying.batch_service import (
+    enqueue_batch_generation_by_path,
+    enqueue_batch_generation_by_template_id,
+)
 from app.services.jianying.openapi import get_openapi_spec
 from app.services.jianying.api_keys import verify_key, create_key, revoke_key, delete_key, get_key_by_raw
 from app.services.jianying.quota import check_and_increment_quota
@@ -150,19 +153,48 @@ def execute():
 @mcp_api_bp.route("/batch/enqueue", methods=["POST"])
 def enqueue_batch():
     payload = request.get_json(force=True) or {}
-    result = enqueue_batch_generation(
-        template_id=payload.get("template_id"),
-        materials_root=payload.get("materials_root"),
-        texts_input=payload.get("texts_input") or [],
-        batch_count=payload.get("batch_count", 1),
-        replace_materials=payload.get("replace_materials", True),
-        replace_texts=payload.get("replace_texts", True),
-        replace_type=payload.get("replace_type", "both"),
-        replace_mode=payload.get("replace_mode", "order"),
-        audio_enabled=payload.get("audio_enabled", False),
-        user_id=payload.get("user_id"),
-    )
-    return jsonify(result.to_dict())
+    common_kwargs = {
+        "materials_root": payload.get("materials_root"),
+        "texts_input": payload.get("texts_input") or [],
+        "batch_count": payload.get("batch_count", 1),
+        "replace_materials": payload.get("replace_materials", True),
+        "replace_texts": payload.get("replace_texts", True),
+        "replace_type": payload.get("replace_type", "both"),
+        "replace_mode": payload.get("replace_mode", "order"),
+        "replace_strategy": payload.get("replace_strategy", "group"),
+        "audio_enabled": payload.get("audio_enabled", False),
+        "export_enabled": payload.get("export_enabled", False),
+        "export_path": payload.get("export_path"),
+        "export_format": payload.get("export_format"),
+        "export_resolution": payload.get("export_resolution"),
+        "export_fps": payload.get("export_fps"),
+        "effects_config": payload.get("effects_config") or {},
+        "duo_config": payload.get("duo_config") or {},
+        "user_id": payload.get("user_id"),
+    }
+    draft_path = payload.get("draft_path")
+    template_id = payload.get("template_id")
+    if draft_path:
+        result = enqueue_batch_generation_by_path(
+            draft_path=draft_path,
+            **common_kwargs,
+        )
+        return jsonify(result.to_dict())
+    if template_id:
+        result = enqueue_batch_generation_by_template_id(
+            template_id=template_id,
+            **common_kwargs,
+        )
+        response = result.to_dict()
+        response["deprecated"] = True
+        response["message"] = "template_id is legacy compatibility only; prefer draft_path"
+        return jsonify(response)
+    return jsonify({
+        "ok": False,
+        "code": "missing_input",
+        "message": "draft_path is required; template_id is legacy compatibility only",
+        "data": {},
+    }), 400
 
 
 @mcp_api_bp.route("/openapi", methods=["GET"])

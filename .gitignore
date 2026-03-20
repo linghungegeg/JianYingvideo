@@ -24,5 +24,11 @@ logs/
 .vscode/
 .idea/
 venv/
+.pw-edge/
+.pw-browsers/
+.tmp/
 .tmp_duo_video/
+duo_cache/
 mcp_cache/
+user_data/
+runtime_tools/

@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 import os
+import importlib
 import uuid
 from typing import Optional, Dict, Any, List
 
@@ -94,12 +95,50 @@ class JianYingService:
         output_path: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
     ):
-        if save_path:
-            os.environ["SAVE_PATH"] = save_path
+        runtime_save_path = save_path or os.getenv("SAVE_PATH", "")
+        if not runtime_save_path:
+            runtime_save_path = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "user_data", "mcp_cache")
+            )
+        os.makedirs(runtime_save_path, exist_ok=True)
+        os.environ["SAVE_PATH"] = runtime_save_path
         if output_path:
             os.environ["OUTPUT_PATH"] = output_path
+        self._refresh_runtime_paths()
         self.config = JianYingConfig.from_env()
         self.logger = logger or logging.getLogger("jianying_service")
+
+    def _refresh_runtime_paths(self) -> None:
+        save_path = os.getenv("SAVE_PATH", "")
+        output_path = os.getenv("OUTPUT_PATH", "")
+        module_attr_map = {
+            "app.utils.jianying_mcp.jianying.audio": ("SAVE_PATH",),
+            "app.utils.jianying_mcp.jianying.draft": ("SAVE_PATH",),
+            "app.utils.jianying_mcp.jianying.export": ("SAVE_PATH", "OUTPUT_PATH"),
+            "app.utils.jianying_mcp.jianying.text": ("SAVE_PATH",),
+            "app.utils.jianying_mcp.jianying.track": ("SAVE_PATH",),
+            "app.utils.jianying_mcp.jianying.video": ("SAVE_PATH",),
+            "app.utils.jianying_mcp.tool.draft_tool": ("SAVE_PATH", "OUTPUT_PATH"),
+            "app.utils.jianying_mcp.utils.draft_maintenance": ("SAVE_PATH",),
+            "app.utils.jianying_mcp.utils.index_manager": ("SAVE_PATH",),
+            "app.utils.jianying_mcp.validators.material_validator": ("SAVE_PATH",),
+            "app.utils.jianying_mcp.validators.overlap_validator": ("SAVE_PATH",),
+        }
+        for module_name, attrs in module_attr_map.items():
+            try:
+                module = importlib.import_module(module_name)
+            except Exception:
+                continue
+            for attr in attrs:
+                if attr == "SAVE_PATH":
+                    setattr(module, attr, save_path)
+                elif attr == "OUTPUT_PATH":
+                    setattr(module, attr, output_path)
+            if module_name == "app.utils.jianying_mcp.utils.index_manager":
+                manager = getattr(module, "index_manager", None)
+                if manager:
+                    manager.index_file_path = os.path.join(save_path, "global_index.json")
+                    manager._ensure_index_file()
 
     # -------------------------
     # Draft management

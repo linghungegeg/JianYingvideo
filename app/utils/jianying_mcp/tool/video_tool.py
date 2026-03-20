@@ -4,7 +4,11 @@ Author: jian wei
 File Name: video_tool.py
 """
 from typing import Optional, Dict, Any, List
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except Exception as e:
+    FastMCP = None
+    _mcp_import_error = e
 from app.utils.jianying_mcp.services.video_service import add_video_segment_service, add_video_animation_service, \
     add_video_transition_service, add_video_keyframe_service, add_video_filter_service, \
     add_video_background_filling_service, \

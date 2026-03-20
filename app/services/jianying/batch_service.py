@@ -19,8 +19,9 @@ def _get_redis_url() -> str:
         return os.getenv("REDIS_URL", "")
 
 
-def enqueue_batch_generation(
-    template_id: int,
+def _enqueue_generation_job(
+    template_id: Optional[int],
+    template_path: str,
     materials_root: str,
     texts_input,
     batch_count: int,
@@ -28,15 +29,17 @@ def enqueue_batch_generation(
     replace_texts: bool = True,
     replace_type: str = "both",
     replace_mode: str = "order",
+    replace_strategy: str = "group",
     audio_enabled: bool = False,
+    export_enabled: bool = False,
+    export_path: Optional[str] = None,
+    export_format: Optional[str] = None,
+    export_resolution: Optional[str] = None,
+    export_fps: Optional[int] = None,
     effects_config: Optional[Dict[str, Any]] = None,
     duo_config: Optional[Dict[str, Any]] = None,
     user_id: Optional[int] = None,
 ) -> ServiceResult:
-    template = TemplateModel.query.get(template_id)
-    if not template:
-        return ServiceResult(False, "template not found", code="not_found")
-
     redis_url = _get_redis_url()
     if not redis_url:
         return ServiceResult(False, "REDIS_URL not set", code="config_error")
@@ -54,9 +57,17 @@ def enqueue_batch_generation(
         replace_texts,
         replace_type,
         replace_mode,
+        replace_strategy,
         audio_enabled,
+        export_enabled,
+        export_path,
+        export_format,
+        export_resolution,
+        export_fps,
         effects_config or {},
         duo_config or {},
+        user_id,
+        template_path,
     )
 
     task = Task(
@@ -69,3 +80,192 @@ def enqueue_batch_generation(
     db.session.commit()
 
     return ServiceResult(True, "enqueued", data={"job_id": job.id})
+
+
+def enqueue_batch_generation_by_template_id(
+    template_id: int,
+    materials_root: str,
+    texts_input,
+    batch_count: int,
+    replace_materials: bool = True,
+    replace_texts: bool = True,
+    replace_type: str = "both",
+    replace_mode: str = "order",
+    replace_strategy: str = "group",
+    audio_enabled: bool = False,
+    export_enabled: bool = False,
+    export_path: Optional[str] = None,
+    export_format: Optional[str] = None,
+    export_resolution: Optional[str] = None,
+    export_fps: Optional[int] = None,
+    effects_config: Optional[Dict[str, Any]] = None,
+    duo_config: Optional[Dict[str, Any]] = None,
+    user_id: Optional[int] = None,
+) -> ServiceResult:
+    # Legacy compatibility entry. New code should pass draft_path instead.
+    template = TemplateModel.query.get(template_id)
+    if not template:
+        return ServiceResult(False, "legacy template not found", code="not_found")
+    result = _enqueue_generation_job(
+        template_id=template_id,
+        template_path=template.template_path,
+        materials_root=materials_root,
+        texts_input=texts_input,
+        batch_count=batch_count,
+        replace_materials=replace_materials,
+        replace_texts=replace_texts,
+        replace_type=replace_type,
+        replace_mode=replace_mode,
+        replace_strategy=replace_strategy,
+        audio_enabled=audio_enabled,
+        export_enabled=export_enabled,
+        export_path=export_path,
+        export_format=export_format,
+        export_resolution=export_resolution,
+        export_fps=export_fps,
+        effects_config=effects_config,
+        duo_config=duo_config,
+        user_id=user_id,
+    )
+    if result.ok:
+        payload = result.data or {}
+        payload["deprecated"] = True
+        payload["legacy_mode"] = "template_id"
+        result.data = payload
+        result.message = "template_id is legacy compatibility only; prefer draft_path"
+    return result
+
+
+def enqueue_batch_generation(
+    template_id: int,
+    materials_root: str,
+    texts_input,
+    batch_count: int,
+    replace_materials: bool = True,
+    replace_texts: bool = True,
+    replace_type: str = "both",
+    replace_mode: str = "order",
+    replace_strategy: str = "group",
+    audio_enabled: bool = False,
+    export_enabled: bool = False,
+    export_path: Optional[str] = None,
+    export_format: Optional[str] = None,
+    export_resolution: Optional[str] = None,
+    export_fps: Optional[int] = None,
+    effects_config: Optional[Dict[str, Any]] = None,
+    duo_config: Optional[Dict[str, Any]] = None,
+    user_id: Optional[int] = None,
+) -> ServiceResult:
+    # Backward-compatible alias. Prefer enqueue_batch_generation_by_template_id().
+    return enqueue_batch_generation_by_template_id(
+        template_id=template_id,
+        materials_root=materials_root,
+        texts_input=texts_input,
+        batch_count=batch_count,
+        replace_materials=replace_materials,
+        replace_texts=replace_texts,
+        replace_type=replace_type,
+        replace_mode=replace_mode,
+        replace_strategy=replace_strategy,
+        audio_enabled=audio_enabled,
+        export_enabled=export_enabled,
+        export_path=export_path,
+        export_format=export_format,
+        export_resolution=export_resolution,
+        export_fps=export_fps,
+        effects_config=effects_config,
+        duo_config=duo_config,
+        user_id=user_id,
+    )
+
+
+def enqueue_batch_generation_by_path(
+    draft_path: str,
+    materials_root: str,
+    texts_input,
+    batch_count: int,
+    replace_materials: bool = True,
+    replace_texts: bool = True,
+    replace_type: str = "both",
+    replace_mode: str = "order",
+    replace_strategy: str = "group",
+    audio_enabled: bool = False,
+    export_enabled: bool = False,
+    export_path: Optional[str] = None,
+    export_format: Optional[str] = None,
+    export_resolution: Optional[str] = None,
+    export_fps: Optional[int] = None,
+    effects_config: Optional[Dict[str, Any]] = None,
+    duo_config: Optional[Dict[str, Any]] = None,
+    user_id: Optional[int] = None,
+) -> ServiceResult:
+    if not draft_path:
+        return ServiceResult(False, "draft_path is required", code="not_found")
+    result = _enqueue_generation_job(
+        template_id=None,
+        template_path=draft_path,
+        materials_root=materials_root,
+        texts_input=texts_input,
+        batch_count=batch_count,
+        replace_materials=replace_materials,
+        replace_texts=replace_texts,
+        replace_type=replace_type,
+        replace_mode=replace_mode,
+        replace_strategy=replace_strategy,
+        audio_enabled=audio_enabled,
+        export_enabled=export_enabled,
+        export_path=export_path,
+        export_format=export_format,
+        export_resolution=export_resolution,
+        export_fps=export_fps,
+        effects_config=effects_config,
+        duo_config=duo_config,
+        user_id=user_id,
+    )
+    if result.ok:
+        payload = result.data or {}
+        payload["legacy_mode"] = None
+        result.data = payload
+    return result
+
+
+def enqueue_local_batch_generation(
+    draft_path: str,
+    materials_root: str,
+    texts_input,
+    batch_count: int,
+    replace_materials: bool = True,
+    replace_texts: bool = True,
+    replace_type: str = "both",
+    replace_mode: str = "order",
+    replace_strategy: str = "group",
+    audio_enabled: bool = False,
+    export_enabled: bool = False,
+    export_path: Optional[str] = None,
+    export_format: Optional[str] = None,
+    export_resolution: Optional[str] = None,
+    export_fps: Optional[int] = None,
+    effects_config: Optional[Dict[str, Any]] = None,
+    duo_config: Optional[Dict[str, Any]] = None,
+    user_id: Optional[int] = None,
+) -> ServiceResult:
+    return enqueue_batch_generation_by_path(
+        draft_path=draft_path,
+        materials_root=materials_root,
+        texts_input=texts_input,
+        batch_count=batch_count,
+        replace_materials=replace_materials,
+        replace_texts=replace_texts,
+        replace_type=replace_type,
+        replace_mode=replace_mode,
+        replace_strategy=replace_strategy,
+        audio_enabled=audio_enabled,
+        export_enabled=export_enabled,
+        export_path=export_path,
+        export_format=export_format,
+        export_resolution=export_resolution,
+        export_fps=export_fps,
+        effects_config=effects_config,
+        duo_config=duo_config,
+        user_id=user_id,
+    )

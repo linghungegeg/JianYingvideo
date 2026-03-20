@@ -4,7 +4,11 @@ Author: jian wei
 File Name: text_tool.py
 """
 from typing import Optional, Dict, Any
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except Exception as e:
+    FastMCP = None
+    _mcp_import_error = e
 from app.utils.jianying_mcp.services.text_service import add_text_segment_service, add_text_animation_service
 from app.utils.jianying_mcp.utils.response import ToolResponse
 from app.utils.jianying_mcp.utils.index_manager import index_manager

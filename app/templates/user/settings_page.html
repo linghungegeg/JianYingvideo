@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>软件设置</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+
+        .wrap {
+            max-width: 980px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .title {
+            margin: 0 0 10px;
+            font-size: 28px;
+            font-weight: 700;
+        }
+
+        .sub {
+            margin: 0 0 22px;
+            color: #94a3b8;
+            font-size: 14px;
+            line-height: 1.8;
+        }
+
+        .card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 16px;
+            padding: 18px;
+            margin-bottom: 16px;
+        }
+
+        .card-title {
+            margin-bottom: 8px;
+            font-size: 17px;
+            font-weight: 700;
+        }
+
+        .hint {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-bottom: 12px;
+            line-height: 1.7;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            color: #cbd5e1;
+            font-size: 13px;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid #475569;
+            background: #0f172a;
+            color: #e2e8f0;
+            font-size: 14px;
+        }
+
+        .row {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 9px 14px;
+            border-radius: 10px;
+            border: 1px solid #475569;
+            background: #334155;
+            color: #e2e8f0;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .btn.primary {
+            background: #3b82f6;
+            border-color: #2563eb;
+            color: #ffffff;
+        }
+
+        .status {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #94a3b8;
+            min-height: 18px;
+        }
+
+        .status.success {
+            color: #34d399;
+        }
+
+        .status.error {
+            color: #f87171;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h1 class="title">软件设置</h1>
+        <p class="sub">这里维护本地批量处理依赖的核心目录。当前主要保留素材目录与剪映草稿目录，确保工作台和后续导出流程都能稳定运行。</p>
+
+        <div class="card" id="materials">
+            <div class="card-title">素材目录</div>
+            <div class="hint">用于批量替换素材时的默认根目录。建议设置为你平时整理好的素材主目录。</div>
+            <label for="materialFolder">素材文件夹路径</label>
+            <input id="materialFolder" placeholder="例如 E:/素材">
+            <div class="row">
+                <button class="btn" type="button" onclick="browseMaterial()">选择目录</button>
+                <button class="btn primary" type="button" onclick="saveMaterial()">保存素材目录</button>
+            </div>
+            <div class="status" id="materialStatus"></div>
+        </div>
+
+        <div class="card" id="drafts">
+            <div class="card-title">剪映草稿目录</div>
+            <div class="hint">用于定位现有草稿，或保存生成后的新草稿。请确保该路径存在，并且剪映可以正常访问。</div>
+            <label for="draftFolder">剪映草稿路径</label>
+            <input id="draftFolder" placeholder="例如 E:/JianyingPro Drafts">
+            <div class="row">
+                <button class="btn" type="button" onclick="browseDrafts()">选择目录</button>
+                <button class="btn primary" type="button" onclick="saveDrafts()">保存草稿目录</button>
+            </div>
+            <div class="status" id="draftStatus"></div>
+        </div>
+    </div>
+    <script>
+        function setStatus(id, message, type = "") {
+            const el = document.getElementById(id);
+            el.className = `status ${type}`.trim();
+            el.textContent = message || "";
+        }
+
+        async function loadSettings() {
+            setStatus("materialStatus", "正在读取配置...");
+            setStatus("draftStatus", "正在读取配置...");
+
+            try {
+                const materialRes = await fetch("/api/material-folder");
+                const materialData = await materialRes.json();
+                if (materialData.folder) {
+                    document.getElementById("materialFolder").value = materialData.folder;
+                }
+                setStatus("materialStatus", "已读取当前素材目录。");
+            } catch (error) {
+                setStatus("materialStatus", "读取素材目录失败。", "error");
+            }
+
+            try {
+                const draftRes = await fetch("/api/drafts-folder");
+                const draftData = await draftRes.json();
+                if (draftData.folder) {
+                    document.getElementById("draftFolder").value = draftData.folder;
+                }
+                setStatus("draftStatus", "已读取当前草稿目录。");
+            } catch (error) {
+                setStatus("draftStatus", "读取草稿目录失败。", "error");
+            }
+        }
+
+        async function browseMaterial() {
+            const res = await fetch("/api/browse-folder", { method: "POST" });
+            const data = await res.json();
+            if (data.folder) {
+                document.getElementById("materialFolder").value = data.folder;
+            }
+        }
+
+        async function saveMaterial() {
+            const form = new FormData();
+            form.append("folder", document.getElementById("materialFolder").value.trim());
+            const res = await fetch("/api/material-folder", { method: "POST", body: form });
+            const data = await res.json();
+            setStatus(
+                "materialStatus",
+                data.success ? "素材目录保存成功。" : (data.error || "素材目录保存失败。"),
+                data.success ? "success" : "error"
+            );
+        }
+
+        async function browseDrafts() {
+            const res = await fetch("/api/browse-folder", { method: "POST" });
+            const data = await res.json();
+            if (data.folder) {
+                document.getElementById("draftFolder").value = data.folder;
+            }
+        }
+
+        async function saveDrafts() {
+            const form = new FormData();
+            form.append("folder", document.getElementById("draftFolder").value.trim());
+            const res = await fetch("/api/drafts-folder", { method: "POST", body: form });
+            const data = await res.json();
+            setStatus(
+                "draftStatus",
+                data.success ? "草稿目录保存成功。" : (data.error || "草稿目录保存失败。"),
+                data.success ? "success" : "error"
+            );
+        }
+
+        loadSettings();
+    </script>
+</body>
+</html>

@@ -4,7 +4,11 @@ Author: jian wei
 File Name: utility_tool.py
 """
 from typing import Optional, List, Dict, Any
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except Exception as e:
+    FastMCP = None
+    _mcp_import_error = e
 from app.utils.jianying_mcp.utils.response import ToolResponse
 
 

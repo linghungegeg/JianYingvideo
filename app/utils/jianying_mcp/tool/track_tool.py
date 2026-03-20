@@ -3,7 +3,11 @@
 Author: jian wei
 File Name: track_tool.py
 """
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except Exception as e:
+    FastMCP = None
+    _mcp_import_error = e
 from app.utils.jianying_mcp.services.track_service import create_track_service
 from app.utils.jianying_mcp.utils.response import ToolResponse
 from app.utils.jianying_mcp.utils.index_manager import index_manager

@@ -6,9 +6,13 @@ File Name:server.py
 import sys
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
-
-mcp = FastMCP("JianYingDraft")
+try:
+    from mcp.server.fastmcp import FastMCP
+    mcp = FastMCP("JianYingDraft")
+except Exception as e:
+    FastMCP = None
+    mcp = None
+    _mcp_import_error = e
 # 将当前目录添加到python项目
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -22,6 +26,8 @@ from app.utils.jianying_mcp.tool.utility_tool import utility_tools
 
 
 def main():
+    if mcp is None:
+        raise ImportError(f"MCP dependency is missing: {_mcp_import_error}")
     # 注册所有工具
     draft_tools(mcp)
     track_tools(mcp)

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>个人中心</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 24px;
+            color: #e5e7eb;
+            background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+            font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+        }
+
+        .wrap {
+            max-width: 1080px;
+            margin: 0 auto;
+        }
+
+        .hero {
+            padding: 26px;
+            border: 1px solid #243042;
+            border-radius: 24px;
+            background: linear-gradient(135deg, rgba(30, 41, 59, 0.96), rgba(17, 24, 39, 0.92));
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+        }
+
+        .title {
+            margin: 0 0 10px;
+            font-size: 30px;
+            font-weight: 700;
+        }
+
+        .sub {
+            margin: 0;
+            max-width: 720px;
+            color: #94a3b8;
+            line-height: 1.8;
+            font-size: 14px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-top: 20px;
+        }
+
+        .card {
+            display: block;
+            padding: 18px;
+            border: 1px solid #243042;
+            border-radius: 18px;
+            color: inherit;
+            text-decoration: none;
+            background: rgba(15, 23, 42, 0.82);
+            transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            border-color: #3b82f6;
+            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.4);
+        }
+
+        .card h3 {
+            margin: 0 0 8px;
+            font-size: 18px;
+        }
+
+        .card p {
+            margin: 0;
+            color: #94a3b8;
+            font-size: 13px;
+            line-height: 1.7;
+        }
+
+        .section {
+            margin-top: 22px;
+            padding: 22px;
+            border: 1px solid #243042;
+            border-radius: 20px;
+            background: rgba(15, 23, 42, 0.82);
+        }
+
+        .section h2 {
+            margin: 0 0 12px;
+            font-size: 20px;
+        }
+
+        .section ul {
+            margin: 0;
+            padding-left: 18px;
+            color: #cbd5e1;
+            line-height: 1.9;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <section class="hero">
+            <h1 class="title">个人中心</h1>
+            <p class="sub">这里保留为轻量入口页，负责汇总常用操作。首页负责统一导航，工作台负责具体执行，个人中心用于快速回到常用页面。</p>
+            <div class="grid">
+                <a class="card" href="/user">
+                    <h3>统一工作台</h3>
+                    <p>进入 `index` 工作台，处理素材替换、效果配置和批量分割。</p>
+                </a>
+                <a class="card" href="/user/logs">
+                    <h3>任务记录</h3>
+                    <p>查看最近执行结果、失败原因和生成轨迹。</p>
+                </a>
+                <a class="card" href="/user">
+                    <h3>软件设置</h3>
+                    <p>维护素材目录、剪映草稿目录等本地依赖配置。</p>
+                </a>
+                <a class="card" href="/user">
+                    <h3>返回首页</h3>
+                    <p>回到新的单页首页，按分类导航切换到对应能力。</p>
+                </a>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>当前状态</h2>
+            <ul>
+                <li>首页已按工作台方式重建。</li>
+                <li>`index.html` 已成为唯一统一工作台入口。</li>
+                <li>中文编码问题已按 UTF-8 文件策略持续清理。</li>
+            </ul>
+        </section>
+    </div>
+</body>
+</html>

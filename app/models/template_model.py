@@ -3,6 +3,8 @@ from datetime import datetime
 
 class TemplateModel(db.Model):
     __tablename__ = 'template_models'
+    # Legacy server-side template library. New flows should prefer local
+    # draft_path instead of persisted template records.
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)

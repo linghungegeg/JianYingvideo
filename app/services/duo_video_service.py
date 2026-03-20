@@ -73,9 +73,42 @@ class DuoVideoService:
             with open(path_or_url, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
+        def _flatten_categories(categories: Dict[str, Any]) -> List[Dict[str, Any]]:
+            items: List[Dict[str, Any]] = []
+            for cat_key, cat_obj in categories.items():
+                cat_name = cat_obj.get("name") if isinstance(cat_obj, dict) else None
+                subcats = cat_obj.get("subcategories") if isinstance(cat_obj, dict) else None
+                if not cat_name:
+                    cat_name = str(cat_key)
+                if not isinstance(subcats, dict):
+                    continue
+                for sub_key, sub_obj in subcats.items():
+                    sub_name = sub_obj.get("name") if isinstance(sub_obj, dict) else None
+                    resources = sub_obj.get("resources") if isinstance(sub_obj, dict) else None
+                    if not sub_name:
+                        sub_name = str(sub_key)
+                    if not isinstance(resources, list):
+                        continue
+                    for r in resources:
+                        if not isinstance(r, dict):
+                            continue
+                        items.append({
+                            "id": r.get("id") or r.get("resource_id") or r.get("effect_id"),
+                            "name": r.get("name") or r.get("title") or "",
+                            "category": cat_name,
+                            "type": sub_name,
+                            "url": r.get("preview_url") or r.get("url"),
+                            "preview_url": r.get("preview_url") or r.get("url"),
+                            "source_category_key": str(cat_key),
+                            "source_subcategory_key": str(sub_key),
+                        })
+            return items
+
         if isinstance(data, dict):
             self._version = data.get("version") or data.get("updated_at")
             items = data.get("items")
+            if not items and isinstance(data.get("categories"), dict):
+                items = _flatten_categories(data.get("categories"))
         else:
             items = data
         resources: List[DuoResource] = []
@@ -86,7 +119,7 @@ class DuoVideoService:
                     name=item.get("name") or item.get("title") or "",
                     category=item.get("category") or item.get("type") or "unknown",
                     type=item.get("type") or item.get("resource_type") or "unknown",
-                    url=item.get("url"),
+                    url=item.get("url") or item.get("preview_url"),
                     meta=item
                 ))
             except Exception:

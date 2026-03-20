@@ -10,11 +10,29 @@ import shutil
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
 from dotenv import load_dotenv
-from pyJianYingDraft import (
-    VideoSegment, VideoMaterial, Timerange, ClipSettings, DraftFolder,
-    FilterType, TransitionType, IntroType, OutroType, GroupAnimationType,
-    MaskType, KeyframeProperty, tim, trange, TrackType
-)
+try:
+    from pyJianYingDraft import (
+        VideoSegment, VideoMaterial, Timerange, ClipSettings, DraftFolder,
+        FilterType, TransitionType, IntroType, OutroType, GroupAnimationType,
+        MaskType, KeyframeProperty, tim, trange, TrackType
+    )
+except Exception as e:
+    _pyjy_import_error = e
+
+    class _MissingDependency:
+        def __init__(self, *args, **kwargs):
+            raise ImportError(f"pyJianYingDraft is required: {_pyjy_import_error}")
+
+        def __getattr__(self, name):
+            raise ImportError(f"pyJianYingDraft is required: {_pyjy_import_error}")
+
+    def _missing(*args, **kwargs):
+        raise ImportError(f"pyJianYingDraft is required: {_pyjy_import_error}")
+
+    VideoSegment = VideoMaterial = Timerange = ClipSettings = DraftFolder = _MissingDependency
+    FilterType = TransitionType = IntroType = OutroType = GroupAnimationType = _MissingDependency
+    MaskType = KeyframeProperty = TrackType = _MissingDependency
+    tim = trange = _missing
 
 # 加载环境变量
 load_dotenv()
@@ -1066,5 +1084,4 @@ class ExportDraft:
                 return enum_item
 
         return None
-
 

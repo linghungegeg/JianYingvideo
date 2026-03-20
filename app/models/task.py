@@ -11,6 +11,7 @@ class Task(db.Model):
     progress = db.Column(db.Text)
     result_url = db.Column(db.String(500))
     error_msg = db.Column(db.Text)
+    refunded = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

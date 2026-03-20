@@ -4,7 +4,11 @@ Author: jian wei
 File Name: audio_tool.py
 """
 from typing import Optional, List
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except Exception as e:
+    FastMCP = None
+    _mcp_import_error = e
 from app.utils.jianying_mcp.services.audio_service import add_audio_segment_service, add_audio_effect_service, \
     add_audio_fade_service, add_audio_keyframe_service
 from app.utils.jianying_mcp.utils.response import ToolResponse

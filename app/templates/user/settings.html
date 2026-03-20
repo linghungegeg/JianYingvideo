@@ -1,29 +1,0 @@
-{% extends "base.html" %}
-{% block title %}素材路径{% endblock %}
-{% block content %}
-<h1>素材文件夹路径</h1>
-<form id="settingsForm">
-    <div class="form-group">
-        <label>路径</label>
-        <div style="display: flex; gap: 8px;">
-            <input type="text" name="material_folder" id="folder" value="{{ folder }}" style="flex:1;">
-            <button type="button" id="browseBtn">浏览...</button>
-        </div>
-    </div>
-    <button type="submit">保存</button>
-</form>
-<script>
-document.getElementById('browseBtn').addEventListener('click', async () => {
-    const res = await fetch('/api/browse-folder', { method: 'POST' });
-    const data = await res.json();
-    if (data.folder) document.getElementById('folder').value = data.folder;
-});
-document.getElementById('settingsForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const formData = new FormData(e.target);
-    const res = await fetch('/api/settings', { method: 'POST', body: formData });
-    const result = await res.json();
-    alert(result.success ? '保存成功' : '保存失败');
-});
-</script>
-{% endblock %}

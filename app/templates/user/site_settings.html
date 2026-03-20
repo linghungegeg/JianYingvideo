@@ -1,40 +1,0 @@
-{% extends "base.html" %}
-{% block title %}站点设置{% endblock %}
-{% block content %}
-<h1>站点设置</h1>
-<form id="siteForm">
-    <div class="form-group">
-        <label>网站标题</label>
-        <input type="text" name="title" id="title" value="{{ settings.title }}" required>
-    </div>
-    <div class="form-group">
-        <label>关键词（逗号分隔）</label>
-        <input type="text" name="keywords" id="keywords" value="{{ settings.keywords }}">
-    </div>
-    <div class="form-group">
-        <label>网站描述</label>
-        <textarea name="description" id="description" rows="3">{{ settings.description }}</textarea>
-    </div>
-    <button type="submit">保存</button>
-</form>
-
-<script>
-document.getElementById('siteForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const formData = new FormData(e.target);
-    const res = await fetch('/api/site-settings', { method: 'POST', body: formData });
-    const result = await res.json();
-    if (result.success) {
-        alert('保存成功');
-        // 重新加载当前页面的最新设置（可选，如果希望立即显示更新后的值）
-        const refreshRes = await fetch('/api/site-settings');
-        const settings = await refreshRes.json();
-        document.getElementById('title').value = settings.title;
-        document.getElementById('keywords').value = settings.keywords;
-        document.getElementById('description').value = settings.description;
-    } else {
-        alert('保存失败');
-    }
-});
-</script>
-{% endblock %}

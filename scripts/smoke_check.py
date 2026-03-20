@@ -11,7 +11,7 @@ def check_file(path: Path, keywords):
 def main():
     base = Path(".")
     files = [
-        ("app/templates/user/generate.html", ["duo_category", "duo_results", "duo_cache_info", "duo_params"]),
+        ("app/templates/user/index.html", ["duo_category", "duo_results", "duo_cache_info", "duo_params"]),
         ("app/services/duo_video_service.py", ["DuoVideoService", "search", "count"]),
         ("app/tasks.py", ["_apply_mcp_effects", "duo_config"]),
     ]

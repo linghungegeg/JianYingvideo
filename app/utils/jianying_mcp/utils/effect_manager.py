@@ -6,12 +6,31 @@ File Name: effect_manager.py
 import logging
 from typing import List, Any, Optional, Dict
 import difflib
-from pyJianYingDraft import VideoSceneEffectType, TextIntro, TextOutro, TextLoopAnim, IntroType, OutroType, GroupAnimationType, VideoCharacterEffectType
-from pyJianYingDraft.metadata.audio_effect_meta import ToneEffectType, AudioSceneEffectType, SpeechToSongType
-from pyJianYingDraft.metadata.filter_meta import FilterType
-from pyJianYingDraft.metadata.mask_meta import MaskType
-from pyJianYingDraft.metadata.transition_meta import TransitionType
-from pyJianYingDraft.metadata.font_meta import FontType
+
+try:
+    from pyJianYingDraft import (
+        VideoSceneEffectType, TextIntro, TextOutro, TextLoopAnim,
+        IntroType, OutroType, GroupAnimationType, VideoCharacterEffectType
+    )
+    from pyJianYingDraft.metadata.audio_effect_meta import ToneEffectType, AudioSceneEffectType, SpeechToSongType
+    from pyJianYingDraft.metadata.filter_meta import FilterType
+    from pyJianYingDraft.metadata.mask_meta import MaskType
+    from pyJianYingDraft.metadata.transition_meta import TransitionType
+    from pyJianYingDraft.metadata.font_meta import FontType
+except Exception as e:
+    _pyjy_import_error = e
+
+    class _MissingDependency:
+        def __init__(self, *args, **kwargs):
+            raise ImportError(f"pyJianYingDraft is required: {_pyjy_import_error}")
+
+        def __getattr__(self, name):
+            raise ImportError(f"pyJianYingDraft is required: {_pyjy_import_error}")
+
+    VideoSceneEffectType = TextIntro = TextOutro = TextLoopAnim = _MissingDependency
+    IntroType = OutroType = GroupAnimationType = VideoCharacterEffectType = _MissingDependency
+    ToneEffectType = AudioSceneEffectType = SpeechToSongType = _MissingDependency
+    FilterType = MaskType = TransitionType = FontType = _MissingDependency
 
 
 class JianYingResourceManager:
@@ -235,4 +254,3 @@ if __name__ == "__main__":
     results = manager.find_by_type("TextLoopAnim", keyword="色差故障", limit=3)
     for i in results:
         print(i)
-

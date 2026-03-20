@@ -1,1587 +1,198 @@
 ﻿<!DOCTYPE html>
-
-
-<html>
-
-
+<html lang="zh-CN">
 <head>
-
-
-    <title id="dynamicTitle">???? - ???</title>
-
-
-    <meta charset="utf-8">
-
-
-    <meta name="keywords" id="dynamicKeywords" content="">
-
-
-    <meta name="description" id="dynamicDescription" content="">
-
-
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-
-
-    <style>
-
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
-
-        body {
-
-
-            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Roboto, sans-serif;
-
-
-            background: #0f172a;
-
-
-            color: #e2e8f0;
-
-
-            height: 100vh;
-
-
-            display: flex;
-
-
-            overflow: hidden;
-
-
-            transition: background 0.3s;
-
-
-        }
-
-
-        body.light-mode {
-
-
-            background: #f8fafc;
-
-
-            color: #1e293b;
-
-
-        }
-
-
-        .sidebar {
-
-
-            width: 280px;
-
-
-            background: rgba(30, 41, 59, 0.95);
-
-
-            backdrop-filter: blur(10px);
-
-
-            border-right: 1px solid #334155;
-
-
-            display: flex;
-
-
-            flex-direction: column;
-
-
-            user-select: none;
-
-
-        }
-
-
-        .light-mode .sidebar {
-
-
-            background: white;
-
-
-            border-right: 1px solid #e2e8f0;
-
-
-            color: #1e293b;
-
-
-        }
-
-
-        .sidebar-header {
-
-
-            padding: 28px 24px;
-
-
-            font-size: 1.6rem;
-
-
-            font-weight: 700;
-
-
-            display: flex;
-
-
-            align-items: center;
-
-
-            gap: 12px;
-
-
-            border-bottom: 1px solid #334155;
-
-
-        }
-
-
-        .sidebar-header span {
-
-
-            background: #3b82f6;
-
-
-            padding: 4px 12px;
-
-
-            border-radius: 40px;
-
-
-            font-size: 0.9rem;
-
-
-            color: white;
-
-
-        }
-
-
-        .user-info {
-
-
-            padding: 16px 24px;
-
-
-            border-bottom: 1px solid #334155;
-
-
-            font-size: 0.9rem;
-
-
-            color: #94a3b8;
-
-
-            display: flex;
-
-
-            align-items: center;
-
-
-            justify-content: space-between;
-
-
-        }
-
-
-        .logout-btn {
-
-
-            color: #ef4444;
-
-
-            cursor: pointer;
-
-
-            text-decoration: none;
-
-
-            font-size: 0.8rem;
-
-
-        }
-
-
-        .nav-items {
-
-
-            flex: 1;
-
-
-            padding: 24px 0;
-
-
-            overflow-y: auto;
-
-
-        }
-
-
-        .nav-item {
-
-
-            margin: 4px 12px;
-
-
-            border-radius: 14px;
-
-
-            cursor: pointer;
-
-
-            transition: all 0.2s;
-
-
-        }
-
-
-        .nav-item .parent {
-
-
-            padding: 14px 24px;
-
-
-            display: flex;
-
-
-            align-items: center;
-
-
-            gap: 14px;
-
-
-            font-weight: 500;
-
-
-        }
-
-
-        .nav-item .parent:hover {
-
-
-            background: #334155;
-
-
-        }
-
-
-        .light-mode .nav-item .parent:hover {
-
-
-            background: #f1f5f9;
-
-
-        }
-
-
-        .nav-item.active > .parent {
-
-
-            background: #3b82f6;
-
-
-            color: white;
-
-
-        }
-
-
-        .nav-item .parent i {
-
-
-            font-style: normal;
-
-
-            font-size: 1.3rem;
-
-
-        }
-
-
-        .sub-items {
-
-
-            list-style: none;
-
-
-            padding-left: 48px;
-
-
-            margin: 8px 0;
-
-
-            display: none;
-
-
-        }
-
-
-        .nav-item.expanded .sub-items {
-
-
-            display: block;
-
-
-        }
-
-
-        .sub-item {
-
-
-            padding: 10px 16px;
-
-
-            border-radius: 10px;
-
-
-            margin: 2px 0;
-
-
-            cursor: pointer;
-
-
-            font-size: 0.95rem;
-
-
-            color: #cbd5e1;
-
-
-        }
-
-
-        .sub-item:hover {
-
-
-            background: #334155;
-
-
-        }
-
-
-        .light-mode .sub-item {
-
-
-            color: #475569;
-
-
-        }
-
-
-        .light-mode .sub-item:hover {
-
-
-            background: #e2e8f0;
-
-
-        }
-
-
-        .sub-item.active {
-
-
-            background: #3b82f6;
-
-
-            color: white;
-
-
-        }
-
-
-        .theme-toggle {
-
-
-            margin: 20px 24px;
-
-
-            padding: 10px;
-
-
-            background: #334155;
-
-
-            border-radius: 40px;
-
-
-            display: flex;
-
-
-            cursor: pointer;
-
-
-            position: relative;
-
-
-        }
-
-
-        .light-mode .theme-toggle {
-
-
-            background: #e2e8f0;
-
-
-        }
-
-
-        .theme-option {
-
-
-            flex: 1;
-
-
-            text-align: center;
-
-
-            padding: 6px 0;
-
-
-            border-radius: 30px;
-
-
-            z-index: 1;
-
-
-        }
-
-
-        .theme-slider {
-
-
-            position: absolute;
-
-
-            width: 50%;
-
-
-            height: 32px;
-
-
-            background: #3b82f6;
-
-
-            border-radius: 30px;
-
-
-            left: 0;
-
-
-            transition: left 0.2s;
-
-
-        }
-
-
-        .theme-slider.dark {
-
-
-            left: 0;
-
-
-        }
-
-
-        .theme-slider.light {
-
-
-            left: 50%;
-
-
-        }
-
-
-        .main {
-
-
-            flex: 1;
-
-
-            display: flex;
-
-
-            flex-direction: column;
-
-
-            background: #0f172a;
-
-
-            overflow: hidden;
-
-
-        }
-
-
-        .light-mode .main {
-
-
-            background: #f8fafc;
-
-
-        }
-
-
-        .content-area {
-
-
-            flex: 1;
-
-
-            padding: 24px;
-
-
-            overflow-y: auto;
-
-
-            background: #0f172a;
-
-
-        }
-
-
-        .light-mode .content-area {
-
-
-            background: #f8fafc;
-
-
-        }
-
-
-        .card {
-
-
-            background: #1e293b;
-
-
-            border-radius: 24px;
-
-
-            padding: 28px;
-
-
-            border: 1px solid #334155;
-
-
-            box-shadow: 0 20px 30px -10px rgba(0,0,0,0.5);
-
-
-            margin-bottom: 24px;
-
-
-        }
-
-
-        .light-mode .card {
-
-
-            background: white;
-
-
-            border-color: #e2e8f0;
-
-
-            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05);
-
-
-        }
-
-
-        .page-title {
-
-
-            font-size: 2rem;
-
-
-            font-weight: 700;
-
-
-            margin-bottom: 28px;
-
-
-            display: flex;
-
-
-            align-items: center;
-
-
-            gap: 12px;
-
-
-        }
-
-
-        .stats-grid {
-
-
-            display: grid;
-
-
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-
-
-            gap: 20px;
-
-
-            margin-bottom: 30px;
-
-
-        }
-
-
-        .stat-card {
-
-
-            background: #334155;
-
-
-            border-radius: 20px;
-
-
-            padding: 20px;
-
-
-            border-left: 6px solid #3b82f6;
-
-
-        }
-
-
-        .light-mode .stat-card {
-
-
-            background: #f1f5f9;
-
-
-        }
-
-
-        .stat-title {
-
-
-            font-size: 0.9rem;
-
-
-            color: #94a3b8;
-
-
-            margin-bottom: 8px;
-
-
-        }
-
-
-        .stat-value {
-
-
-            font-size: 2rem;
-
-
-            font-weight: 700;
-
-
-            color: #3b82f6;
-
-
-        }
-
-
-        .table {
-
-
-            width: 100%;
-
-
-            border-collapse: collapse;
-
-
-            background: #334155;
-
-
-            border-radius: 16px;
-
-
-            overflow: hidden;
-
-
-        }
-
-
-        .light-mode .table {
-
-
-            background: #f1f5f9;
-
-
-        }
-
-
-        .table th {
-
-
-            text-align: left;
-
-
-            padding: 16px 12px;
-
-
-            background: #1e293b;
-
-
-            color: #94a3b8;
-
-
-            font-weight: 600;
-
-
-            font-size: 0.9rem;
-
-
-        }
-
-
-        .light-mode .table th {
-
-
-            background: #e2e8f0;
-
-
-            color: #475569;
-
-
-        }
-
-
-        .table td {
-
-
-            padding: 16px 12px;
-
-
-            border-bottom: 1px solid #475569;
-
-
-        }
-
-
-        .light-mode .table td {
-
-
-            border-color: #cbd5e1;
-
-
-        }
-
-
-        .badge {
-
-
-            display: inline-block;
-
-
-            padding: 4px 12px;
-
-
-            border-radius: 40px;
-
-
-            font-size: 0.8rem;
-
-
-            background: #475569;
-
-
-            color: #e2e8f0;
-
-
-        }
-
-
-        .badge-success {
-
-
-            background: #05966920;
-
-
-            color: #34d399;
-
-
-            border: 1px solid #059669;
-
-
-        }
-
-
-        .badge-danger {
-
-
-            background: #dc262620;
-
-
-            color: #f87171;
-
-
-            border: 1px solid #dc2626;
-
-
-        }
-
-
-        .btn {
-
-
-            display: inline-block;
-
-
-            padding: 8px 16px;
-
-
-            border-radius: 12px;
-
-
-            font-weight: 500;
-
-
-            text-decoration: none;
-
-
-            border: none;
-
-
-            cursor: pointer;
-
-
-            font-size: 0.9rem;
-
-
-            transition: all 0.2s;
-
-
-            background: #3b82f6;
-
-
-            color: white;
-
-
-        }
-
-
-        .btn:hover {
-
-
-            background: #2563eb;
-
-
-        }
-
-
-        .btn-secondary {
-
-
-            background: #475569;
-
-
-            color: #e2e8f0;
-
-
-        }
-
-
-        .btn-secondary:hover {
-
-
-            background: #64748b;
-
-
-        }
-
-
-        .btn-danger {
-
-
-            background: #dc2626;
-
-
-        }
-
-
-        .btn-danger:hover {
-
-
-            background: #b91c1c;
-
-
-        }
-
-
-        .form-group {
-
-
-            margin-bottom: 20px;
-
-
-        }
-
-
-        .form-group label {
-
-
-            display: block;
-
-
-            margin-bottom: 6px;
-
-
-            color: #94a3b8;
-
-
-        }
-
-
-        .form-control {
-
-
-            width: 100%;
-
-
-            padding: 10px 12px;
-
-
-            background: #334155;
-
-
-            border: 1px solid #475569;
-
-
-            border-radius: 12px;
-
-
-            color: #e2e8f0;
-
-
-            font-size: 1rem;
-
-
-        }
-
-
-        .light-mode .form-control {
-
-
-            background: white;
-
-
-            border-color: #cbd5e1;
-
-
-            color: #1e293b;
-
-
-        }
-
-
-        .form-control:focus {
-
-
-            outline: none;
-
-
-            border-color: #3b82f6;
-
-
-        }
-
-
-        .path-input-group {
-
-
-            display: flex;
-
-
-            gap: 8px;
-
-
-        }
-
-
-        .path-input-group .form-control {
-
-
-            flex: 1;
-
-
-        }
-
-
-        .action-links button {
-
-
-            margin-right: 8px;
-
-
-        }
-
-
-    </style>
-
-
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ site_settings.title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/user-index.css') }}">
 </head>
-
-
 <body>
-
-
-    <div class="sidebar">
-
-
-        <div class="sidebar-header">
-
-
-            ?? ???? <span>???</span>
-
-
-        </div>
-
-
-        <div class="user-info">
-
-
-            <span>?? {{ session.username }} ({{ session.role }})</span>
-
-
-            <a href="{{ url_for('auth.logout') }}" class="logout-btn">??</a>
-
-
-        </div>
-
-
-        <div class="nav-items" id="navItems">
-
-
-            <!-- ????????? -->
-
-
-            <div class="nav-item" data-menu="dashboard" data-url="/api/dashboard-fragment">
-
-
-                <div class="parent">
-
-
-                    <i>??</i> ????
-
-
+    <div class="container">
+        <section id="workbenchLocked" class="hero-shell locked-shell" style="display:none;">
+            <div class="locked-minimal">
+                <span class="module-kicker">未登录</span>
+                <h2 id="lockedTitle" class="locked-title">{{ site_settings.locked_title }}</h2>
+                <p id="lockedSubtitle" class="hero-copy">{{ site_settings.locked_subtitle }}</p>
+                <div class="locked-actions">
+                    <button id="openAuthModalBtnHero" class="hero-btn primary" type="button">登录</button>
                 </div>
-
-
+                <div id="lockedFeatureRuntime" class="locked-runtime-hint">正在检查当前可用功能...</div>
             </div>
+        </section>
 
-
-            <!-- ?????????????? -->
-
-
-            <div class="nav-item has-sub" data-menu="frame">
-
-
-                <div class="parent">
-
-
-                    <i>??</i> ????
-
-
+        <div id="authModal" class="auth-modal open" aria-hidden="false" style="display:flex;">
+            <div class="auth-modal-backdrop" data-close-auth="true"></div>
+            <div class="auth-modal-dialog" role="dialog" aria-modal="true">
+                <div class="auth-modal-head">
+                    <div>
+                        <div id="loginBrandTitle" class="brand-title">{{ site_settings.login_title }}</div>
+                        <div id="loginBrandSubtitle" class="brand-sub">{{ site_settings.login_subtitle }}</div>
+                    </div>
                 </div>
-
-
-                <ul class="sub-items">
-
-
-                    <li class="sub-item" data-menu="templates" data-url="/templates-fragment">????</li>
-
-
-                    <li class="sub-item" data-menu="upload" data-url="/upload-fragment">????</li>
-
-
-                    <li class="sub-item" data-menu="material" data-url="/material-fragment">????</li>
-
-
-                    <li class="sub-item" data-menu="logs" data-url="/logs-fragment">????</li>
-
-                <li class="sub-item" data-menu="drafts" data-url="/drafts-folder-fragment">草稿路径</li>
-                <li class="sub-item" data-menu="billing" data-url="/billing-fragment">充值购买</li>
-
-                </ul>
-
-
-            </div>
-
-
-            <!-- ????????? -->
-
-
-            <div class="nav-item" data-menu="users" data-url="/admin/users-fragment">
-
-
-                <div class="parent">
-
-
-                    <i>??</i> ????
-
-
+                <div id="authPanel" class="auth-card auth-card-modal">
+                    <div class="auth-tabs">
+                        <button type="button" class="auth-tab active" data-tab="login">登录</button>
+                        <button type="button" class="auth-tab" data-tab="register">注册</button>
+                    </div>
+                    <form id="loginForm" class="auth-form">
+                        <input type="text" id="loginAccount" placeholder="用户名" maxlength="80" required>
+                        <input type="password" id="loginPassword" placeholder="密码" maxlength="64" required>
+                        <button type="submit" class="primary-btn">登录</button>
+                    </form>
+                    <form id="registerForm" class="auth-form" style="display:none;">
+                        <input type="text" id="registerUsername" placeholder="用户名" maxlength="80" required>
+                        <input type="password" id="registerPassword" placeholder="密码" maxlength="64" required>
+                        <input type="text" id="registerRefCode" placeholder="邀请码（选填）" maxlength="16">
+                        <button type="submit" class="primary-btn">注册并登录</button>
+                    </form>
+                    <div id="authMsg" class="auth-msg"></div>
                 </div>
-
-
             </div>
-
-
-            <!-- ????????? -->
-
-
-            <div class="nav-item" data-menu="site" data-url="/site-fragment">
-
-
-                <div class="parent">
-
-
-                    <i>??</i> ????
-
-
-                </div>
-
-
-            </div>
-
-
         </div>
 
+        <section id="workbenchApp" class="workspace-shell workbench-app">
+            <div class="workspace-head">
+                <div>
+                    <h2 id="workspaceTitle" class="workspace-title">{{ site_settings.workspace_title }}</h2>
+                    <p id="workspaceSubtitle" class="workspace-sub">{{ site_settings.workspace_subtitle }}</p>
+                </div>
+                <div class="workspace-head-actions">
+                    <div id="workspaceDraftBadge" class="workspace-badge">当前未选择草稿</div>
+                </div>
+            </div>
+            <div class="workspace-layout workspace-layout-vertical">
+                <aside class="workspace-sidebar">
+                    <div class="sidebar-title">工作区分类</div>
+                    <div class="sidebar-group" data-group="mix"><button class="sidebar-parent" type="button" data-group-toggle="mix"><span>批量混剪</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink active" href="#mix-mode-group-anchor" data-mix-target="group">按组精准替换</a><a class="sidebar-link sidebar-sublink" href="#mix-mode-mix-anchor" data-mix-target="mix">混剪裂变替换</a><a class="sidebar-link sidebar-sublink" href="#mix-mode-partition-anchor" data-mix-target="partition">分区混剪裂变</a></div></div>
+                    <div class="sidebar-group" data-group="ai"><button class="sidebar-parent" type="button" data-group-toggle="ai"><span>AI 智做</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-ai-make">AI 成片</a><a id="aiMangaSidebarLink" class="sidebar-link sidebar-sublink" href="#panel-ai-manga">AI 漫剧</a></div></div>
+                    <div class="sidebar-group" data-group="effects"><button class="sidebar-parent" type="button" data-group-toggle="effects"><span>批量效果</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-effects" data-subtab-container="effects_section" data-subtab-target="effects-core">效果配置</a><a class="sidebar-link sidebar-sublink" href="#panel-effects" data-subtab-container="effects_section" data-subtab-target="effects-resource">资源库</a><a id="duoSidebarLink" class="sidebar-link sidebar-sublink" href="#panel-effects" data-subtab-container="effects_section" data-subtab-target="effects-duo">Duo 资源</a></div></div>
+                    <div class="sidebar-group" data-group="split"><button class="sidebar-parent" type="button" data-group-toggle="split"><span>批量分割</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-split" data-subtab-container="panel-split" data-subtab-target="split-file">文件分割</a><a class="sidebar-link sidebar-sublink" href="#panel-split" data-subtab-container="panel-split" data-subtab-target="split-draft">草稿处理</a><a class="sidebar-link sidebar-sublink" href="#panel-split" data-subtab-container="panel-split" data-subtab-target="split-batch">批量查看</a></div></div>
+                    <div class="sidebar-group" data-group="clip"><button class="sidebar-parent" type="button" data-group-toggle="clip"><span>片段微调</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-clip" data-subtab-container="clipToolsGrid" data-subtab-target="clip-ai">AI 灵感</a><a class="sidebar-link sidebar-sublink" href="#panel-clip" data-subtab-container="clipToolsGrid" data-subtab-target="clip-rhythm">节奏变速</a><a class="sidebar-link sidebar-sublink" href="#panel-clip" data-subtab-container="clipToolsGrid" data-subtab-target="clip-transform">画面校正</a><a class="sidebar-link sidebar-sublink" href="#panel-clip" data-subtab-container="clipToolsGrid" data-subtab-target="clip-shake">摇晃关键帧</a></div></div>
+                    <div class="sidebar-group" data-group="export"><button class="sidebar-parent" type="button" data-group-toggle="export"><span>批量导出</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-export" data-subtab-container="panel-export" data-subtab-target="export-settings">导出设置</a><a class="sidebar-link sidebar-sublink" href="#panel-export" data-subtab-container="panel-export" data-subtab-target="export-batch">批量导出</a><a class="sidebar-link sidebar-sublink" href="#panel-export" data-subtab-container="panel-export" data-subtab-target="export-segments">片段导出</a></div></div>
+                    <div class="sidebar-group" data-group="settings"><button class="sidebar-parent" type="button" data-group-toggle="settings"><span>软件设置</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-settings" data-hard-panel="panel-settings" data-hard-section="settings-basic-section">工作台设置</a><a class="sidebar-link sidebar-sublink" href="#panel-settings" data-hard-panel="panel-settings" data-hard-section="settings-path-section">路径与目录</a><a class="sidebar-link sidebar-sublink" href="#panel-settings" data-hard-panel="panel-settings" data-hard-section="settings-service-section">AI 漫剧服务</a><a class="sidebar-link sidebar-sublink" href="#panel-settings" data-hard-panel="panel-settings" data-hard-section="settings-ai-section">AI 账号管理</a></div></div>
+                    <div class="sidebar-group" data-group="account"><button class="sidebar-parent" type="button" data-group-toggle="account"><span>账户中心</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-account" data-hard-panel="panel-account" data-hard-section="account-profile-section">账户信息</a><a class="sidebar-link sidebar-sublink" href="#panel-account" data-hard-panel="panel-account" data-hard-section="account-license-section">授权激活</a></div></div>
+                    <button id="themeToggle" class="sidebar-mode-toggle" type="button" title="主题切换" aria-label="主题切换"><span class="mode-icon mode-sun">☀</span><span class="mode-icon mode-moon">☾</span></button>
+                </aside>
 
-        <div class="theme-toggle" id="themeToggle">
+                <main class="workspace-main">
+
+                    <section id="panel-materials" class="module-block workspace-panel active" data-requires-draft="true" data-panel-title="批量混剪">
+                        <div class="module-head"><div><span class="module-kicker">批量混剪</span><h3 id="mixPanelTitle" class="module-title">选好草稿后，直接开始批量生成</h3><p id="mixPanelSub" class="module-sub">详细规则见使用说明。</p></div></div>
+                        <section class="tool-card flow-card draft-inline-card draft-compact-card" data-draft-shell="true">
+                            <div class="tool-head"><div><h3>第 1 步：选择参考草稿</h3></div><div class="inline-actions"><button class="effect-add" type="button" id="mixGuideBtn" onclick="openMixGuideModal()">使用说明</button><button class="effect-add" type="button" id="refreshDraftsBtn" data-action="refresh-drafts">刷新草稿列表</button></div></div>
+                            <div class="grid-2">
+                                <input id="draftVersionSelect" data-draft-role="version" type="hidden" value="all">
+                                <div class="form-group full"><label>当前草稿</label><div class="draft-selected-bar"><input type="text" id="draft_path" data-draft-role="path" placeholder="请先从下方自动发现列表选择草稿" readonly></div><div id="draft_status" class="hint" data-draft-role="status"></div></div>
+                            </div>
+                            <div id="draftDiscoverySummary" class="hint" data-draft-role="summary">正在查找本机草稿...</div>
+                            <div id="draftRootList" class="draft-root-list" data-draft-role="roots"></div>
+                            <div id="draftDiscoveryList" class="draft-list-grid" data-draft-role="list"><div class="tool-result">正在查找本机草稿...</div></div>
+                        </section>
+                        <span id="mix-mode-group-anchor" class="workspace-anchor"></span>
+                        <span id="mix-mode-mix-anchor" class="workspace-anchor"></span>
+                        <span id="mix-mode-partition-anchor" class="workspace-anchor"></span>
+                        <div class="quick-action-card"><div class="quick-action-copy"><strong id="mixPrimaryTitle">默认执行链路</strong><span id="mixPrimaryDesc">选择草稿 → 选择素材目录 → 一键生成</span></div><button id="submitBtn" class="primary-btn" type="button" onclick="submitBatch()">开始生成</button></div>
+                        <div class="mix-content-switcher">
+                            <section class="tool-card flow-card mix-subpanel active" data-mix-panel="group">
+                                <div class="tool-head"><div><h3>适用方式</h3><p>草稿每个槽位独立对应一个素材目录。每次生成时每个槽位只取一个素材，目录里素材多时会随批量数量轮换。</p></div></div>
+                            </section>
+                            <section class="tool-card flow-card mix-subpanel" data-mix-panel="mix">
+                                <div class="tool-head"><div><h3>适用方式</h3><p>全部片段共享同一个素材池。每次生成时每个槽位只取一个素材，更适合用大量视频做多条裂变成片。</p></div></div>
+                            </section>
+                            <section class="tool-card flow-card mix-subpanel" data-mix-panel="partition">
+                                <div class="tool-head"><div><h3>适用方式</h3><p>按片头、主体、片尾这类分区精确匹配素材。每次生成时每个分区只取一个素材，适合分区内多素材轮换。</p></div></div>
+                            </section>
+                        </div>
+                        <div id="materials_area" class="materials-strip-card" style="display:none;"><div id="materials_list"></div></div>
+                        <div id="texts_area" style="display:none;"></div>
+                        <section id="folder_section" class="tool-card flow-card" style="display:none;"><div class="tool-head"><div><h3 id="mixFolderTitle">第 4 步：选择素材目录</h3><p id="mixFolderDesc">目录要求见使用说明。</p></div></div><div class="form-group"><label id="materialsRootLabel">素材目录</label><div class="folder-select"><input type="text" id="folder_path"><button type="button" onclick="selectFolder()">选择目录</button></div><div id="recentMaterialFolders" class="recent-folder-row"></div></div></section>
+                        <details class="advanced-card" id="options_section" style="display:none;"><summary id="mixAdvancedTitle">第 5 步：高级设置</summary><div class="advanced-body"><div id="mixAdvancedHint" class="hint">不同模式的目录组织方式不同，请先确认再开始生成。</div><div class="grid-2"><div class="form-group"><label>替换内容</label><div class="checkbox-group"><label><input type="checkbox" id="replace_materials" checked> 替换素材</label><label><input type="checkbox" id="replace_texts" checked> 替换文字</label><label><input type="checkbox" id="replace_audios"> 替换音乐</label></div></div><div class="form-group"><label id="replaceTypeLabel">素材类型</label><select id="replace_type"><option value="both">图片 + 视频 + 音频</option><option value="video">仅视频</option><option value="image">仅图片</option><option value="audio">仅音频</option></select></div><div class="form-group"><label id="replaceModeLabel">分配策略</label><select id="replace_mode"><option value="order">顺序模式（均匀利用）</option><option value="random">随机裂变模式</option></select></div><div class="form-group"><label>批量数量</label><input type="number" id="batch_count" min="1" max="100" value="5"></div></div><details class="advanced-card mix-addon-card" open><summary>附加音频</summary><div class="advanced-body grid-2"><div class="form-group"><label><input type="checkbox" id="audio_enabled"> 生成时附加音频</label></div><div class="form-group full"><label>音频目录</label><div class="folder-select"><input type="text" id="audio_folder_path" placeholder="可单独选择音频目录"><button type="button" onclick="selectAudioFolder()">选择目录</button></div></div></div></details></div></details>
+                        <div id="progress-area" class="progress-area" style="display:none;"><div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div><div id="progress-text" class="hint">等待任务开始...</div></div>
+                    </section>
 
 
-            <div class="theme-option">?? ??</div>
+                    <section id="panel-ai-make" class="module-block workspace-panel" data-requires-draft="false" data-panel-title="AI 智做">
+                        <div id="ai-make-anchor" class="workspace-anchor"></div>
+                        <div class="module-head"><div><span class="module-kicker">AI 成片</span><h3 class="module-title">图生视频、语音合成和文案生成</h3><p class="module-sub">这里只保留执行参数。账号统一到“软件设置 → AI账号管理”维护。</p></div><button class="effect-add" type="button" onclick="refreshAiMaterials()">刷新 AI 素材</button></div><div class="tool-result" style="margin-bottom:16px;">先在“软件设置 → AI账号管理”维护账号，再回到这里直接执行生成。</div><div class="tool-grid tool-grid-3"><div class="tool-card"><div class="tool-head"><div><h3>即梦图生视频</h3></div></div><div class="grid-2"><div class="form-group"><label>可用账号</label><select id="ai_jimeng_key"><option value="">请选择</option></select></div><div class="form-group"><label>风格</label><select id="ai_jimeng_style"><option value="">默认</option><option value="realistic">写实</option><option value="anime">动漫</option><option value="cinema">电影感</option><option value="illustration">插画</option></select></div><div class="form-group full"><label>提示词</label><textarea id="ai_jimeng_prompt" rows="4" placeholder="描述你想生成的视频画面"></textarea></div><div class="form-group"><label>生成动作</label><input type="text" id="ai_jimeng_action" placeholder="VideoGeneration"></div><div class="form-group"><label>版本号（可选）</label><input type="text" id="ai_jimeng_version" placeholder="2024-01-01"></div></div><div class="inline-actions"><button class="primary-btn" type="button" onclick="startAiVideo()">开始生成</button></div><div id="ai_jimeng_status" class="hint">账号、提示词和必要参数填写完成后即可开始。</div></div><div class="tool-card"><div class="tool-head"><div><h3>火山 TTS</h3></div></div><div class="grid-2"><div class="form-group"><label>可用账号</label><select id="ai_volc_key"><option value="">请选择</option></select></div><div class="form-group"><label>音色</label><select id="ai_volc_voice"><option value="">默认</option><option value="BV001">女声 1</option><option value="BV002">女声 2</option><option value="BV003">男声</option></select></div><div class="form-group full"><label>文案</label><textarea id="ai_volc_text" rows="4" placeholder="输入要合成的文案"></textarea></div></div><div class="inline-actions"><button class="primary-btn" type="button" onclick="startAiAudio()">开始合成</button></div><div id="ai_volc_status" class="hint">选择账号、音色并填写文案后即可开始。</div></div><div class="tool-card"><div class="tool-head"><div><h3>AI 文案</h3></div></div><div class="grid-2"><div class="form-group"><label>可用账号</label><select id="ai_openai_key"><option value="">请选择</option></select></div><div class="form-group"><label>长度</label><select id="ai_text_length"><option value="50">50 字</option><option value="100">100 字</option><option value="200">200 字</option></select></div><div class="form-group full"><label>需求描述</label><textarea id="ai_text_prompt" rows="4" placeholder="例如：写一段 100 字口播文案"></textarea></div></div><div class="inline-actions"><button class="primary-btn" type="button" onclick="startAiText()">生成文案</button><button class="effect-add" type="button" onclick="fillTextPanelFromAi()">填入文字替换区</button></div><div id="ai_text_status" class="hint">选择账号并填写需求后即可开始。</div><textarea id="ai_text_result" rows="5" placeholder="生成结果"></textarea></div></div><div class="tool-card"><div class="tool-head"><div><h3>最近 AI 素材</h3></div></div><div id="ai_recent_materials" class="tool-result">这里会显示最近生成的素材。</div></div>
+                    </section>
 
+                    <section id="panel-ai-manga" class="module-block workspace-panel" data-requires-draft="false" data-panel-title="AI 智做">
+                        <div id="ai-manga-anchor" class="workspace-anchor"></div>
+                        <div class="module-head"><div><span class="module-kicker">AI 漫剧</span><h3 class="module-title">上传角色图，写脚本，生成画面和视频</h3><p class="module-sub">如果你想做一组连续画面或短视频，可以直接在这里完成。</p></div><div class="inline-actions"><button id="openclawConfigBtn" class="effect-add" type="button" onclick="openOpenclawConfig()">去 AI 漫剧服务</button><button class="effect-add" type="button" onclick="refreshAiMaterials()">刷新素材</button></div></div><div id="mangaFeatureNotice" class="tool-result" style="display:none;"></div><div id="mangaFeatureContent"><div class="tool-grid"><div class="tool-card"><div class="tool-head"><div><h3>角色与脚本</h3></div></div><div class="manga-upload"><input type="file" id="manga_character_file" accept="image/*"><img id="manga_character_preview" class="manga-preview-img" alt="角色参考图预览"></div><div class="hint">这里上传的是角色参考图，用来统一人物外观和画面风格。</div><div class="form-group"><label>分镜脚本</label><textarea id="manga_script" rows="5" placeholder="示例：\n1. 女主走进咖啡店，镜头推进\n2. 店员递上咖啡，特写杯口热气\n3. 女主喝一口后微笑，看向镜头"></textarea><div class="hint">直接按分镜逐段写场景、动作和镜头即可。首次使用前请先到“软件设置 -> AI 漫剧服务”完成配置。</div></div></div><div class="tool-card"><div class="tool-head"><div><h3>风格与镜头</h3></div></div><div class="grid-2"><div class="form-group"><label>风格</label><select id="manga_style"><option value="manga_style_01">内置风格 1</option><option value="manga_style_02">内置风格 2</option><option value="manga_style_03">内置风格 3</option><option value="manga_style_04">内置风格 4</option></select><div class="hint">当前是内置的 4 组预设风格，后续可以再补具体示例图。</div></div><div class="form-group"><label>镜头类型</label><div class="tag-group" id="manga_shot_types"></div></div><div class="form-group"><label>帧数</label><input type="range" id="manga_frame_count" min="1" max="10" value="5"></div><div class="form-group"><label>图片分辨率</label><select id="manga_image_resolution"><option value="512x512">512x512</option><option value="768x768" selected>768x768</option><option value="1024x1024">1024x1024</option></select></div><div class="form-group"><label>视频码率</label><input type="number" id="manga_video_bitrate" value="2000" min="500" max="8000"></div><div class="form-group"><label>预设名称</label><input type="text" id="manga_template_name" placeholder="保存当前参数，方便下次复用"></div></div><div class="inline-actions"><button id="manga_generate_btn" class="primary-btn" type="button" onclick="startMangaGenerate()">开始生成</button><button id="manga_cancel_btn" class="effect-add" type="button" onclick="cancelMangaGenerate()" style="display:none;">取消</button><button class="effect-add" type="button" onclick="saveMangaTemplate()">保存模板</button></div><div class="progress-bar"><div id="manga_progress_fill" class="progress-fill"></div></div><div id="manga_status" class="hint">完成脚本、角色图和服务配置后即可开始。</div><button id="manga_log_btn" class="effect-add" type="button" onclick="openOpenclawLogModal()" style="display:none; margin-top:8px;">查看运行记录</button></div></div><div class="tool-grid tool-grid-3"><div class="tool-card"><div class="tool-head"><div><h3>模板库</h3></div></div><div id="manga_template_list" class="manga-material-grid"></div></div><div class="tool-card"><div class="tool-head"><div><h3>生成历史</h3></div></div><div id="manga_history_list" class="manga-material-grid"></div></div><div class="tool-card"><div class="tool-head"><div><h3>结果预览</h3></div></div><div id="manga_result_video"></div><div id="manga_result_frames" class="manga-grid"></div></div></div><section class="tool-card flow-card"><div class="tool-head"><div><h3>批量处理 AI 素材</h3><p>把最近生成的素材统一改时长、加效果或批量导出。</p></div></div><div class="grid-2"><div class="form-group full"><label>已选素材编号</label><textarea id="manga_batch_ids" rows="3" placeholder="可在下方最近 AI 素材中勾选自动填入，也可手动输入，逗号分隔"></textarea></div><div class="form-group"><label>统一时长（秒）</label><input type="number" id="manga_batch_duration" value="3" min="1" step="0.5"></div><div class="form-group"><label>效果设置</label><input type="text" id="manga_batch_effects" placeholder='例如 {"zoom":true,"shake":false}'></div></div><div class="inline-actions"><button class="effect-add" type="button" onclick="fillMangaBatchSelection()">带入已勾选素材</button><button class="effect-add" type="button" onclick="applyMangaBatchDuration()">批量设时长</button><button class="effect-add" type="button" onclick="applyMangaBatchEffects()">批量加效果</button><button class="primary-btn" type="button" onclick="exportMangaBatch()">批量导出</button></div><div id="manga_batch_status" class="tool-result">批量处理结果会显示在这里。</div></section></div>
+                    </section>
+                    <section id="panel-effects" class="module-block workspace-panel" data-requires-draft="true" data-panel-title="批量效果">
+                        <div class="module-head"><div><span class="module-kicker">批量效果</span><h3 class="module-title">给草稿快速加效果、转场、贴纸和 Duo 资源</h3><p class="module-sub">常用操作可以直接点选，复杂参数再放到高级设置里调整。</p></div></div>
+                        <section class="tool-card flow-card draft-inline-card draft-compact-card" data-draft-shell="true">
+                            <div class="tool-head"><div><h3>先选择要加效果的草稿</h3><p>在这里选择草稿后，再继续添加效果。</p></div><button class="effect-add" type="button" data-action="refresh-drafts">刷新草稿列表</button></div>
+                            <div class="grid-2">
+                                <input data-draft-role="version" type="hidden" value="all">
+                                <div class="form-group full"><label>当前草稿</label><div class="draft-selected-bar"><input type="text" data-draft-role="path" placeholder="请先从下方自动发现列表选择草稿" readonly></div><div class="hint" data-draft-role="status"></div></div>
+                            </div>
+                            <div class="hint" data-draft-role="summary">正在查找本机草稿...</div>
+                            <div class="draft-root-list" data-draft-role="roots"></div>
+                            <div class="draft-list-grid" data-draft-role="list"><div class="tool-result">正在查找本机草稿...</div></div>
+                        </section>
+                        <div id="login_tip" class="hint" style="display:none;">请先登录并选择草稿后再配置效果。</div>
+                        <div id="effectsEmptyState" class="tool-result effects-empty-state">先选择草稿，再继续使用效果配置、资源库和 Duo 资源。</div>
+                        <div id="effects_section" class="module-subsection" data-ready="false" style="display:none;">
+                            <div class="quick-action-card" data-subtab-group="effects-core"><div class="quick-action-copy"><strong>快速上手</strong><span>先套一个风格，再补少量特效和转场，效率更高。</span></div><select id="preset_select"><option value="">不使用预设</option><option value="vintage_shake">复古抖动</option><option value="vlog_fresh">清新 Vlog</option><option value="cinema">电影感</option></select><button class="primary-btn" type="button" onclick="applyPreset()">套用预设</button></div>
+                            <div id="effects-resource-anchor" class="anchor-offset"></div>
+                            <details class="advanced-card" data-subtab-group="effects-resource" open><summary>资源库</summary><div class="advanced-body"><div class="grid-2"><div class="form-group"><label>资源类型</label><select id="effect_type"></select></div><div class="form-group"><label>关键词</label><input type="text" id="effect_keyword"></div><div class="form-group"><label>数量</label><input type="number" id="effect_limit" value="50"></div><div class="form-group"><label><input type="checkbox" id="effect_is_vip"> 仅 VIP</label></div></div><div class="inline-actions"><button class="primary-btn" type="button" onclick="searchResources()">搜索资源</button></div><div id="resource_results" class="tool-result">搜索后在这里查看结果。</div></div></details>
+                            <div id="effects-duo-anchor" class="anchor-offset"></div>
+                            <div id="duoFeatureNotice" class="tool-result" data-subtab-group="effects-duo" style="display:none;"></div>
+                            <details id="duoSection" class="advanced-card" data-subtab-group="effects-duo" open><summary>Duo 资源库</summary><div class="advanced-body"><div class="grid-2"><div class="form-group"><label>分类</label><select id="duo_category"></select></div><div class="form-group"><label>关键词</label><input type="text" id="duo_keyword"></div><div class="form-group"><label>每页数量</label><input type="number" id="duo_limit" value="20"></div><div class="form-group"><label>页码</label><input type="number" id="duo_page" value="1"></div><div class="form-group"><label>资源路径</label><input type="text" id="duo_resource_path"></div><div class="form-group"><label>导入资源包</label><input type="file" id="duo_resource_file"></div></div><div class="inline-actions"><button class="primary-btn" type="button" onclick="searchDuoResources()">搜索 Duo 资源</button><button class="effect-add" type="button" onclick="duoPrevPage()">上一页</button><button class="effect-add" type="button" onclick="duoNextPage()">下一页</button><button class="effect-add" type="button" onclick="clearDuoCache()">清空缓存</button><button class="effect-add" type="button" onclick="refreshDuoCache()">刷新资源索引</button><button class="effect-add" type="button" onclick="uploadDuoResources()">上传资源包</button></div><div id="duo_pager_info" class="hint"></div><div id="duo_cache_info" class="hint"></div><div id="duo_ffmpeg_info" class="hint"></div><div id="duo_results" class="tool-result">搜索后在这里查看结果。</div></div></details>
+                            <div class="tool-grid tool-grid-3" data-subtab-group="effects-core"><div class="tool-card"><div class="tool-head"><div><h3>视频效果列表</h3></div></div><div id="video_effect_list" class="effect-list"></div><div id="video_anim_list" class="effect-list"></div><div id="transition_list" class="effect-list"></div></div><div class="tool-card"><div class="tool-head"><div><h3>蒙版与背景</h3></div></div><div id="mask_list" class="effect-list"></div><div id="bg_list" class="effect-list"></div></div><div class="tool-card"><div class="tool-head"><div><h3>文字与音频</h3></div></div><div id="vf_list" class="effect-list"></div><div id="text_anim_list" class="effect-list"></div><div id="text_bubble_list" class="effect-list"></div><div id="text_effect_list" class="effect-list"></div><div id="audio_effect_list" class="effect-list"></div><div id="audio_fade_list" class="effect-list"></div><div id="audio_kf_list" class="effect-list"></div></div></div>
+                            <div class="tool-grid tool-grid-3" data-subtab-group="effects-duo"><div class="tool-card"><div class="tool-head"><div><h3>Duo 快速设置</h3></div></div><select id="duo_track_select"><option value="">全部片段</option></select><div id="duo_track_info" class="hint"></div><input type="text" id="duo_indexes" placeholder="片段序号"><input type="text" id="duo_params" placeholder='效果设置，例如 {"blur":true}'><input type="text" id="duo_timerange" placeholder="时间范围"><input type="text" id="duo_clip_settings" placeholder="片段补充设置"><input type="number" step="0.1" id="duo_intensity" placeholder="强度"><input type="text" id="duo_position" placeholder="位置"><input type="number" step="0.1" id="duo_scale" value="1" oninput="syncDuoScale('num')"><input type="range" id="duo_scale_slider" min="0.1" max="3" step="0.1" value="1" oninput="syncDuoScale('slider')"><input type="number" step="1" id="duo_rotation" value="0" oninput="syncDuoRotation('num')"><input type="range" id="duo_rotation_slider" min="-180" max="180" step="1" value="0" oninput="syncDuoRotation('slider')"></div><div class="tool-card"><div class="tool-head"><div><h3>Duo 预设</h3></div></div><select id="duo_param_preset" onchange="applyDuoPreset()"><option value="">不使用</option><option value="beauty">美颜</option><option value="shake">抖动</option></select><label><input type="checkbox" id="duo_param_blur"> 模糊</label><label><input type="checkbox" id="duo_param_shake"> 抖动</label><label><input type="checkbox" id="duo_param_beauty"> 美颜</label><input type="number" step="0.1" id="duo_param_intensity" placeholder="强度"><input type="number" step="0.1" id="duo_param_strength" placeholder="抖动幅度"><input type="number" step="0.1" id="duo_param_speed" placeholder="速度"><input type="number" step="0.1" id="duo_param_smooth" placeholder="磨皮"><input type="number" step="0.1" id="duo_param_whiten" placeholder="美白"></div><div class="tool-card"><div class="tool-head"><div><h3>Duo 细调设置</h3></div></div><textarea id="duo_green_screen" rows="2" placeholder="绿幕设置"></textarea><textarea id="duo_reverse" rows="2" placeholder="倒放设置"></textarea><textarea id="duo_lut" rows="2" placeholder="LUT 设置"></textarea><textarea id="duo_text_styles" rows="2" placeholder="文字样式设置"></textarea><textarea id="duo_manual_config" rows="2" placeholder="补充设置"></textarea></div></div>
+                            <div class="tool-grid tool-grid-3" data-subtab-group="effects-duo"><div class="tool-card"><div class="tool-head"><div><h3>Duo 文字模板</h3></div></div><div id="duo_text_list" class="effect-list"></div></div><div class="tool-card"><div class="tool-head"><div><h3>Duo 画面特效</h3></div></div><div id="duo_video_effect_list" class="effect-list"></div></div><div class="tool-card"><div class="tool-head"><div><h3>Duo 转场 / 脸部 / 贴纸</h3></div></div><div id="duo_transition_list" class="effect-list"></div><div id="duo_face_list" class="effect-list"></div><div id="duo_sticker_list" class="effect-list"></div></div></div>
+                            <input type="hidden" id="video_filter"><input type="hidden" id="video_filter_intensity" value="60"><input type="hidden" id="video_filter_intensity_slider" value="60"><input type="hidden" id="video_effect_type"><input type="hidden" id="video_effect_params"><input type="hidden" id="video_effect_indexes"><input type="hidden" id="video_anim_type" value="In"><input type="hidden" id="video_anim_name"><input type="hidden" id="video_anim_duration" value="0.5"><input type="hidden" id="video_anim_indexes"><input type="hidden" id="transition_type"><input type="hidden" id="transition_duration" value="0.5"><input type="hidden" id="transition_indexes"><input type="hidden" id="mask_type"><input type="hidden" id="mask_center"><input type="hidden" id="mask_size"><input type="hidden" id="mask_rotation"><input type="hidden" id="mask_feather"><input type="hidden" id="mask_invert" value="false"><input type="hidden" id="mask_rect_width"><input type="hidden" id="mask_round_corner"><input type="hidden" id="mask_indexes"><input type="hidden" id="bg_type"><input type="hidden" id="bg_blur"><input type="hidden" id="bg_color"><input type="hidden" id="bg_indexes"><input type="hidden" id="vf_prop"><input type="hidden" id="vf_time"><input type="hidden" id="vf_value"><input type="hidden" id="vf_indexes"><input type="hidden" id="text_intro"><input type="hidden" id="text_anim_type" value="TextIntro"><input type="hidden" id="text_anim_name"><input type="hidden" id="text_anim_duration"><input type="hidden" id="text_anim_indexes"><input type="hidden" id="text_bubble_effect_id"><input type="hidden" id="text_bubble_resource_id"><input type="hidden" id="text_bubble_indexes"><input type="hidden" id="text_effect_id"><input type="hidden" id="text_effect_indexes"><input type="hidden" id="audio_effect_type" value="AudioSceneEffectType"><input type="hidden" id="audio_effect"><input type="hidden" id="audio_effect_custom"><input type="hidden" id="audio_effect_params"><input type="hidden" id="audio_effect_indexes"><input type="hidden" id="audio_fade_in"><input type="hidden" id="audio_fade_out"><input type="hidden" id="audio_fade_indexes"><input type="hidden" id="audio_kf_time"><input type="hidden" id="audio_kf_volume"><input type="hidden" id="audio_kf_indexes"><textarea id="effects_json" style="display:none;"></textarea>
+                        </div>
+                    </section>
 
-            <div class="theme-option">?? ??</div>
+                    <section id="panel-split" class="module-block workspace-panel" data-requires-draft="false" data-panel-title="批量分割"><div class="module-head"><div><span class="module-kicker">批量分割</span><h3 class="module-title">在这里拆分文件、处理草稿和批量查看内容结构</h3><p class="module-sub">文件可以直接分割；草稿建议先查看内容结构，再继续处理。</p></div></div><div class="tool-card" data-subtab-group="split-file"><div class="tool-head"><div><h3>文件操作</h3></div></div><div class="grid-2"><div class="form-group"><label>模式</label><select id="split_mode"><option value="fixed">按固定时长</option><option value="count">按数量平均</option><option value="scene">智能镜头分割</option><option value="silence">静音分割</option><option value="subtitle">沿字幕边缘分割</option></select></div><div class="form-group"><label>源文件或目录</label><input type="text" id="split_source_path"></div><div class="form-group"><label>输出目录</label><input type="text" id="split_output_dir"></div><div class="form-group split-mode-field" data-mode="fixed"><label>分段时长（秒）</label><input type="number" id="split_segment_seconds" value="10"></div><div class="form-group split-mode-field" data-mode="count" style="display:none;"><label>分割份数</label><input type="number" id="split_count" value="4"></div><div class="form-group split-mode-field" data-mode="scene" style="display:none;"><label>灵敏度</label><input type="number" id="split_threshold" value="30"></div><div class="form-group split-mode-field" data-mode="scene" style="display:none;"><label>最短镜头时长</label><input type="number" id="split_min_scene_len" value="15"></div><div class="form-group split-mode-field" data-mode="silence" style="display:none;"><label>静音分贝</label><input type="number" id="split_silence_db" value="-35"></div><div class="form-group split-mode-field" data-mode="silence" style="display:none;"><label>最短静音时长</label><input type="number" step="0.1" id="split_min_silence" value="0.4"></div><div class="form-group split-mode-field full" data-mode="subtitle" style="display:none;"><label>字幕文件</label><input type="text" id="split_subtitle_path"></div><div class="form-group"><label><input type="checkbox" id="split_build_draft"> 分割后同步生成草稿</label></div></div><div id="split_mode_hint" class="hint">准备开始分割</div><div class="inline-actions"><button class="effect-add" type="button" onclick="selectSplitSourceFile()">选择文件</button><button class="effect-add" type="button" onclick="selectSplitSourceFolder()">选择目录</button><button class="effect-add" type="button" onclick="selectSplitOutputFolder()">选择输出目录</button><button class="effect-add" type="button" onclick="selectSplitSubtitleFile()">选择字幕</button><button class="primary-btn" type="button" onclick="startSplit()">开始分割</button></div><div id="split_status" class="hint">准备开始分割</div><div id="split_result" class="tool-result">分割结果会显示在这里。</div></div><section class="tool-card flow-card draft-inline-card draft-compact-card" data-subtab-group="split-draft" data-draft-shell="true"><div class="tool-head"><div><h3>草稿操作</h3><p>先选择草稿，再查看视频内容和字幕结构。</p></div><button class="effect-add" type="button" data-action="refresh-drafts">刷新草稿列表</button></div><div class="grid-2"><input data-draft-role="version" type="hidden" value="all"><div class="form-group full"><label>当前草稿</label><div class="draft-selected-bar"><input type="text" data-draft-role="path" placeholder="请先从下方自动发现列表选择草稿" readonly></div><div class="hint" data-draft-role="status"></div></div></div><div class="hint" data-draft-role="summary">正在查找本机草稿...</div><div class="draft-root-list" data-draft-role="roots"></div><div class="draft-list-grid" data-draft-role="list"><div class="tool-result">正在查找本机草稿...</div></div></section><section class="tool-card flow-card" data-subtab-group="split-draft"><div class="tool-head"><div><h3>内容结构 / 主视频操作</h3><p>先查看结构，再按固定时长切出新的草稿副本。</p></div></div><div class="grid-2"><div class="form-group"><label>主视频定长分割（秒）</label><input type="number" id="split_draft_segment_seconds" value="3" min="0.2" step="0.1"></div><div class="form-group"><label>新草稿输出目录</label><input type="text" id="split_draft_output_dir" placeholder="留空默认导出到草稿目录"></div></div><div class="inline-actions"><button class="effect-add" type="button" onclick="analyzeSplitDraft()">查看草稿结构</button><button class="effect-add" type="button" onclick="selectSplitDraftOutputFolder()">选择输出目录</button><button class="primary-btn" type="button" onclick="splitDraftMainTrack()">主视频定长分割</button><button class="primary-btn" type="button" onclick="exportMainTrackSegments()">导出当前草稿主视频片段</button></div><div id="split_draft_result" class="tool-result">草稿结构会显示在这里。</div></section><section class="tool-card flow-card" data-subtab-group="split-batch"><div class="tool-head"><div><h3>多草稿操作</h3><p>把最近发现的草稿加入列表，批量查看结构，方便提前排查问题。</p></div></div><div class="inline-actions"><button class="effect-add" type="button" onclick="addDiscoveredDraftsToSplitQueue()">加入最近发现的草稿</button><button class="effect-add" type="button" onclick="clearSplitDraftQueue()">清空列表</button><button class="primary-btn" type="button" onclick="analyzeSplitDraftQueue()">批量查看草稿结构</button></div><div id="split_queue_summary" class="hint">当前还没有待查看的草稿。</div><div id="split_queue_list" class="tool-result">待查看的草稿会显示在这里。</div><div id="split_multi_result" class="tool-result">多草稿结构会显示在这里。</div></section></section>
 
+                    <section id="panel-clip" class="module-block workspace-panel" data-requires-draft="true" data-panel-title="片段微调"><div class="module-head"><div><span class="module-kicker">片段微调</span><h3 class="module-title">变速、偏移、缩放、镜像和摇晃都在这里一键微调</h3><p class="module-sub">先选草稿，再选片段范围，最后按需要启用具体微调项。</p></div></div><section class="tool-card flow-card draft-inline-card draft-compact-card" data-draft-shell="true"><div class="tool-head"><div><h3>先选择要微调的草稿</h3><p>微调操作只在当前分类里显示草稿选择。</p></div><button class="effect-add" type="button" data-action="refresh-drafts">刷新草稿列表</button></div><div class="grid-2"><input data-draft-role="version" type="hidden" value="all"><div class="form-group full"><label>当前草稿</label><div class="draft-selected-bar"><input type="text" data-draft-role="path" placeholder="请先从下方自动发现列表选择草稿" readonly></div><div class="hint" data-draft-role="status"></div></div></div><div class="hint" data-draft-role="summary">正在查找本机草稿...</div><div class="draft-root-list" data-draft-role="roots"></div><div class="draft-list-grid" data-draft-role="list"><div class="tool-result">正在查找本机草稿...</div></div></section><div id="clipToolsGrid" class="tool-grid tool-grid-3"><div class="tool-card" data-subtab-group="clip-ai"><div class="tool-head"><div><h3>AI 灵感辅助</h3></div></div><div class="grid-2"><div class="form-group"><label>主题</label><input type="text" id="ai_topic"></div><div class="form-group"><label>风格</label><select id="ai_style"><option value="产品种草">产品种草</option><option value="剧情反转">剧情反转</option><option value="教程演示">教程演示</option></select></div><div class="form-group"><label>时长</label><input type="number" id="ai_duration" value="30"></div><div class="form-group full"><label>卖点</label><input type="text" id="ai_points" placeholder="用逗号分隔"></div></div><div class="inline-actions"><button class="effect-add" type="button" onclick="buildAiDraft()">快速生成初稿</button><button class="effect-add" type="button" onclick="runAiGenerate()">让 AI 帮你扩写</button></div><div id="ai_result" class="tool-result">脚本建议会显示在这里。</div><select id="ai_key_id" style="display:none;"><option value="">自动选择可用账号</option></select></div><div class="tool-card" data-subtab-group="clip-rhythm"><div class="tool-head"><div><h3>片段节奏与变速</h3></div></div><div class="grid-2"><div class="form-group"><label>片段范围</label><input type="text" id="clip_indexes" placeholder="0,1,2；留空默认全部"></div></div><div class="grid-2"><div class="form-group"><label>节奏策略</label><select id="clip_rhythm"><option value="稳态推进">稳态推进</option><option value="前快后稳">前快后稳</option><option value="随机起伏">随机起伏</option></select></div><div class="form-group"><label>字幕长度上限</label><input type="number" id="clip_caption_limit" value="16"></div><div class="form-group"><label><input type="checkbox" id="clip_trim_head" checked> 根据默认槽时长裁剪</label></div><div class="form-group"><label><input type="checkbox" id="clip_caption_clean" checked> 顺手润色文案 / 清理口头语</label></div><div class="form-group"><label>变速下限</label><input type="number" step="0.05" id="clip_speed_min" value="0.9"></div><div class="form-group"><label>变速上限</label><input type="number" step="0.05" id="clip_speed_max" value="1.1"></div></div><div class="inline-actions"><button class="effect-add" type="button" onclick="applyClipSpeedPreset('slow')">随机减速</button><button class="effect-add" type="button" onclick="applyClipSpeedPreset('fast')">随机加速</button><button class="effect-add" type="button" onclick="applyClipSpeedPreset('random')">随机变速</button></div><div class="inline-actions"><button class="effect-add" type="button" onclick="buildClipTunePlan()">生成建议</button><button class="primary-btn" type="button" onclick="applyClipTuneToDraft()">应用到草稿</button></div><div id="clip_result" class="tool-result">微调建议和执行结果会显示在这里。</div></div><div class="tool-card" data-subtab-group="clip-transform"><div class="tool-head"><div><h3>偏移 / 缩放 / 旋转 / 镜像</h3></div></div><div class="grid-2"><div class="form-group"><label>缩放下限</label><input type="number" step="0.05" id="clip_scale_min" value="0.95"></div><div class="form-group"><label>缩放上限</label><input type="number" step="0.05" id="clip_scale_max" value="1.05"></div><div class="form-group"><label>随机偏移 X</label><input type="number" step="0.01" id="clip_pos_x" value="0.02"></div><div class="form-group"><label>随机偏移 Y</label><input type="number" step="0.01" id="clip_pos_y" value="0.02"></div><div class="form-group"><label>随机旋转范围</label><input type="number" step="0.1" id="clip_rotation" value="1.5"></div><div class="form-group"><label><input type="checkbox" id="clip_mirror_horizontal"> 随机镜像</label></div><div class="form-group"><label><input type="checkbox" id="clip_mirror_vertical"> 随机上下翻转</label></div><div class="form-group full"><label>时间点</label><textarea id="align_points" rows="4" placeholder="例如 0.1, 1.5, 3.0"></textarea></div><div class="form-group"><label>统一偏移（秒）</label><input type="number" step="0.1" id="align_offset" value="0"></div><div class="form-group"><label>统一缩放倍率</label><input type="number" step="0.1" id="align_scale" value="1"></div></div><div class="inline-actions"><button class="effect-add" type="button" onclick="runAlignTool()">计算偏移缩放结果</button></div><div id="align_result" class="tool-result">对齐结果会显示在这里。</div></div><div class="tool-card" data-subtab-group="clip-shake"><div class="tool-head"><div><h3>摇晃关键帧</h3></div></div><div class="grid-2"><div class="form-group"><label>摇晃间隔（秒）</label><input type="number" step="0.05" id="clip_shake_interval" value="0.2"></div><div class="form-group"><label>最大关键帧数</label><input type="number" id="clip_shake_max_keys" value="12"></div><div class="form-group"><label>横向强度</label><input type="number" step="0.01" id="clip_shake_x" value="0.02"></div><div class="form-group"><label>纵向强度</label><input type="number" step="0.01" id="clip_shake_y" value="0.02"></div></div><div class="hint">适合做轻微抖动、呼吸感、手持感。强度不建议一次开太大。</div></div></div></section>
 
-            <div class="theme-slider dark" id="themeSlider"></div>
+                    <section id="panel-export" class="module-block workspace-panel" data-requires-draft="true" data-panel-title="批量导出"><div class="module-head"><div><span class="module-kicker">批量导出</span><h3 class="module-title">在这里批量导出草稿和主要视频片段</h3><p class="module-sub">先选择草稿，再设置导出目录和格式，最后一键执行。</p></div></div><section class="tool-card flow-card draft-inline-card draft-compact-card" data-subtab-group="export-settings" data-draft-shell="true"><div class="tool-head"><div><h3>先选择要导出的草稿</h3><p>在这里选好草稿后，再继续设置导出参数。</p></div><button class="effect-add" type="button" data-action="refresh-drafts">刷新草稿列表</button></div><div class="grid-2"><input data-draft-role="version" type="hidden" value="all"><div class="form-group full"><label>当前草稿</label><div class="draft-selected-bar"><input type="text" data-draft-role="path" placeholder="请先从下方自动发现列表选择草稿" readonly></div><div class="hint" data-draft-role="status"></div></div></div><div class="hint" data-draft-role="summary">正在查找本机草稿...</div><div class="draft-root-list" data-draft-role="roots"></div><div class="draft-list-grid" data-draft-role="list"><div class="tool-result">正在查找本机草稿...</div></div></section><div class="tool-card" data-subtab-group="export-settings"><div class="tool-head"><div><h3>导出设置</h3></div></div><div class="grid-2"><div class="form-group"><label>导出目录</label><div class="folder-select"><input type="text" id="export_dir"><button type="button" onclick="selectExportFolder()">选择</button></div></div><div class="form-group"><label>命名模板</label><input type="text" id="export_pattern" value="{draft}_{index}"></div><div class="form-group"><label>格式</label><select id="export_format"><option value="mp4">MP4</option><option value="mov">MOV</option></select></div><div class="form-group"><label>分辨率</label><select id="export_resolution"><option value="1080p">1080p</option><option value="720p">720p</option><option value="4k">4K</option></select></div><div class="form-group"><label>帧率</label><input type="number" id="export_fps" value="30"></div><div class="form-group"><label><input type="checkbox" id="export_enable"> 生成后自动导出</label></div><div class="form-group"><label><input type="checkbox" id="export_cover"> 生成封面</label></div><div class="form-group"><label><input type="checkbox" id="export_log"> 保留导出清单</label></div></div><div class="inline-actions"><button class="effect-add" type="button" onclick="buildExportPlan()">生成导出计划</button></div></div><section class="tool-card flow-card" data-subtab-group="export-batch"><div class="tool-head"><div><h3>多草稿批量导出</h3><p>把最近发现的草稿加入列表后，可以一次性统一导出。</p></div></div><div class="inline-actions"><button class="effect-add" type="button" onclick="addCurrentDraftToExportQueue()">加入当前草稿</button><button class="effect-add" type="button" onclick="addDiscoveredDraftsToExportQueue()">加入最近发现的草稿</button><button class="effect-add" type="button" onclick="clearExportDraftQueue()">清空列表</button><button class="primary-btn" type="button" onclick="runDraftBatchExport()">开始批量导出</button></div><div id="export_queue_summary" class="hint">当前还没有待导出的草稿。</div><div id="export_queue_list" class="tool-result">待导出的草稿会显示在这里。</div></section><section class="tool-card flow-card" data-subtab-group="export-segments"><div class="tool-head"><div><h3>导出主要视频片段</h3><p>把当前草稿里的主要视频片段单独导出，方便复用和检查。</p></div></div><div class="inline-actions"><button class="primary-btn" type="button" onclick="exportMainTrackSegments()">导出当前草稿主要视频片段</button></div><div id="export_result" class="tool-result">导出结果会显示在这里。</div></section></section>
+                    <section id="panel-settings" class="module-block workspace-panel" data-requires-draft="false" data-panel-title="软件设置"><div class="module-head"><div><span class="module-kicker">软件设置</span><h3 class="module-title">配置中心</h3><p class="module-sub">默认偏好、目录路径和 AI 账号统一在这里维护，业务页只保留执行参数。</p></div></div><section id="settings-basic-section" class="hard-section"><section class="tool-card settings-card"><div class="tool-head"><div><h3>工作台设置</h3></div></div><div class="settings-vertical"><div class="form-group"><label>处理风格</label><select id="settingsStrategy"><option value="simple">简单模式</option><option value="balanced">平衡模式</option><option value="strict">严格模式</option></select></div><div class="form-group"><label><input type="checkbox" id="settingsAutoDiscover" checked> 自动查找草稿</label></div><div class="form-group"><label><input type="checkbox" id="settingsAutoLoadLastDraft"> 自动恢复上次草稿</label></div></div><div class="inline-actions"><button id="saveSettingsBtn" class="primary-btn" type="button">保存工作台设置</button><div id="settingsSaveMsg" class="hint"></div></div></section></section><section id="settings-path-section" class="hard-section" style="display:none;"><section class="module-subsection"><div class="module-head"><div><span class="module-kicker">路径与目录</span><h3 class="module-title">草稿、素材和导出目录</h3><p class="module-sub">这些路径会影响草稿发现、素材写入和导出默认位置，封包后建议统一从这里维护。</p></div></div><div class="tool-card settings-card"><div class="settings-vertical"><div class="form-group"><label>草稿目录</label><div class="folder-select"><input type="text" id="settingsDraftsFolder" placeholder="例如 E:/JianyingPro Drafts"><button type="button" onclick="browseWorkspaceFolder('settingsDraftsFolder')">选择</button></div></div><div class="form-group"><label>素材目录</label><div class="folder-select"><input type="text" id="settingsMaterialFolder" placeholder="例如 E:/素材"><button type="button" onclick="browseWorkspaceFolder('settingsMaterialFolder')">选择</button></div></div><div class="form-group"><label>默认音频目录</label><div class="folder-select"><input type="text" id="settingsAudioFolder" placeholder="批量生成时常用音频目录"><button type="button" onclick="browseWorkspaceFolder('settingsAudioFolder')">选择</button></div></div><div class="form-group"><label>默认导出目录</label><div class="folder-select"><input type="text" id="settingsDefaultExportDir" placeholder="例如 E:/exports"><button type="button" onclick="browseWorkspaceFolder('settingsDefaultExportDir')">选择</button></div></div></div><div class="inline-actions"><button id="savePathSettingsBtn" class="primary-btn" type="button">保存路径设置</button><div id="pathSettingsSaveMsg" class="hint"></div></div></div></section></section><section id="settings-service-section" class="hard-section" style="display:none;"><section class="module-subsection"><div class="module-head"><div><span class="module-kicker">AI 漫剧服务</span><h3 class="module-title">AI 漫剧服务</h3><p class="module-sub">这里只保留当前仍在使用的外部服务配置，避免设置页继续背着无效入口。</p></div></div><div class="settings-grid"><div class="tool-card settings-card"><div class="tool-head"><div><h3>AI 漫剧服务</h3></div></div><div class="settings-vertical"><div class="form-group"><label>服务地址</label><input type="text" id="settingsOpenclawBaseUrl" placeholder="http://localhost:18789"></div><div class="form-group"><label>访问凭证</label><input type="password" id="settingsOpenclawToken"></div><div class="hint">AI 漫剧执行前会使用这里的服务配置进行连通性校验。</div></div><div class="inline-actions"><button id="testOpenclawSettingsBtn" class="effect-add" type="button">测试连接</button></div></div></div><div class="inline-actions"><button id="saveServiceSettingsBtn" class="primary-btn" type="button">保存 AI 漫剧服务</button><div id="serviceSettingsSaveMsg" class="hint"></div><div id="openclawSettingsStatus" class="hint"></div></div></section></section><section id="settings-ai-section" class="hard-section" style="display:none;"><div id="ai-keys-anchor" class="anchor-offset"></div><section class="module-subsection"><div class="module-head"><div><span class="module-kicker">AI账号管理</span><h3 class="module-title">AI账号管理</h3><p class="module-sub">这里只保留当前能直接使用的 AI 账号配置，登录后会自动加载可用服务。</p></div></div><div class="tool-stack"><div class="tool-card"><div class="tool-head"><div><h3>可用服务列表</h3></div></div><div id="ai_provider_list" class="tool-result">登录后自动加载可用服务。</div></div><div class="tool-card"><div class="tool-head"><div><h3>账号信息</h3></div></div><div class="settings-vertical"><div class="form-group"><label>服务</label><select id="ai_provider_select"></select></div><div class="form-group"><label>账号名称</label><input type="text" id="ai_key_name" placeholder="例如 OpenAI 主账号"></div><div class="form-group"><label>主密钥</label><input type="password" id="ai_api_key"></div><div class="form-group"><label>补充密钥</label><input type="password" id="ai_api_secret"></div><div class="form-group"><label>模型/通道标识</label><input type="text" id="ai_endpoint"></div><div class="form-group"><label>服务地址</label><input type="text" id="ai_base_url" placeholder="例如 https://api.openai.com/v1"></div></div><div class="inline-actions"><button class="primary-btn" type="button" onclick="saveAiKey()">保存</button><button class="effect-add" type="button" onclick="resetAiKeyForm()">重置</button><button class="effect-add" type="button" onclick="showProviderGuide()">查看填写说明</button></div><div id="ai_key_tip" class="hint">不同服务填写项略有区别，不确定时先看说明。</div><div id="ai_provider_guide" class="tool-result" style="display:none;"></div></div><div class="tool-card"><div class="tool-head"><div><h3>已保存账号</h3></div></div><div id="ai_keys_list" class="tool-result">你保存的账号会显示在这里。</div></div></div></section></section></section>
 
-
-        </div>
-
-
-        <div style="padding: 20px 24px; font-size:0.9rem; color:#64748b;">
-
-
-            ? 2026 ???? - ???
-
-
-        </div>
-
-
+                    <section id="panel-account" class="module-block workspace-panel" data-requires-draft="false" data-panel-title="账户中心"><div class="module-head"><div><span class="module-kicker">账户中心</span><h3 class="module-title">在这里查看账号、授权、签到和积分</h3><p class="module-sub">常用账户操作都放在一个页面里，方便随时查看和处理。</p></div></div><div id="accountEmptyState" class="tool-result">登录后可查看账户信息。</div><div id="userPanel" style="display:none;"><section id="account-profile-section" class="hard-section"><section class="tool-card"><div class="tool-head"><div><h3>账户信息</h3></div></div><div class="account-stack"><div class="tool-result">用户名：<span id="userName">-</span><br>账户类型：<span id="vipBadge">普通用户</span><br>剩余次数：<span id="quotaRemaining">0</span><br>已生成次数：<span id="quotaTotal">0</span><br>VIP 到期：<span id="vipExpire">-</span></div><div class="tool-result">邀请码：<span id="userRefCode">-</span><br>邀请关系：<span id="userReferrer">未绑定上级</span><br><span id="refCodeHint" class="hint">把邀请码发给新用户，对方注册时可选填。</span></div><div class="inline-actions"><button id="copyRefCodeBtn" class="effect-add" type="button">复制邀请码</button><button id="logoutBtn" class="effect-add" type="button">退出账户</button></div><div class="tool-result">今日签到：<span id="checkinStatusText">未读取</span><br>连续签到：<span id="checkinStreak">0</span> 天<br>今日奖励：<span id="checkinRewardValue">0</span> 奖励值<br>今日积分变化：+<span id="pointsTodayGain">0</span> / -<span id="pointsTodayCost">0</span></div><div class="inline-actions"><button id="dailyCheckinBtn" class="primary-btn" type="button">立即签到</button><button id="refreshPointsBtn" class="effect-add" type="button">刷新积分</button></div><div id="checkinActionMsg" class="hint"></div><div id="pointsLogList" class="tool-result" style="display:none;"></div></div></section></section><section id="account-license-section" class="hard-section" style="display:none;"><section class="tool-card"><div class="tool-head"><div><h3>授权激活</h3></div></div><div class="license-activate-block"><div class="form-group"><input type="text" id="licenseCodeInput" placeholder="请输入"></div><div class="inline-actions"><button id="activateLicenseBtn" class="primary-btn" type="button">立即激活</button></div></div><div id="licenseStatus" class="tool-result">登录后可查看授权状态。</div></section></section></div></section>
+                </main>
+            </div>
+        </section>
     </div>
 
-
-    <div class="main">
-
-
-        <div class="content-area" id="contentArea">
-
-
-            <div class="card" id="dynamicContent">
-
-
-                ???...
-
-
+    <div id="openclawLogModal" class="auth-modal" aria-hidden="true"><div class="auth-modal-backdrop" onclick="closeOpenclawLogModal()"></div><div class="auth-modal-dialog modal-wide"><div class="auth-modal-head"><div><div class="brand-title">AI 漫剧运行记录</div><div id="openclaw_log_path" class="brand-sub"></div></div><button class="modal-close-btn" type="button" onclick="closeOpenclawLogModal()">×</button></div><pre id="openclaw_log_content" class="tool-result" style="min-height:320px;"></pre><div class="inline-actions"><button class="effect-add" type="button" onclick="copyOpenclawLogPath()">复制记录路径</button></div></div></div>
+    <div id="mixGuideModal" class="auth-modal" aria-hidden="true"><div class="auth-modal-backdrop" onclick="closeMixGuideModal()"></div><div class="auth-modal-dialog modal-compact"><div class="auth-modal-head"><div><div class="brand-title">批量混剪使用说明</div><div id="mixGuideSub" class="brand-sub">按当前模式准备草稿和目录即可。</div></div><button class="modal-close-btn" type="button" onclick="closeMixGuideModal()">×</button></div><div id="mixGuideContent" class="tool-result" style="min-height:220px;"></div></div></div>
+    <div id="draftPickerModal" class="auth-modal" aria-hidden="true">
+        <div class="auth-modal-backdrop" data-close-draft-picker="true"></div>
+        <div class="auth-modal-dialog modal-wide" role="dialog" aria-modal="true">
+            <div class="auth-modal-head">
+                <div>
+                    <div class="brand-title">选择草稿</div>
+                    <div class="brand-sub">先选草稿，再继续当前功能。这里只保留必要信息，避免首页被草稿列表撑满。</div>
+                </div>
+                <button id="closeDraftPickerBtn" class="modal-close-btn" type="button" aria-label="关闭">×</button>
             </div>
-
-
+            <div class="draft-picker-layout">
+                <input id="draftPickerVersionSelect" type="hidden" value="all">
+                <div class="draft-picker-toolbar">
+                    <div class="inline-actions">
+                        <button class="effect-add" type="button" id="draftPickerRefreshBtn">刷新草稿列表</button>
+                    </div>
+                </div>
+                <div id="draftPickerSummary" class="draft-picker-summary">正在查找本机草稿...</div>
+                <div class="draft-picker-meta">
+                    <div id="draftPickerRoots" class="draft-picker-roots"></div>
+                    <div id="draftPickerList" class="draft-picker-list"><div class="tool-result">正在查找本机草稿...</div></div>
+                </div>
+                <div class="draft-picker-foot">选择后会自动回填到当前模块，并立即读取草稿信息。</div>
+            </div>
         </div>
-
-
     </div>
 
-
-
-
-
-    <script>
-
-
-        // ---------- ???? ----------
-
-
-        const themeToggle = document.getElementById('themeToggle');
-
-
-        const themeSlider = document.getElementById('themeSlider');
-
-
-        themeToggle.addEventListener('click', () => {
-
-
-            document.body.classList.toggle('light-mode');
-
-
-            if (document.body.classList.contains('light-mode')) {
-
-
-                themeSlider.className = 'theme-slider light';
-
-
-            } else {
-
-
-                themeSlider.className = 'theme-slider dark';
-
-
-            }
-
-
-        });
-
-
-
-
-
-        // ---------- ???? ----------
-
-
-        fetch('/api/site-settings')
-
-
-            .then(res => res.json())
-
-
-            .then(settings => {
-
-
-                document.getElementById('dynamicTitle').textContent = settings.title;
-
-
-                document.getElementById('dynamicKeywords').setAttribute('content', settings.keywords);
-
-
-                document.getElementById('dynamicDescription').setAttribute('content', settings.description);
-
-
-            })
-
-
-            .catch(err => console.warn('????????', err));
-
-
-
-
-
-        // ---------- ???? ----------
-
-
-        const navItems = document.getElementById('navItems');
-
-
-        let currentActiveMenu = null;
-
-
-        let currentActiveSub = null;
-
-
-
-
-
-        // 澶勭悊涓€绾ц彍鍗曠偣鍑伙紙鏃犲瓙鑿滃崟锛?
-
-
-        navItems.querySelectorAll('.nav-item:not(.has-sub)').forEach(item => {
-
-
-            item.addEventListener('click', () => {
-
-
-                const menu = item.dataset.menu;
-
-
-                const url = item.dataset.url;
-
-
-                if (!url) return;
-
-
-                // 绉婚櫎鎵€鏈変竴绾ц彍鍗曠殑active
-
-
-                navItems.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-
-
-                item.classList.add('active');
-
-
-                // 濡傛灉鏈夊睍寮€鐨勫瓙鑿滃崟锛屾姌鍙?
-
-
-                navItems.querySelectorAll('.nav-item.has-sub').forEach(n => n.classList.remove('expanded'));
-
-
-                // 娓呴櫎瀛愯彍鍗昦ctive
-
-
-                if (currentActiveSub) {
-
-
-                    currentActiveSub.classList.remove('active');
-
-
-                    currentActiveSub = null;
-
-
-                }
-
-
-                currentActiveMenu = menu;
-
-
-                loadContent(url);
-
-
-            });
-
-
-        });
-
-
-
-
-
-        // 澶勭悊鏈夊瓙鑿滃崟鐨勪竴绾ц彍鍗曪紙鐐瑰嚮灞曞紑/鎶樺彔锛?
-
-
-        navItems.querySelectorAll('.nav-item.has-sub > .parent').forEach(parent => {
-
-
-            parent.addEventListener('click', (e) => {
-
-
-                const navItem = parent.closest('.nav-item');
-
-
-                // 鍒囨崲灞曞紑鐘舵€?
-
-
-                navItem.classList.toggle('expanded');
-
-
-                // ??????????
-
-
-            });
-
-
-        });
-
-
-
-
-
-        // 澶勭悊瀛愯彍鍗曠偣鍑?
-
-
-        navItems.querySelectorAll('.sub-item').forEach(sub => {
-
-
-            sub.addEventListener('click', (e) => {
-
-
-                e.stopPropagation();
-
-
-                const menu = sub.dataset.menu;
-
-
-                const url = sub.dataset.url;
-
-
-                if (!url) return;
-
-
-                // 绉婚櫎鎵€鏈変竴绾ц彍鍗曠殑active
-
-
-                navItems.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-
-
-                // 绉婚櫎鎵€鏈夊瓙鑿滃崟鐨刟ctive
-
-
-                navItems.querySelectorAll('.sub-item').forEach(s => s.classList.remove('active'));
-
-
-                sub.classList.add('active');
-
-
-                // 鐖剁骇楂樹寒锛熷彲浠ョ粰鐖剁骇鍔燼ctive浣嗕笉褰卞搷灞曞紑
-
-
-                const parentItem = sub.closest('.nav-item');
-
-
-                parentItem.classList.add('active');
-
-
-                parentItem.classList.add('expanded'); // ???????
-
-
-                // 璁板綍褰撳墠婵€娲荤殑瀛愯彍鍗?
-
-
-                currentActiveSub = sub;
-
-
-                currentActiveMenu = menu;
-
-
-                loadContent(url);
-
-
-            });
-
-
-        });
-
-
-
-
-
-        // ????????
-
-
-        window.onload = () => {
-
-
-            const dashboardItem = document.querySelector('.nav-item[data-menu="dashboard"]');
-
-
-            if (dashboardItem) {
-
-
-                dashboardItem.classList.add('active');
-
-
-                loadContent(dashboardItem.dataset.url);
-
-
-            }
-
-
-        };
-
-
-
-
-
-        // ---------- ???? ----------
-
-
-        function loadContent(url) {
-
-
-            const contentDiv = document.getElementById('dynamicContent');
-
-
-            contentDiv.innerHTML = '<div class="card">???...</div>';
-
-
-            fetch(url)
-
-
-                .then(res => res.text())
-
-
-                .then(html => {
-
-
-                    contentDiv.innerHTML = html;
-
-
-                    // ?????????
-
-
-                    Array.from(contentDiv.querySelectorAll('script')).forEach(oldScript => {
-
-
-                        const newScript = document.createElement('script');
-
-
-                        Array.from(oldScript.attributes).forEach(attr => {
-
-
-                            newScript.setAttribute(attr.name, attr.value);
-
-
-                        });
-
-
-                        newScript.appendChild(document.createTextNode(oldScript.innerHTML));
-
-
-                        oldScript.parentNode.replaceChild(newScript, oldScript);
-
-
-                    });
-
-
-                })
-
-
-                .catch(err => {
-
-
-                    contentDiv.innerHTML = `<div class="card flash-error">????: ${err.message}</div>`;
-
-
-                });
-
-
-        }
-
-
-
-
-
-        // ??????
-
-
-        window.refreshCurrentContent = function() {
-
-
-            if (currentActiveSub) {
-
-
-                loadContent(currentActiveSub.dataset.url);
-
-
-            } else {
-
-
-                const activeItem = document.querySelector('.nav-item.active:not(.has-sub)');
-
-
-                if (activeItem && activeItem.dataset.url) {
-
-
-                    loadContent(activeItem.dataset.url);
-
-
-                }
-
-
-            }
-
-
-        };
-
-
-    </script>
-
-
+    <div id="globalToast" class="global-toast" aria-live="polite"></div>
+    <script id="siteSettingsPayload" type="application/json">{{ site_settings | tojson }}</script>
+    <script src="{{ url_for('static', filename='js/user-index.js') }}"></script>
 </body>
-
-
 </html>
+

@@ -4,16 +4,24 @@ import uuid
 import json
 import random
 import logging
-from rq import get_current_job
+import threading
+
+try:
+    from rq import get_current_job
+except Exception:  # pragma: no cover - local desktop runtime can run without RQ
+    def get_current_job():
+        return None
 from app import create_app
 from app.extensions import db
 from app.models.task import Task
 from app.models.template_model import TemplateModel
 from app.models.task_effect_log import TaskEffectLog
 from app.utils.helpers import get_drafts_folder
+from app.utils.ffmpeg_utils import find_ffmpeg
 
 # MCP 路径当前不匹配实际目录结构，避免误用导致退回字符串替换
 MCP_AVAILABLE = False
+_LOCAL_TASK_CONTEXT = threading.local()
 
 def _build_file_index(root_path):
     index = {}
@@ -23,6 +31,58 @@ def _build_file_index(root_path):
             if key not in index:
                 index[key] = os.path.join(root, fname)
     return index
+
+def _list_media_files(root_path, replace_type):
+    if not root_path or not os.path.exists(root_path):
+        return []
+    exts_img = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')
+    exts_vid = ('.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v')
+    exts_aud = ('.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac')
+    exts = exts_img + exts_vid + exts_aud
+    files = []
+    for root, _dirs, fnames in os.walk(root_path):
+        for fname in fnames:
+            ext = os.path.splitext(fname)[1].lower()
+            if replace_type == 'image' and ext not in exts_img:
+                continue
+            if replace_type == 'video' and ext not in exts_vid:
+                continue
+            if replace_type == 'audio' and ext not in exts_aud:
+                continue
+            if replace_type == 'both' and ext not in exts:
+                continue
+            files.append(os.path.join(root, fname))
+    return files
+
+def _list_subfolders(root_path):
+    if not root_path or not os.path.exists(root_path):
+        return []
+    folders = []
+    for name in os.listdir(root_path):
+        p = os.path.join(root_path, name)
+        if os.path.isdir(p):
+            folders.append(p)
+    folders.sort()
+    return folders
+
+def _normalize_name(name):
+    return os.path.splitext(name or '')[0].strip().lower()
+
+def _build_partition_folder_map(root_path):
+    folders = _list_subfolders(root_path)
+    mapping = {}
+    for folder in folders:
+        key = _normalize_name(os.path.basename(folder))
+        if key and key not in mapping:
+            mapping[key] = folder
+    return mapping
+
+def _pick_from_list(files, mode, seed_index):
+    if not files:
+        return None
+    if mode == 'random':
+        return random.choice(files)
+    return files[seed_index % len(files)]
 
 def _update_material_paths(draft_data, file_index):
     materials = draft_data.get('materials', {})
@@ -80,6 +140,39 @@ def _update_material_paths_from_user_files(draft_data, user_files, material_map)
                     item['file_path'] = new_path
 
 def _safe_update_style_ranges(styles, total_len):
+    if not isinstance(styles, list) or total_len is None:
+        return
+    for style in styles:
+        if not isinstance(style, dict):
+            continue
+        if isinstance(style.get('range'), list) and len(style['range']) == 2:
+            start, end = style['range']
+            try:
+                start = max(0, int(start))
+                end = max(0, int(end))
+            except Exception:
+                continue
+            start = min(start, total_len)
+            end = min(end, total_len)
+            if end < start:
+                end = start
+            style['range'] = [start, end]
+        if isinstance(style.get('ranges'), list):
+            fixed = []
+            for r in style['ranges']:
+                if not isinstance(r, list) or len(r) != 2:
+                    continue
+                try:
+                    start = max(0, int(r[0]))
+                    end = max(0, int(r[1]))
+                except Exception:
+                    continue
+                start = min(start, total_len)
+                end = min(end, total_len)
+                if end < start:
+                    end = start
+                fixed.append([start, end])
+            style['ranges'] = fixed
 def _extract_template_runtime_info(template_path):
     materials = []
     material_map = {}
@@ -278,18 +371,54 @@ def _update_track_text_segments(draft_data):
                     continue
     return updated
 
-def update_task_meta(meta):
-    job = get_current_job()
-    if job:
-        task = Task.query.get(job.id)
+def update_task_meta(meta, task_id=None):
+    resolved_task_id = task_id
+    if not resolved_task_id:
+        resolved_task_id = getattr(_LOCAL_TASK_CONTEXT, "task_id", None)
+    if not resolved_task_id:
+        job = get_current_job()
+        if job:
+            resolved_task_id = job.id
+    if resolved_task_id:
+        task = Task.query.get(resolved_task_id)
         if task:
             task.progress = json.dumps(meta)
             db.session.commit()
 
 
+def _resp_ok(resp):
+    if resp is None:
+        return False
+    if hasattr(resp, "ok"):
+        try:
+            return bool(resp.ok)
+        except Exception:
+            return False
+    if hasattr(resp, "success"):
+        try:
+            return bool(resp.success)
+        except Exception:
+            return False
+    return False
+
+
+def _resp_data(resp):
+    if resp is None:
+        return {}
+    data = getattr(resp, "data", None)
+    return data if isinstance(data, dict) else {}
+
+
 def handle_generate_success(job, connection, result, *args, **kwargs):
+    user_id = None
     try:
-        user_id = job.args[-1]
+        if getattr(job, "args", None):
+            # Batch jobs append template_path as the last positional arg,
+            # while user_id is the argument right before it.
+            if len(job.args) >= 2 and isinstance(job.args[-2], int):
+                user_id = job.args[-2]
+            elif isinstance(job.args[-1], int):
+                user_id = job.args[-1]
     except Exception:
         user_id = None
     if not user_id:
@@ -306,38 +435,57 @@ def handle_generate_success(job, connection, result, *args, **kwargs):
 
 def generate_video_task(template_id, materials_root, texts_input, batch_count,
                         replace_materials=True, replace_texts=True,
-                        replace_type='both', replace_mode='order', audio_enabled=False,
-                        effects_config=None, duo_config=None, user_id=None):
+                        replace_audios=False,
+                        replace_type='both', replace_mode='order', replace_strategy='group',
+                        audio_enabled=False, audio_root=None, export_enabled=False, export_path=None, export_format=None,
+                        export_resolution=None, export_fps=None,
+                        effects_config=None, duo_config=None, user_id=None, template_path=None,
+                        task_id_override=None):
     app = create_app()
     with app.app_context():
         job = get_current_job()
-        task_id = job.id
+        task_id = task_id_override or (job.id if job else None)
+        _LOCAL_TASK_CONTEXT.task_id = task_id
         task = Task.query.get(task_id)
         if task:
             task.status = 'started'
             db.session.commit()
-
         try:
-            template = TemplateModel.query.get(template_id)
-            if not template:
-                raise Exception("模板不存在")
-            template_path = template.template_path
+            if not template_path:
+                template = TemplateModel.query.get(template_id)
+                if not template:
+                    raise Exception("legacy template not found")
+
+                template_path = template.template_path
+
+            materials, material_map, texts_info = _extract_template_runtime_info(template_path)
 
             # 素材映射（用于素材替换）
-            material_map = material_map or {}
             all_material_names = list(material_map.keys())
 
             def filter_by_type(fname):
                 ext = os.path.splitext(fname)[1].lower()
                 is_img = ext in ('.jpg','.jpeg','.png','.bmp','.gif','.webp')
                 is_vid = ext in ('.mp4','.mov','.avi','.mkv','.flv','.wmv','.m4v')
+                is_aud = ext in ('.mp3','.wav','.m4a','.aac','.ogg','.flac')
                 if replace_type == 'image':
                     return is_img
                 elif replace_type == 'video':
                     return is_vid
+                elif replace_type == 'audio':
+                    return is_aud
                 else:
-                    return is_img or is_vid
-            material_names = [f for f in all_material_names if filter_by_type(f)]
+                    return is_img or is_vid or is_aud
+            material_names = []
+            for fname in all_material_names:
+                ext = os.path.splitext(fname)[1].lower()
+                is_audio = ext in ('.mp3','.wav','.m4a','.aac','.ogg','.flac')
+                if is_audio and not replace_audios:
+                    continue
+                if not is_audio and not replace_materials:
+                    continue
+                if filter_by_type(fname):
+                    material_names.append(fname)
 
             # 原文字列表（从模板配置中获取，必须是纯字符串列表）
             raw_texts = texts_info or []
@@ -347,27 +495,26 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                     original_texts = [item.get('default', '') for item in raw_texts]
                 else:
                     original_texts = raw_texts
-
-            update_task_meta({'progress': '正在读取素材文件夹...'})
+            update_task_meta({'progress': 'reading material files...'})
             drafts_folder = get_drafts_folder()
             if not drafts_folder:
-                raise Exception("草稿路径未配置")
+                raise Exception("drafts folder is not configured")
 
-            sets = []
-            try:
-                for item in os.listdir(materials_root):
-                    item_path = os.path.join(materials_root, item)
-                    if os.path.isdir(item_path):
-                        sets.append(item_path)
-            except Exception as e:
-                raise Exception(f"无法访问素材路径 {materials_root}: {str(e)}")
-            if not sets:
-                sets = [materials_root]
+
+            folder_cache = {}
+            pool_files = []
+            group_folders = []
+            partition_map = {}
+            if replace_strategy == 'mix':
+                pool_files = _list_media_files(materials_root, replace_type)
+            elif replace_strategy == 'partition':
+                partition_map = _build_partition_folder_map(materials_root)
+            else:
+                group_folders = _list_subfolders(materials_root)
 
             generated = 0
-            for i in range(min(batch_count, len(sets))):
-                set_folder = sets[i]
 
+            for i in range(batch_count):
                 draft_name = f"task_{uuid.uuid4().hex[:8]}"
                 new_draft_path = os.path.join(drafts_folder, draft_name)
                 if os.path.exists(new_draft_path):
@@ -391,27 +538,40 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                 except Exception as e:
                     print(f"[DEBUG] 修正素材路径失败: {e}")
 
-                # ---------- 素材替换：直接覆盖同名文件 ----------
+                # ---------- 素材替换 ----------
                 user_files = {}
                 if replace_materials and material_names:
-                    if replace_mode == 'random':
-                        selected_names = random.sample(material_names, len(material_names))
-                    else:
-                        selected_names = material_names
-
-                    for fname in selected_names:
+                    for idx, fname in enumerate(material_names):
                         user_file = None
-                        for root, dirs, files in os.walk(set_folder):
-                            if fname in files:
-                                user_file = os.path.join(root, fname)
-                                break
+                        if replace_strategy == 'mix':
+                            user_file = _pick_from_list(pool_files, replace_mode, i + idx)
+                        elif replace_strategy == 'partition':
+                            folder = partition_map.get(_normalize_name(fname))
+                            if folder:
+                                files = folder_cache.get(folder)
+                                if files is None:
+                                    files = _list_media_files(folder, replace_type)
+                                    folder_cache[folder] = files
+                                user_file = _pick_from_list(files, replace_mode, i)
+                        else:
+                            if not group_folders:
+                                if not pool_files:
+                                    pool_files = _list_media_files(materials_root, replace_type)
+                                user_file = _pick_from_list(pool_files, replace_mode, i + idx)
+                            elif idx < len(group_folders):
+                                folder = group_folders[idx]
+                                files = folder_cache.get(folder)
+                                if files is None:
+                                    files = _list_media_files(folder, replace_type)
+                                    folder_cache[folder] = files
+                                user_file = _pick_from_list(files, replace_mode, i)
+
                         if not user_file:
-                            print(f"[DEBUG] 未找到用户文件 {fname}")
-                            update_task_meta({'progress': f'警告：未找到文件 {fname}'})
+                            print(f"[DEBUG] 未找到素材文件: {fname}")
+                            update_task_meta({'progress': f'素材缺失: {fname}'})
                             continue
                         user_files[fname.lower()] = user_file
 
-                        # 在新草稿中查找同名文件
                         target_file = None
                         for root, dirs, files in os.walk(new_draft_path):
                             if fname in files:
@@ -419,25 +579,23 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                                 break
                         if target_file:
                             shutil.copy2(user_file, target_file)
-                            print(f"[DEBUG] 覆盖素材: {user_file} -> {target_file}")
+                            print(f"[DEBUG] 替换素材: {user_file} -> {target_file}")
                             update_task_meta({'progress': f'替换素材: {fname}'})
                         else:
-                            # 如果找不到同名文件，尝试用内部ID
                             internal_id = material_map.get(fname)
                             if internal_id:
                                 for root, dirs, files in os.walk(new_draft_path):
                                     if internal_id in files:
                                         target_file = os.path.join(root, internal_id)
                                         shutil.copy2(user_file, target_file)
-                                        print(f"[DEBUG] 覆盖素材(内部ID): {user_file} -> {target_file}")
+                                        print(f"[DEBUG] 替换素材(内部ID): {user_file} -> {target_file}")
                                         update_task_meta({'progress': f'替换素材: {fname}'})
                                         break
                                 else:
-                                    print(f"[DEBUG] 未找到素材 {fname} 的目标文件")
+                                    print(f"[DEBUG] 未找到目标文件: {fname}")
                             else:
-                                print(f"[DEBUG] 未找到素材 {fname} 的目标文件")
+                                print(f"[DEBUG] 未找到目标文件: {fname}")
 
-                # 根据用户素材更新 JSON 路径，避免外链丢失
                 if replace_materials and user_files:
                     try:
                         with open(draft_content_path, 'r', encoding='utf-8') as f:
@@ -474,23 +632,35 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                 if audio_enabled:
                     audio_dir = os.path.join(new_draft_path, 'audio')
                     os.makedirs(audio_dir, exist_ok=True)
-                    for fname in os.listdir(set_folder):
-                        if fname.lower().endswith(('.mp3','.wav','.m4a')):
-                            src = os.path.join(set_folder, fname)
-                            dst = os.path.join(audio_dir, fname)
-                            shutil.copy2(src, dst)
-                            update_task_meta({'progress': f'附加音频: {fname}'})
+                    audio_source_root = audio_root or materials_root
+                    for root, _dirs, files in os.walk(audio_source_root):
+                        for fname in files:
+                            if fname.lower().endswith(('.mp3','.wav','.m4a')):
+                                src = os.path.join(root, fname)
+                                dst = os.path.join(audio_dir, fname)
+                                shutil.copy2(src, dst)
+                                update_task_meta({'progress': f'复制音频: {fname}'})
 
                 # 高级效果（MCP）导出
+                if export_enabled and export_path:
+                    os.environ["OUTPUT_PATH"] = export_path
                 # MCP effects apply
-                if effects_config or duo_config:
+                if effects_config or duo_config or export_enabled:
                     try:
                         from app.services.jianying_service import JianYingService
                         from app.utils.jianying_mcp.utils.media_parser import MediaParser
                         from app.utils.jianying_mcp.utils.time_format import parse_start_end_format
                         svc = JianYingService()
                         update_task_meta({'progress': '正在应用高级效果...'})
-                        summary = _apply_mcp_effects(new_draft_path, effects_config, svc, duo_config)
+                        summary = _apply_mcp_effects(
+                            new_draft_path,
+                            effects_config or {},
+                            svc,
+                            duo_config,
+                            export_format=export_format,
+                            export_resolution=export_resolution,
+                            export_fps=export_fps,
+                        )
                         if summary:
                             update_task_meta({'progress': 'MCP effects applied', 'effects_summary': summary})
                             try:
@@ -500,17 +670,23 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                             except Exception as e:
                                 print(f"[DEBUG] MCP effects log failed: {e}")
                     except Exception as e:
-                        print(f"[DEBUG] MCP 高级效果应用失败: {e}")
+                        print(f"[DEBUG] MCP effects apply failed: {e}")
 
                 generated += 1
-                update_task_meta({'progress': f'已完成 {generated}/{batch_count} 个草稿'})
+                update_task_meta({'progress': f'completed {generated}/{batch_count} drafts'})
 
-            update_task_meta({'progress': '全部完成'})
+            update_task_meta({'progress': 'all completed'})
             if task:
                 task.status = 'finished'
                 db.session.commit()
+            if user_id and not job:
+                try:
+                    from app.services.user_quota_service import deduct_quota
+                    deduct_quota(user_id, amount=1)
+                except Exception as quota_error:
+                    logging.error(f"quota deduct failed: {quota_error}")
 
-            return {'ok': True, 'message': '批量生成成功', 'generated': generated}
+            return {'ok': True, 'message': 'batch generation completed', 'generated': generated}
 
         except Exception as e:
             if task:
@@ -518,9 +694,13 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                 task.error_msg = str(e)
                 db.session.commit()
             raise e
+        finally:
+            if hasattr(_LOCAL_TASK_CONTEXT, "task_id"):
+                delattr(_LOCAL_TASK_CONTEXT, "task_id")
 
 
-def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
+def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
+                       export_format=None, export_resolution=None, export_fps=None):
     """
     基于 MCP 导出流程生成带效果的新草稿（实验性）。
     注意：该流程会重建轨道与素材，可能丢失部分模板样式。
@@ -548,9 +728,48 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
         effects_config = {}
     # 构建 MCP 草稿
     draft_id = uuid.uuid4().hex
-    svc.create_draft(draft_name=f"mcp_{draft_id}", width=data.get("canvas_config", {}).get("width", 1080),
-                     height=data.get("canvas_config", {}).get("height", 1920),
-                     fps=data.get("fps", 30))
+    fmt = export_format if export_format in ("mp4", "mov") else None
+    draft_name = f"mcp_{draft_id}{'_' + fmt if fmt else ''}"
+    canvas = data.get("canvas_config", {}) or {}
+    base_w = canvas.get("width", 1080)
+    base_h = canvas.get("height", 1920)
+    landscape = base_w >= base_h
+    if export_resolution in ("720p", "1080p", "4k"):
+        if export_resolution == "720p":
+            target_w, target_h = (1280, 720) if landscape else (720, 1280)
+        elif export_resolution == "1080p":
+            target_w, target_h = (1920, 1080) if landscape else (1080, 1920)
+        else:  # 4k
+            target_w, target_h = (3840, 2160) if landscape else (2160, 3840)
+    else:
+        target_w, target_h = base_w, base_h
+
+    target_fps = data.get("fps", 30)
+    if export_fps is not None:
+        try:
+            fps_int = int(export_fps)
+            if fps_int > 0:
+                target_fps = fps_int
+        except Exception:
+            pass
+
+    create_resp = svc.create_draft(
+        draft_name=draft_name,
+        width=target_w,
+        height=target_h,
+        fps=target_fps,
+    )
+    if not create_resp or not getattr(create_resp, "ok", False):
+        raise RuntimeError(getattr(create_resp, "message", None) or "create draft failed")
+    created_draft_id = ((getattr(create_resp, "data", None) or {}).get("draft_id") or "").strip()
+    if not created_draft_id:
+        raise RuntimeError("create draft returned empty draft_id")
+
+    draft_id = created_draft_id
+    summary["draft_id"] = draft_id
+    summary["draft_name"] = draft_name
+    if fmt:
+        summary["export_format"] = fmt
 
     # create tracks based on original draft order
     track_name_by_index = {}
@@ -580,6 +799,33 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
     audio_segment_track = {}
     text_segment_track = {}
 
+    micro_cfg = (effects_config.get("video") or {}).get("micro_adjust") or {}
+    if micro_cfg.get("enabled") is False:
+        micro_cfg = {}
+    micro_indexes = set()
+    if isinstance(micro_cfg.get("indexes"), list):
+        micro_indexes = {i for i in micro_cfg.get("indexes") if isinstance(i, int) and i >= 0}
+    micro_applied = False
+    video_segment_meta = []
+
+    def _rand_between(low, high):
+        try:
+            low = float(low)
+            high = float(high)
+        except Exception:
+            return None
+        if low > high:
+            low, high = high, low
+        return random.uniform(low, high)
+
+    def _duration_from_tr(tr):
+        if not isinstance(tr, dict):
+            return None
+        try:
+            return float(tr.get("duration", 0)) / 1_000_000
+        except Exception:
+            return None
+
     # segments (preserve track order and basic clip settings)
     def _trange_str(tr):
         if not isinstance(tr, dict):
@@ -602,6 +848,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
                 path = mat.get("path") or mat.get("file_path")
                 if not path:
                     continue
+                seg_index = len(video_segment_ids)
                 target_timerange = _trange_str(seg.get("target_timerange", {}))
                 if not target_timerange:
                     continue
@@ -610,6 +857,69 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
                 speed = seg.get("speed")
                 volume = seg.get("volume", 1.0)
                 change_pitch = seg.get("change_pitch", False)
+
+                apply_micro = bool(micro_cfg) and (not micro_indexes or seg_index in micro_indexes)
+                if apply_micro:
+                    speed_cfg = micro_cfg.get("speed") or {}
+                    rand_speed = _rand_between(speed_cfg.get("min"), speed_cfg.get("max"))
+                    if rand_speed:
+                        base_speed = float(speed) if speed is not None else 1.0
+                        speed = max(0.1, base_speed * rand_speed)
+                        micro_applied = True
+
+                    clip_map = dict(clip_settings) if isinstance(clip_settings, dict) else {}
+                    transform_cfg = micro_cfg.get("transform") or {}
+                    rand_scale = _rand_between(transform_cfg.get("scale_min"), transform_cfg.get("scale_max"))
+                    if rand_scale:
+                        base_sx = float(clip_map.get("scale_x", 1.0) or 1.0)
+                        base_sy = float(clip_map.get("scale_y", 1.0) or 1.0)
+                        clip_map["scale_x"] = base_sx * rand_scale
+                        clip_map["scale_y"] = base_sy * rand_scale
+                        micro_applied = True
+                    pos_x = transform_cfg.get("pos_x")
+                    try:
+                        pos_x_val = float(pos_x)
+                    except Exception:
+                        pos_x_val = None
+                    if pos_x_val is not None:
+                        offset_x = _rand_between(-abs(pos_x_val), abs(pos_x_val))
+                        if offset_x is not None:
+                            base_x = float(clip_map.get("transform_x", 0.0) or 0.0)
+                            clip_map["transform_x"] = base_x + offset_x
+                            micro_applied = True
+                    pos_y = transform_cfg.get("pos_y")
+                    try:
+                        pos_y_val = float(pos_y)
+                    except Exception:
+                        pos_y_val = None
+                    if pos_y_val is not None:
+                        offset_y = _rand_between(-abs(pos_y_val), abs(pos_y_val))
+                        if offset_y is not None:
+                            base_y = float(clip_map.get("transform_y", 0.0) or 0.0)
+                            clip_map["transform_y"] = base_y + offset_y
+                            micro_applied = True
+                    rot_range = transform_cfg.get("rotation")
+                    try:
+                        rot_val = float(rot_range)
+                    except Exception:
+                        rot_val = None
+                    if rot_val is not None:
+                        offset_r = _rand_between(-abs(rot_val), abs(rot_val))
+                        if offset_r is not None:
+                            base_r = float(clip_map.get("rotation", 0.0) or 0.0)
+                            clip_map["rotation"] = base_r + offset_r
+                            micro_applied = True
+
+                    mirror_cfg = micro_cfg.get("mirror") or {}
+                    if mirror_cfg.get("horizontal"):
+                        clip_map["flip_horizontal"] = random.choice([True, False])
+                        micro_applied = True
+                    if mirror_cfg.get("vertical"):
+                        clip_map["flip_vertical"] = random.choice([True, False])
+                        micro_applied = True
+
+                    clip_settings = clip_map if clip_map else clip_settings
+
                 resp = svc.add_video_segment(
                     draft_id,
                     path,
@@ -621,9 +931,15 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
                     clip_settings=clip_settings if isinstance(clip_settings, dict) else None,
                     track_name=track_name,
                 )
-                if resp.ok and resp.data:
-                    video_segment_ids.append(resp.data.get("video_segment_id"))
+                resp_data = _resp_data(resp)
+                if _resp_ok(resp) and resp_data:
+                    video_segment_ids.append(resp_data.get("video_segment_id"))
                     video_segment_track[len(video_segment_ids)-1] = track_name
+                    video_segment_meta.append({
+                        "duration": _duration_from_tr(seg.get("target_timerange", {})),
+                        "track": track_name,
+                        "apply_micro": apply_micro
+                    })
             elif ttype == "audio":
                 mat = audio_mats.get(mid)
                 if not mat:
@@ -648,8 +964,9 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
                     change_pitch=change_pitch,
                     track_name=track_name,
                 )
-                if resp.ok and resp.data:
-                    audio_segment_ids.append(resp.data.get("audio_segment_id"))
+                resp_data = _resp_data(resp)
+                if _resp_ok(resp) and resp_data:
+                    audio_segment_ids.append(resp_data.get("audio_segment_id"))
                     audio_segment_track[len(audio_segment_ids)-1] = track_name
             else:
                 mat = text_mats.get(mid)
@@ -665,8 +982,9 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
                     target_timerange,
                     track_name=track_name,
                 )
-                if resp.ok and resp.data:
-                    text_segment_ids.append(resp.data.get("text_segment_id"))
+                resp_data = _resp_data(resp)
+                if _resp_ok(resp) and resp_data:
+                    text_segment_ids.append(resp_data.get("text_segment_id"))
                     text_segment_track[len(text_segment_ids)-1] = track_name
 
 
@@ -845,7 +1163,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
     def _apply_duo_preprocess(duo_cfg, draft_data):
         if not duo_cfg:
             return
-        ffmpeg = os.getenv('FFMPEG_PATH') or shutil.which('ffmpeg')
+        ffmpeg = find_ffmpeg()
         if not ffmpeg:
             if duo_cfg.get('reverse'):
                 summary['warnings'].append('reverse requested: ffmpeg not found')
@@ -1060,6 +1378,53 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
         for sid in _ids_by_track(video_segment_ids, item, video_segment_track):
             _record(svc.add_video_keyframe(draft_id, sid, prop, time_offset, value), f"video_keyframe:{prop}@{time_offset}")
 
+    # micro adjust shake keyframes
+    if micro_cfg and video_segment_ids:
+        shake_cfg = micro_cfg.get("shake") or {}
+        try:
+            interval = float(shake_cfg.get("interval", 0.2))
+        except Exception:
+            interval = 0.2
+        try:
+            max_keys = int(shake_cfg.get("max_keys", 12))
+        except Exception:
+            max_keys = 12
+        try:
+            intensity_x = float(shake_cfg.get("intensity_x", shake_cfg.get("intensity", 0)))
+        except Exception:
+            intensity_x = 0.0
+        try:
+            intensity_y = float(shake_cfg.get("intensity_y", shake_cfg.get("intensity", 0)))
+        except Exception:
+            intensity_y = 0.0
+        if interval > 0 and max_keys > 0 and (intensity_x > 0 or intensity_y > 0):
+            for idx, sid in enumerate(video_segment_ids):
+                meta = video_segment_meta[idx] if idx < len(video_segment_meta) else {}
+                if meta.get("apply_micro") is False:
+                    continue
+                duration = meta.get("duration") or 0
+                if duration <= 0:
+                    continue
+                times = []
+                t = 0.0
+                while t < duration and len(times) < max_keys:
+                    times.append(t)
+                    t += interval
+                if not times:
+                    times = [0.0]
+                for t in times:
+                    t_str = f"{t:.3f}s"
+                    if intensity_x > 0:
+                        value = random.uniform(-intensity_x, intensity_x)
+                        _record(svc.add_video_keyframe(draft_id, sid, "position_x", t_str, value, track_name=meta.get("track")),
+                                f"micro_shake_x@{t_str}")
+                        micro_applied = True
+                    if intensity_y > 0:
+                        value = random.uniform(-intensity_y, intensity_y)
+                        _record(svc.add_video_keyframe(draft_id, sid, "position_y", t_str, value, track_name=meta.get("track")),
+                                f"micro_shake_y@{t_str}")
+                        micro_applied = True
+
     # text animations
     for item in _normalize_list(text_cfg.get("animations")):
         atype = item.get("type")
@@ -1115,6 +1480,9 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
         for sid in _ids_by_track(audio_segment_ids, item, audio_segment_track):
             _record(svc.add_audio_keyframe(draft_id, sid, time_offset, volume), f"audio_keyframe@{time_offset}")
 
+    if micro_applied and "micro_adjust" not in summary["applied"]:
+        summary["applied"].append("micro_adjust")
+
     # export
     output_path = os.getenv("OUTPUT_PATH")
     if output_path:
@@ -1126,3 +1494,39 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None):
             summary["warnings"].append("export failed")
 
     return summary
+
+
+def generate_ai_task(task_id: str, user_id: int, key_id: int, task_type: str, payload: dict, save_text_file: bool = False):
+    app = create_app()
+    with app.app_context():
+        from app.models.ai_task import AITask
+        from app.models.user_api_key import UserApiKey
+        from app.services.ai_service import generate_with_key
+
+        task = AITask.query.get(task_id)
+        if not task:
+            return
+        task.status = "started"
+        db.session.add(task)
+        db.session.commit()
+
+        key = UserApiKey.query.filter_by(id=key_id, user_id=user_id).first()
+        if not key:
+            task.status = "failed"
+            task.error_msg = "密钥不存在"
+            db.session.add(task)
+            db.session.commit()
+            return
+
+        result = generate_with_key(key, task_type, payload, save_text_file=save_text_file)
+        if not result.get("ok"):
+            task.status = "failed"
+            task.error_msg = result.get("error") or "生成失败"
+        else:
+            task.status = "success"
+            task.result_path = result.get("path")
+            if task_type == "text":
+                task.result_text = result.get("text") or ""
+        db.session.add(task)
+        db.session.commit()
+

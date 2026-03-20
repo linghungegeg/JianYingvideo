@@ -11,3 +11,9 @@ PyMySQL==1.1.2
 uiautomation==2.0.29
 comtypes==1.4.16
 pyautogui==0.9.54
+requests==2.32.5
+pymediainfo==7.0.1
+mcp==1.26.0
+pyJianYingDraft==0.2.5
+cryptography==43.0.0
+openai==1.45.0

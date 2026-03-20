@@ -1,27 +1,156 @@
-<div class="card">
-    <div class="page-title">📊 生成记录</div>
-    <table class="table" id="logsTable">
-        <thead>
-            <tr><th>模板名称</th><th>状态</th><th>草稿名</th><th>错误信息</th><th>用户</th><th>时间</th></tr>
-        </thead>
-        <tbody></tbody>
-    </table>
-</div>
-<script>
-    async function loadLogs() {
-        const res = await fetch('/api/logs');
-        const logs = await res.json();
-        const tbody = document.querySelector('#logsTable tbody');
-        tbody.innerHTML = logs.map(log => `
-            <tr>
-                <td>${log.template_name}</td>
-                <td><span class="badge ${log.status === 'success' ? 'badge-success' : 'badge-danger'}">${log.status}</span></td>
-                <td>${log.draft_name || '-'}</td>
-                <td>${log.error_msg || '-'}</td>
-                <td>${log.username}</td>
-                <td>${log.created_at}</td>
-            </tr>
-        `).join('');
-    }
-    loadLogs();
+<div class="card">
+    <div class="page-title">📊 生成记录</div>
+
+    <div class="form-group">
+        <label>筛选</label>
+        <div class="path-input-group">
+            <select id="logStatus" class="form-control" style="max-width: 160px;">
+                <option value="all">全部状态</option>
+                <option value="success">成功</option>
+                <option value="failed">失败</option>
+            </select>
+            <input type="text" id="logKeyword" class="form-control" placeholder="关键词：模板名 / 用户 / 错误信息">
+            <select id="logPageSize" class="form-control" style="max-width: 140px;">
+                <option value="20">每页 20</option>
+                <option value="50" selected>每页 50</option>
+                <option value="100">每页 100</option>
+            </select>
+            <button class="btn btn-secondary" id="logRefreshBtn">刷新</button>
+        </div>
+    </div>
+
+    <div class="form-group" id="errorSummaryWrap" style="display: none;">
+        <label>错误聚合（Top 5）</label>
+        <div id="errorSummary" class="card" style="padding: 16px; border-radius: 16px;"></div>
+    </div>
+
+    <table class="table" id="logsTable">
+        <thead>
+            <tr>
+                <th>模板名称</th>
+                <th>状态</th>
+                <th>草稿名</th>
+                <th>错误信息</th>
+                <th>用户</th>
+                <th>时间</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <div class="form-group" style="display:flex; align-items:center; gap:12px;">
+        <button class="btn btn-secondary" id="prevPageBtn">上一页</button>
+        <div id="pageInfo" style="color:#94a3b8;"></div>
+        <button class="btn btn-secondary" id="nextPageBtn">下一页</button>
+    </div>
+</div>
+
+<script>
+    let allLogs = [];
+    let currentPage = 1;
+
+    const statusEl = document.getElementById('logStatus');
+    const keywordEl = document.getElementById('logKeyword');
+    const pageSizeEl = document.getElementById('logPageSize');
+    const pageInfoEl = document.getElementById('pageInfo');
+    const tbody = document.querySelector('#logsTable tbody');
+    const errorSummaryWrap = document.getElementById('errorSummaryWrap');
+    const errorSummaryEl = document.getElementById('errorSummary');
+
+    async function loadLogs() {
+        const res = await fetch('/api/logs');
+        allLogs = await res.json();
+        currentPage = 1;
+        renderLogs();
+    }
+
+    function normalizeText(value) {
+        return (value || '').toString().trim().toLowerCase();
+    }
+
+    function getFilteredLogs() {
+        const status = statusEl.value;
+        const keyword = normalizeText(keywordEl.value);
+        return allLogs.filter(log => {
+            if (status !== 'all' && log.status !== status) {
+                return false;
+            }
+            if (!keyword) return true;
+            const haystack = [
+                log.template_name,
+                log.username,
+                log.error_msg,
+                log.draft_name,
+            ].map(normalizeText).join(' ');
+            return haystack.includes(keyword);
+        });
+    }
+
+    function renderErrorSummary(logs) {
+        const errorMap = new Map();
+        logs.forEach(log => {
+            if (log.status !== 'failed') return;
+            const msg = (log.error_msg || '').trim();
+            if (!msg) return;
+            errorMap.set(msg, (errorMap.get(msg) || 0) + 1);
+        });
+        const topErrors = Array.from(errorMap.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5);
+        if (!topErrors.length) {
+            errorSummaryWrap.style.display = 'none';
+            errorSummaryEl.innerHTML = '';
+            return;
+        }
+        errorSummaryWrap.style.display = 'block';
+        errorSummaryEl.innerHTML = topErrors.map(([msg, count]) => (
+            `<div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #334155;">
+                <div style="color:#e2e8f0; padding-right:10px;">${msg}</div>
+                <div style="color:#94a3b8;">${count} 次</div>
+            </div>`
+        )).join('');
+    }
+
+    function renderLogs() {
+        const pageSize = parseInt(pageSizeEl.value, 10);
+        const filtered = getFilteredLogs();
+        const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+        currentPage = Math.min(currentPage, totalPages);
+        const start = (currentPage - 1) * pageSize;
+        const pageItems = filtered.slice(start, start + pageSize);
+
+        renderErrorSummary(filtered);
+
+        tbody.innerHTML = pageItems.map(log => `
+            <tr>
+                <td>${log.template_name || '-'}</td>
+                <td><span class="badge ${log.status === 'success' ? 'badge-success' : 'badge-danger'}">${log.status === 'success' ? '成功' : '失败'}</span></td>
+                <td>${log.draft_name || '-'}</td>
+                <td>${log.error_msg || '-'}</td>
+                <td>${log.username || '-'}</td>
+                <td>${log.created_at || '-'}</td>
+            </tr>
+        `).join('');
+
+        pageInfoEl.textContent = `共 ${filtered.length} 条，当前第 ${currentPage} / ${totalPages} 页`;
+    }
+
+    document.getElementById('prevPageBtn').addEventListener('click', () => {
+        if (currentPage > 1) {
+            currentPage -= 1;
+            renderLogs();
+        }
+    });
+
+    document.getElementById('nextPageBtn').addEventListener('click', () => {
+        currentPage += 1;
+        renderLogs();
+    });
+
+    document.getElementById('logRefreshBtn').addEventListener('click', loadLogs);
+    statusEl.addEventListener('change', () => { currentPage = 1; renderLogs(); });
+    pageSizeEl.addEventListener('change', () => { currentPage = 1; renderLogs(); });
+    keywordEl.addEventListener('input', () => { currentPage = 1; renderLogs(); });
+
+    loadLogs();
 </script>
