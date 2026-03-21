@@ -9,11 +9,9 @@ import time
 import math
 from collections import defaultdict
 from typing import List, Optional, Union
-import tkinter as tk
 import requests
 import logging
 from datetime import datetime, timedelta
-from tkinter import filedialog
 from urllib.parse import parse_qs, unquote, urlparse
 from flask import Blueprint, request, jsonify, current_app, session, send_file
 from sqlalchemy import or_, func
@@ -118,6 +116,45 @@ _QUOTA_REASON_LABELS = {
 _RESOURCE_EXCHANGE_PROJECT_LIMIT = 15
 _RESOURCE_EXCHANGE_INTRO_LIMIT = 30
 _RESOURCE_EXCHANGE_PAGE_SIZE = 20
+
+
+def _desktop_dialog_unavailable_response():
+    return jsonify(
+        {
+            "ok": False,
+            "error": "当前环境不支持本地文件选择，请在桌面端客户端中操作。",
+        }
+    ), 400
+
+
+def _select_local_directory():
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception:
+        return None
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        return filedialog.askdirectory()
+    finally:
+        root.destroy()
+
+
+def _select_local_file():
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception:
+        return None
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        return filedialog.askopenfilename()
+    finally:
+        root.destroy()
 
 
 def _raw_runtime_flags():
@@ -1713,18 +1750,10 @@ def get_auth_user(require_admin=False):
     return user, None
 
 def browse_folder_thread():
-    root = tk.Tk()
-    root.withdraw()
-    folder = filedialog.askdirectory()
-    root.destroy()
-    return folder
+    return _select_local_directory()
 
 def browse_file_thread():
-    root = tk.Tk()
-    root.withdraw()
-    file_path = filedialog.askopenfilename()
-    root.destroy()
-    return file_path
+    return _select_local_file()
 
 @api_bp.route('/browse-folder', methods=['POST'])
 def browse_folder():
@@ -1735,6 +1764,8 @@ def browse_folder():
     thread = threading.Thread(target=target)
     thread.start()
     thread.join()
+    if result.get('folder') is None:
+        return _desktop_dialog_unavailable_response()
     return jsonify({'folder': result.get('folder', '')})
 
 
@@ -1760,6 +1791,8 @@ def browse_file():
     thread = threading.Thread(target=target)
     thread.start()
     thread.join()
+    if result.get('file') is None:
+        return _desktop_dialog_unavailable_response()
     return jsonify({'file': result.get('file', '')})
 
 @api_bp.route('/net-assets/start', methods=['POST'])
