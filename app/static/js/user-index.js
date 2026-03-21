@@ -33,19 +33,36 @@
             items: [],
             myPosts: []
         };
+        const EFFECT_TYPE_LABELS = {
+            VIDEO_SCENE: '视频场景',
+            ToneEffectType: '色调效果',
+            AudioSceneEffectType: '音频效果',
+            filter_type: '滤镜',
+            SpeechToSongType: '语音转歌曲',
+            mask_type: '蒙版',
+            TransitionType: '转场',
+            Font: '字体',
+            TextIntro: '文字入场',
+            TextOutro: '文字退场',
+            TextLoopAnim: '文字循环动画',
+            GroupAnimationType: '组合动画',
+            VIDEO_CHARACTER: '人物特效',
+            IntroType: '片头',
+            OutroType: '片尾'
+        };
 
         const ACCOUNT_TUTORIAL_ENTRIES = [
-            {title: '智能助手', keywords: '智能助手 命令中心 创建素材目录 分区 混剪 导出 草稿', body: '输入自然语言命令后，助手会先预览动作，再决定是否执行。适合快速跳转到分区混剪、导出当前草稿、创建素材目录等已存在能力。'},
-            {title: '批量混剪', keywords: '批量混剪 按组精准替换 混剪裂变替换 分区混剪裂变 槽位拼接混剪', body: '先选草稿，再按当前模式准备素材目录或文字，确认替换规则后开始生成。前三种模式保持每次每槽位只取 1 个素材，槽位拼接混剪是独立第四种模式。'},
-            {title: 'AI 成片', keywords: 'AI 成片 即梦 火山 TTS AI 文案 AI账号管理', body: 'AI 成片依赖软件设置里的 AI 账号管理。账号配置完成后，再回到本页执行图生视频、语音合成或文案生成。'},
-            {title: 'AI 漫剧', keywords: 'AI 漫剧 草稿 分镜 脚本 场景目录', body: 'AI 漫剧现在直接生成剪映草稿与场景素材目录。按行填写脚本后，系统会产出带占位片段和文字轨道的草稿，便于你后续手动补素材。'},
-            {title: '批量效果', keywords: '批量效果 Duo 资源 贴纸 转场', body: '选择草稿后，可以对视频、文字、音频统一追加效果。Duo 资源只在当前封包能力开启时显示。'},
-            {title: '批量分割', keywords: '批量分割 文件分割 草稿处理 批量查看', body: '支持按时长、场景、静音、字幕等方式切分文件，也能把当前草稿主轨道拆成多个片段。'},
-            {title: '片段微调', keywords: '片段微调 节奏变速 画面校正 摇晃关键帧', body: '对已有片段继续做节奏、转场、校正和关键帧微调，适合出片前做细节修正。'},
-            {title: '批量导出', keywords: '批量导出 导出设置 多草稿 片段导出', body: '把当前草稿或多个草稿加入队列，统一导出；也支持单独导出主要视频片段。'},
-            {title: '账户中心', keywords: '账户中心 账户信息 VIP说明 邀请码中心 授权激活 使用教程', body: '这里汇总会员等级、剩余次数、签到、邀请码奖励、CDK 激活与全站教程。执行前会同步显示最新会员和剩余次数。'},
-            {title: '资源互换', keywords: '资源互换 资源大厅 互换发布 审核 免费', body: '资源互换是免费功能。资源大厅只展示管理员审核通过的内容；互换发布要求每天每个用户最多提交 1 条，可在这里查看自己的审核状态与拒绝原因。'},
-            {title: '软件设置', keywords: '软件设置 工作台设置 路径与目录 AI账号管理 OpenClaw', body: '工作台设置、默认路径与 AI 账号统一放在这里。OpenClaw 只保留必要接入，不再作为主链路入口。'}
+            {title: '智能助手', keywords: '智能助手 命令中心 创建素材目录 分区 混剪 导出 草稿', body: '直接输入一句需求，助手会先告诉你准备执行什么，再决定是否继续。适合快速创建素材目录、跳转到指定混剪模式，或者导出当前草稿。'},
+            {title: '批量混剪', keywords: '批量混剪 按组精准替换 混剪裂变替换 分区混剪裂变 槽位拼接混剪', body: '先选参考草稿，再按当前模式准备素材目录或文字内容。前三种模式会保持每次每槽位使用 1 个素材，槽位拼接混剪则会在单个槽位内连续拼接多段视频。'},
+            {title: 'AI 成片', keywords: 'AI 成片 即梦 火山 TTS AI 文案 AI账号管理', body: '先在“软件设置 -> AI账号管理”里维护好账号，再回到本页执行图生视频、语音合成或文案生成。页面里只保留真正会影响出片的参数。'},
+            {title: 'AI 漫剧', keywords: 'AI 漫剧 草稿 分镜 脚本 场景目录', body: 'AI 漫剧会直接生成剪映草稿、场景素材目录和分镜说明。你可以先拿到完整草稿结构，再按自己的节奏补图、补视频和细化镜头。'},
+            {title: '批量效果', keywords: '批量效果 Duo 资源 贴纸 转场', body: '选好草稿后，可以统一追加视频效果、转场、贴纸和 Duo 素材。普通用户先用搜索和预设即可，高级参数留到需要精修时再打开。'},
+            {title: '批量分割', keywords: '批量分割 文件分割 草稿处理 批量查看', body: '既可以对文件按时长、镜头或字幕做分割，也可以批量查看草稿结构，提前排查内容问题，再决定是否导出或继续加工。'},
+            {title: '片段微调', keywords: '片段微调 节奏变速 画面校正 摇晃关键帧', body: '适合在出片前做最后一轮细节调整，例如节奏变速、画面校正、镜像、摇晃关键帧和局部修饰。'},
+            {title: '批量导出', keywords: '批量导出 导出设置 多草稿 片段导出', body: '把当前草稿或多份草稿加入队列后，可以统一导出；也支持单独导出主要视频片段，方便复用和复检。'},
+            {title: '账户中心', keywords: '账户中心 账户信息 VIP说明 邀请中心 授权激活 使用教程', body: '这里集中查看会员状态、剩余次数、签到奖励、邀请关系、授权激活和全站使用教程，生成前也会同步刷新当前余额。'},
+            {title: '资源互换', keywords: '资源互换 资源大厅 互换发布 审核 免费', body: '资源互换是免费功能，不扣次数。资源大厅只展示审核通过的内容；互换发布支持查看自己的审核状态、发布时间和拒绝原因。'},
+            {title: '软件设置', keywords: '软件设置 工作台设置 路径与目录 AI账号管理', body: '工作台偏好、默认目录和 AI 账号都统一放在这里维护。日常使用时先把常用路径和账号配好，后续每个功能页都会直接复用。'}
         ];
 
         const tokenKey = 'vf_token';
@@ -77,7 +94,7 @@
                 site_name: siteName,
                 title: String(data.site_title || data.title || meta.title || `${siteName} 工作台`),
                 keywords: String(data.site_keywords || data.keywords || meta.keywords || 'video,ai,generate'),
-                description: String(data.site_description || data.description || meta.description || `${siteName} 工作台与视频生产配置中心`),
+                description: String(data.site_description || data.description || meta.description || `${siteName} 让创作更自由`),
                 workspace_title: String(data.workspace_title || workspace.title || '工作台'),
                 workspace_subtitle: String(
                     data.workspace_subtitle
@@ -142,7 +159,7 @@
 
         function buildDraftSectionHint(total, limit, noun) {
             if (total <= limit) return `共 ${total} ${noun}`;
-            return `共 ${total} ${noun}，默认先显示前 ${limit} 项`;
+            return `共 ${total} ${noun}，更多内容可展开`;
         }
 
         function buildDraftCompactToggle(total, limit) {
@@ -215,7 +232,7 @@
             const hint = buildDraftSectionHint(texts.length, limit, '段文字');
             const toggle = buildDraftCompactToggle(texts.length, limit);
             const cards = texts.map((item, index) => {
-                const defaultValue = item?.default || item || '';
+                const defaultValue = normalizeDraftText(item?.default ?? item ?? '');
                 const hiddenClass = index >= limit ? ' is-extra' : '';
                 return `
                     <div class="text-strip-item${hiddenClass}">
@@ -245,6 +262,20 @@
                     <div class="text-strip" data-compact-section="texts">${cards}</div>
                 </div>
             `;
+        }
+
+        function normalizeDraftText(value) {
+            const raw = String(value ?? '').trim();
+            if (!raw) return '';
+            if (raw.startsWith('{') && raw.includes('"text"')) {
+                try {
+                    const parsed = JSON.parse(raw);
+                    if (parsed && typeof parsed.text === 'string') {
+                        return parsed.text;
+                    }
+                } catch (error) {}
+            }
+            return raw;
         }
 
         function renderPartitionTextInputs(partitions = [], textCount = 0) {
@@ -496,32 +527,27 @@
 
         function buildRuntimeSummaryText() {
             const items = [
-                `Duo ${runtimeFeatures.duo ? '已开启' : '未开启'}`,
-                `AI 漫剧草稿 ${runtimeFeatures.manga ? '已开启' : '未开启'}`,
-                `OpenClaw 接入 ${runtimeFeatures.openclaw ? '保留' : '隐藏'}`
+                `Duo 素材中心 ${runtimeFeatures.duo ? '可用' : '未开放'}`,
+                `AI 漫剧草稿 ${runtimeFeatures.manga ? '可用' : '未开放'}`,
+                `OpenClaw 接入 ${runtimeFeatures.openclaw ? '已保留' : '未开放'}`
             ];
             return items.join(' / ');
         }
 
         function renderCommercialSummary() {
             const lockedRuntime = document.getElementById('lockedFeatureRuntime');
-            const accountFeatureStatus = document.getElementById('accountFeatureStatus');
             const workspaceQuotaBadge = document.getElementById('workspaceQuotaBadge');
 
-            const runtimeText = buildRuntimeSummaryText();
             const disabledFlags = [];
-            if (!runtimeFeatures.duo) disabledFlags.push(`Duo 资源需 ${getRuntimeRequirementText('duo')}`);
-            if (!runtimeFeatures.manga) disabledFlags.push(`AI 漫剧需 ${getRuntimeRequirementText('manga')}`);
+            if (!runtimeFeatures.duo) disabledFlags.push('Duo 素材中心');
+            if (!runtimeFeatures.manga) disabledFlags.push('AI 漫剧草稿');
             const disabledHint = disabledFlags.length
-                ? `未开启项：${disabledFlags.join(' / ')}`
-                : (runtimeFeatures.openclaw ? '当前可选功能均可正常使用。' : '当前主链路功能均可使用，OpenClaw 已降级为隐藏接入。');
+                ? `当前版本暂未开放：${disabledFlags.join('、')}。`
+                : '';
 
             if (lockedRuntime) {
-                lockedRuntime.textContent = `${runtimeText}。${disabledHint}`;
-            }
-
-            if (accountFeatureStatus) {
-                accountFeatureStatus.textContent = `${runtimeText}\n${disabledHint}`;
+                lockedRuntime.textContent = disabledHint;
+                lockedRuntime.style.display = disabledHint ? 'block' : 'none';
             }
 
             if (workspaceQuotaBadge) {
@@ -553,16 +579,53 @@
             const rulesText = document.getElementById('accountVipRulesText');
             if (defaultQuotaEl) defaultQuotaEl.textContent = `${defaultQuota} 次`;
             if (checkinRewardEl) checkinRewardEl.textContent = `${checkinReward} 次`;
-            if (inviteRuleEl) inviteRuleEl.textContent = `${inviteReferrer} / ${inviteeReward}`;
+            if (inviteRuleEl) inviteRuleEl.textContent = `${inviteReferrer}% / ${inviteeReward}%`;
             if (mangaCostEl) mangaCostEl.textContent = `${mangaCost} 次`;
             if (rulesText) {
                 rulesText.textContent = [
                     `新用户默认试用：${defaultQuota} 次`,
                     `每日签到奖励：${checkinReward} 次`,
-                    `邀请奖励：邀请人 +${inviteReferrer} 次 / 新用户 +${inviteeReward} 次`,
-                    `AI 漫剧消耗：每次 ${mangaCost} 次`,
-                    'CDK 激活会延长 VIP 有效期，并按后台配置把赠送积分折算为次数。'
+                    `邀请奖励：被邀请人首次激活会员后，按开卡时长比例给邀请人 ${inviteReferrer}% / 给被邀请人 ${inviteeReward}%`,
+                    `AI 漫剧消耗：每次 ${mangaCost} 次`
                 ].join('\n');
+            }
+        }
+
+        async function loadLicenseCardTypes() {
+            const box = document.getElementById('accountCardTypeList');
+            if (!box) return;
+            box.textContent = '正在读取卡类型说明。';
+            try {
+                const res = await fetch('/api/license/card-types');
+                const data = await res.json();
+                if (!res.ok || !data.ok) throw new Error(data.error || '读取失败');
+                const items = Array.isArray(data.items) ? data.items : [];
+                if (!items.length) {
+                    box.textContent = '当前还没有可展示的卡类型说明。';
+                    return;
+                }
+                box.innerHTML = `
+                    <div class="license-card-type-table">
+                        <div class="license-card-type-head">
+                            <span>卡类型</span>
+                            <span>时长</span>
+                            <span>设备数</span>
+                            <span>转移次数</span>
+                            <span>赠送次数</span>
+                        </div>
+                        ${items.map((item) => `
+                            <div class="license-card-type-item">
+                                <strong>${escapeHtml(item.card_type || '-')}</strong>
+                                <span>${escapeHtml(`${item.duration_days || 0} 天`)}</span>
+                                <span>${escapeHtml(`${item.device_limit || 1} 台`)}</span>
+                                <span>${escapeHtml(`${item.transfer_times || 0} 次`)}</span>
+                                <span>${escapeHtml(`${item.bonus_points || 0} 次`)}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            } catch (error) {
+                box.textContent = `卡类型说明读取失败：${error.message || error}`;
             }
         }
 
@@ -581,10 +644,10 @@
             }
             if (inviteSummary) {
                 inviteSummary.textContent = [
-                    `邀请人奖励：每邀请 1 位新用户到账 ${invite.referrer_reward ?? 0} 次`,
-                    `新用户奖励：完成注册到账 ${invite.invitee_reward ?? 0} 次`,
-                    `我的累计邀请奖励：${invite.referrer_reward_total ?? 0} 次`,
-                    `我的受邀注册奖励：${invite.invitee_reward_total ?? 0} 次`
+                    `邀请激活奖励：被邀请人首次激活会员后，邀请人按开卡时长的 ${invite.referrer_reward ?? 0}% 加赠 VIP`,
+                    `受邀加赠：被邀请人首次激活会员后，自己按开卡时长的 ${invite.invitee_reward ?? 0}% 加赠 VIP`,
+                    `我的累计邀请奖励：${invite.referrer_reward_total ?? 0} 天`,
+                    `我的受邀加赠奖励：${invite.invitee_reward_total ?? 0} 天`
                 ].join('\n');
             }
             if (inviteRecent) {
@@ -606,7 +669,7 @@
             if (!runtimeFeatures.manga) {
                 if (mangaNotice) {
                     mangaNotice.style.display = 'block';
-                    mangaNotice.textContent = `当前还不能使用 AI 漫剧。需要条件：${getRuntimeRequirementText('manga')}。`;
+                    mangaNotice.textContent = 'AI 漫剧暂未开放，开放后会在这里直接生成草稿、场景目录和分镜说明。';
                 }
                 if (mangaContent) mangaContent.style.display = 'none';
                 if (mangaSidebarLink) mangaSidebarLink.classList.add('is-disabled');
@@ -619,7 +682,7 @@
             if (!runtimeFeatures.duo) {
                 if (duoNotice) {
                     duoNotice.style.display = 'block';
-                    duoNotice.textContent = `当前还不能使用 Duo 资源。需要条件：${getRuntimeRequirementText('duo')}。`;
+                    duoNotice.textContent = 'Duo 素材中心暂未开放，开放后可在这里搜索素材、预览结果并直接加入当前草稿。';
                 }
                 if (duoSection) duoSection.style.display = 'none';
                 if (duoSidebarLink) duoSidebarLink.classList.add('is-disabled');
@@ -736,8 +799,15 @@
                 if (pathInput) {
                     pathInput.value = currentDraftPath || pathInput.value || settings.last_draft_path || '';
                 }
-                if (status && message) {
-                    status.textContent = message;
+                if (status) {
+                    if (message) {
+                        status.textContent = message;
+                    } else if (currentDraftPath) {
+                        const draftName = currentDraftPath.split(/[\\/]/).filter(Boolean).pop() || currentDraftPath;
+                        status.textContent = `当前草稿：${draftName}`;
+                    } else {
+                        status.textContent = '请先从下方选择草稿。';
+                    }
                 }
             });
         }
@@ -1095,7 +1165,6 @@
             if (user) {
                 if (authPanel) authPanel.style.display = 'block';
                 if (userPanel) userPanel.style.display = 'block';
-                const nameEl = document.getElementById('userName');
                 const remainEl = document.getElementById('quotaRemaining');
                 const totalEl = document.getElementById('quotaTotal');
                 const vipEl = document.getElementById('vipExpire');
@@ -1103,7 +1172,6 @@
                 const refCodeEl = document.getElementById('userRefCode');
                 const referrerEl = document.getElementById('userReferrer');
                 const membershipHintEl = document.getElementById('accountMembershipHint');
-                if (nameEl) nameEl.textContent = user.username || '-';
                 if (remainEl) remainEl.textContent = user.remaining ?? 0;
                 if (totalEl) totalEl.textContent = user.total_generated ?? 0;
                 if (vipEl) vipEl.textContent = user.vip_expire_at ? new Date(user.vip_expire_at).toLocaleString() : '-';
@@ -1111,25 +1179,23 @@
                 if (referrerEl) referrerEl.textContent = user.referrer_id ? `已绑定 #${user.referrer_id}` : '未绑定上级';
                 if (membershipHintEl) {
                     membershipHintEl.textContent = user.is_vip
-                        ? '当前账号拥有 VIP 时效'
-                        : '当前账号按试用规则计次';
+                        ? 'VIP 时效生效中'
+                        : '按试用规则使用';
                 }
                 const copyBtn = document.getElementById('copyRefCodeBtn');
                 if (copyBtn) copyBtn.disabled = !user.ref_code;
                 if (vipBadge) {
-                    vipBadge.textContent = user.is_vip ? 'VIP会员' : '试用用户';
+                    vipBadge.textContent = user.membership_label || (user.is_vip ? 'VIP会员' : '试用用户');
                     vipBadge.style.background = user.is_vip ? '#e8f1ff' : '#eef3f8';
                     vipBadge.style.color = user.is_vip ? '#1557d6' : '#475569';
                 }
                 renderInviteOverview(user.invite || null);
                 loadLicenseStatus();
+                loadLicenseCardTypes();
                 loadPointsOverview();
                 fillResourceMembership();
                 loadResourceExchangeMyPosts();
                 closeAuthModal();
-                if (document.getElementById('workbenchApp')) {
-                    showWorkspacePanel('panel-account');
-                }
             } else {
                 accountOverview = null;
                 if (authPanel) authPanel.style.display = 'block';
@@ -1147,6 +1213,8 @@
                 renderInviteOverview(null);
                 fillResourceMembership();
                 renderResourceMyPosts([]);
+                const cardTypeBox = document.getElementById('accountCardTypeList');
+                if (cardTypeBox) cardTypeBox.textContent = '登录后查看卡类型说明。';
             }
             toggleProtectedUI(!!user);
             renderCommercialSummary();
@@ -1333,7 +1401,16 @@
                 }
                 if (statusEl) {
                     const expire = data.expire_at ? new Date(data.expire_at).toLocaleString() : '-';
-                    statusEl.textContent = `激活成功\n到期时间：${expire}\n转移剩余：${data.transfer_times_left || 0}`;
+                    const inviteRewards = data.invite_rewards || {};
+                    const inviteLines = [];
+                    if (inviteRewards.referrer_reward) inviteLines.push(`邀请人加赠：${inviteRewards.referrer_reward} 天`);
+                    if (inviteRewards.invitee_reward) inviteLines.push(`受邀加赠：${inviteRewards.invitee_reward} 天`);
+                    statusEl.textContent = [
+                        '激活成功',
+                        `到期时间：${expire}`,
+                        `转移剩余：${data.transfer_times_left || 0}`,
+                        ...inviteLines
+                    ].join('\n');
                 }
                 await loadUserInfo();
             } catch (e) {
@@ -1463,10 +1540,8 @@
                 }
                 const visibleDrafts = renderInModal ? filteredDrafts : filteredDrafts.slice(0, 3);
                 summary.textContent = renderInModal
-                    ? `已发现 ${filteredDrafts.length} 个草稿，选择后会自动带回当前模块。`
-                    : (filteredDrafts.length > visibleDrafts.length
-                        ? `已发现 ${filteredDrafts.length} 个草稿，当前先展示最近 ${visibleDrafts.length} 个。`
-                        : `已发现 ${filteredDrafts.length} 个最近草稿，可直接选择。`);
+                    ? `已发现 ${filteredDrafts.length} 个草稿，可直接选择。`
+                    : `已发现 ${filteredDrafts.length} 个草稿。`;
                 list.innerHTML = visibleDrafts.map((item, idx) => `
                     <div class="draft-item ${activePath && activePath === item.path ? 'active' : ''}" data-draft-index="${idx}" role="button" tabindex="0">
                         <div class="draft-item-head"><strong>${item.name || '未命名草稿'}</strong><span class="draft-use-tag">点击即用</span></div>
@@ -1474,7 +1549,7 @@
                     </div>
                 `).join('');
                 if (!renderInModal && filteredDrafts.length > visibleDrafts.length) {
-                    list.innerHTML += `<div class="draft-more-note">其余 ${filteredDrafts.length - visibleDrafts.length} 个草稿已收起，点击“选择草稿”可查看完整列表。</div>`;
+                    list.innerHTML += `<div class="draft-more-note">其余 ${filteredDrafts.length - visibleDrafts.length} 个草稿已收起，可在弹窗查看完整列表。</div>`;
                 }
                 window.__vfDiscoveredDrafts = visibleDrafts;
                 list.querySelectorAll('.draft-item').forEach((node) => {
@@ -1765,11 +1840,14 @@
             }
             summary.textContent = `已加入 ${exportDraftQueue.length} 个待导出草稿。`;
             list.innerHTML = exportDraftQueue.map((item, index) => `
-                <div class="key-item">
-                    <div class="key-row"><strong>${item.name || '未命名草稿'}</strong><span class="key-badge">${item.source || '本机草稿'}</span></div>
-                    <div class="hint">${item.path}</div>
+                <article class="draft-item draft-item-queue">
+                    <div class="draft-item-head">
+                        <strong>${escapeHtml(item.name || '未命名草稿')}</strong>
+                        <span class="draft-use-tag">${escapeHtml(item.source || '本机草稿')}</span>
+                    </div>
+                    <div class="draft-item-path" title="${escapeHtml(item.path || '')}">${escapeHtml(compactPathLabel(item.path || ''))}</div>
                     <div class="key-actions"><button class="effect-add" type="button" onclick="removeExportDraftAt(${index})">移除</button></div>
-                </div>
+                </article>
             `).join('');
         }
 
@@ -1832,12 +1910,18 @@
             }
             summary.textContent = `已加入 ${splitDraftQueue.length} 个草稿。`;
             list.innerHTML = splitDraftQueue.map((item, index) => `
-                <div class="key-item">
+                <div class="key-item key-item-compact">
                     <div class="key-row"><strong>${item.name || '未命名草稿'}</strong><span class="key-badge">${item.source || '本机草稿'}</span></div>
-                    <div class="hint">${item.path}</div>
+                    <div class="hint" title="${escapeHtml(item.path || '')}">${escapeHtml(compactPathLabel(item.path || ''))}</div>
                     <div class="key-actions"><button class="effect-add" type="button" onclick="removeSplitDraftAt(${index})">移除</button></div>
                 </div>
             `).join('');
+        }
+
+        function compactPathLabel(path = '') {
+            const clean = String(path || '');
+            if (clean.length <= 72) return clean;
+            return `${clean.slice(0, 28)} ... ${clean.slice(-32)}`;
         }
 
         function removeSplitDraftAt(index) {
@@ -2207,7 +2291,7 @@
                 if (dom.draftStatus) {
                     const matCount = materialsConfig.length;
                     const textCount = textsConfig.length;
-                    dom.draftStatus.textContent = `草稿已就绪：素材 ${matCount} 个，文字 ${textCount} 段`;
+                    dom.draftStatus.textContent = `当前草稿：${matCount} 个素材槽 / ${textCount} 段文字`;
                 }
                 syncDraftShellValues(dom.draftStatus?.textContent || '');
                 updateWorkspaceDraftBadge();
@@ -2276,7 +2360,7 @@
                     setWorkspaceSettings({last_materials_root: layout.root});
                 }
                 const folderNames = Array.isArray(layout.folders) ? layout.folders.map((item) => item.label || item.path).join(' / ') : '';
-                if (statusEl) statusEl.textContent = layout.root ? `已创建：${layout.root}${folderNames ? `\n${folderNames}` : ''}` : '素材目录已创建';
+                if (statusEl) statusEl.textContent = layout.root ? `目录已创建：${layout.root}${folderNames ? `\n${folderNames}` : ''}` : '目录已创建';
                 updatePrimaryActionState();
                 notify('素材目录已按草稿创建。', 'success');
             } catch (e) {
@@ -2649,7 +2733,9 @@
                 const data = await res.json();
                 const sel = document.getElementById('effect_type');
                 if (sel && data.types) {
-                    sel.innerHTML = data.types.map(t => `<option value="${t}">${t}</option>`).join('');
+                    sel.innerHTML = data.types
+                        .map((t) => `<option value="${t}">${escapeHtml(EFFECT_TYPE_LABELS[t] || t)}</option>`)
+                        .join('');
                 }
             } catch (e) {}
         }
@@ -2673,16 +2759,40 @@
             renderResourceResults(resourceCache);
         }
 
+        function buildResourceMetaChips(item = {}, extras = []) {
+            const chips = [];
+            extras.forEach((extra) => {
+                if (extra) chips.push(extra);
+            });
+            if (item?.effect_type) chips.push(item.effect_type);
+            if (item?.type && item.type !== item.effect_type) chips.push(item.type);
+            if (item?.resource_id) chips.push(`资源ID ${item.resource_id}`);
+            else if (item?.effect_id) chips.push(`效果ID ${item.effect_id}`);
+            else if (item?.id) chips.push(`编号 ${item.id}`);
+            if (item?.is_vip) chips.push('VIP');
+            return chips;
+        }
+
         function renderResourceResults(items) {
             const results = document.getElementById('resource_results');
             if (!results) return;
             if (!items.length) {
-                results.innerHTML = '<div class="hint">无匹配资源</div>';
+                results.innerHTML = '<div class="tool-result">没有找到匹配资源，换个关键词再试试。</div>';
                 return;
             }
             results.innerHTML = items.map((item, idx) => {
-                const resourceId = item.effect_id || item.resource_id || item.id || '';
-                return `<div class="resource-row">名称: ${item.name || ''} | id: ${resourceId} <button class="effect-add" type="button" onclick="useResource(${idx})">加入当前效果</button></div>`;
+                const chips = buildResourceMetaChips(item).map((chip) => `<span class="resource-browser-chip">${escapeHtml(chip)}</span>`).join('');
+                return `
+                    <article class="resource-browser-card">
+                        <div class="resource-browser-head">
+                            <div>
+                                <h4>${escapeHtml(item.name || '未命名资源')}</h4>
+                                <div class="resource-browser-meta">${chips || '<span class="resource-browser-chip">资源库</span>'}</div>
+                            </div>
+                            <button class="effect-add" type="button" onclick="useResource(${idx})">加入当前效果</button>
+                        </div>
+                    </article>
+                `;
             }).join('');
         }
 
@@ -2745,7 +2855,7 @@
                 const cached = duoPageCache[cacheKey];
                 duoCache = cached.items;
                 renderDuoResults(cached.items);
-                if (pager) pager.innerText = `共 ${cached.total} 条，当前第 ${page} 页`;
+                if (pager) pager.innerText = `共 ${cached.total} 条素材，当前第 ${page} 页`;
                 return;
             }
             const res = await fetch('/api/duo/resources/search', {
@@ -2758,19 +2868,37 @@
             duoCache = items;
             duoPageCache[cacheKey] = {items, total: data.total || 0};
             renderDuoResults(items);
-            if (pager) pager.innerText = `共 ${data.total || 0} 条，当前第 ${page} 页`;
+            if (pager) pager.innerText = `共 ${data.total || 0} 条素材，当前第 ${page} 页`;
         }
 
         function renderDuoResults(items) {
             const results = document.getElementById('duo_results');
             if (!results) return;
             if (!items.length) {
-                results.innerHTML = '<div class="hint">无匹配资源</div>';
+                results.innerHTML = '<div class="tool-result">没有找到匹配素材，试试更换分类或关键词。</div>';
                 return;
             }
             results.innerHTML = items.map((item, idx) => {
-                const preview = item.preview ? `<img src="${item.preview}" style="width:36px;height:36px;vertical-align:middle;margin-right:6px;">` : '';
-                return `<div class="resource-row">${preview}名称: ${item.name || ''} | 编号: ${item.id || ''} <button class="effect-add" type="button" onclick="useDuoResource(${idx})">使用</button></div>`;
+                const preview = item.preview
+                    ? `<img class="resource-browser-thumb" src="${item.preview}" alt="${escapeHtml(item.name || 'Duo 素材')}">`
+                    : '<div class="resource-browser-thumb resource-browser-thumb-empty">Duo</div>';
+                const chips = buildResourceMetaChips(item, [document.getElementById('duo_category')?.value || 'Duo 素材'])
+                    .map((chip) => `<span class="resource-browser-chip">${escapeHtml(chip)}</span>`)
+                    .join('');
+                return `
+                    <article class="resource-browser-card resource-browser-card-media">
+                        <div class="resource-browser-media">${preview}</div>
+                        <div class="resource-browser-body">
+                            <div class="resource-browser-head">
+                                <div>
+                                    <h4>${escapeHtml(item.name || '未命名素材')}</h4>
+                                    <div class="resource-browser-meta">${chips}</div>
+                                </div>
+                                <button class="effect-add" type="button" onclick="useDuoResource(${idx})">加入当前方案</button>
+                            </div>
+                        </div>
+                    </article>
+                `;
             }).join('');
         }
 
@@ -2801,7 +2929,7 @@
                 body: JSON.stringify({resource_path: path})
             });
             const data = await res.json();
-            if (info) info.innerText = data.ok ? '资源列表已刷新' : (data.error || '刷新失败');
+            if (info) info.innerText = data.ok ? '资源索引已更新，可重新搜索最新素材。' : (data.error || '更新失败');
             duoPageCache = {};
             loadDuoCacheStatus();
         }
@@ -2811,7 +2939,7 @@
             try {
                 const res = await fetch('/api/duo/cache/status');
                 const data = await res.json();
-                if (info) info.innerText = data.exists ? `资源列表可用，共 ${data.resource_count || 0} 条` : '暂未发现已整理资源';
+                if (info) info.innerText = data.exists ? `本地素材索引可用，共 ${data.resource_count || 0} 条素材。` : '暂未发现可用的本地素材索引。';
             } catch (e) {}
         }
 
@@ -2826,7 +2954,7 @@
             form.append('file', fileInput.files[0]);
             const res = await fetch('/api/duo/resources/upload', {method: 'POST', body: form});
             const data = await res.json();
-            if (info) info.innerText = data.ok ? `上传成功，共 ${data.count} 条资源` : (data.error || '上传失败');
+            if (info) info.innerText = data.ok ? `资源包导入成功，共 ${data.count} 条素材。` : (data.error || '导入失败');
             duoPageCache = {};
             loadDuoCacheStatus();
         }
@@ -2836,7 +2964,7 @@
             try {
                 const res = await fetch('/api/duo/ffmpeg/status');
                 const data = await res.json();
-                if (info) info.innerText = data.ok ? `视频处理环境已连接：${data.path}` : (data.error || '视频处理环境未找到');
+                if (info) info.innerText = data.ok ? `视频处理环境已就绪：${data.path}` : (data.error || '暂未检测到视频处理环境');
             } catch (e) {}
         }
 
@@ -3791,7 +3919,7 @@ async function renameUserMaterialProject() {
                 const summary = getDraftElement('summary', shell);
                 if (summary && !summary.dataset.refined) {
                     summary.dataset.refined = 'true';
-                    summary.textContent = '点击“选择草稿”查看最近草稿，并自动带回当前模块。';
+                    summary.textContent = '最近草稿会显示在下方，选中后会自动带回当前模块。';
                 }
                 const readBtn = selectedBar?.querySelector('button[onclick="loadDraftInfo()"]');
                 if (readBtn) readBtn.remove();
@@ -3937,7 +4065,7 @@ async function renameUserMaterialProject() {
             }
         };
 
-        let activeWorkspaceNav = {group: 'mix', item: 'group'};
+        let activeWorkspaceNav = {group: 'assistant', item: 'assistant-main'};
 
         function getWorkspaceNavGroup(groupKey) {
             return groupKey ? WORKSPACE_NAV_CONFIG[groupKey] || null : null;
@@ -3962,9 +4090,7 @@ async function renameUserMaterialProject() {
             document.querySelectorAll('.sidebar-group').forEach((group) => {
                 const isActiveGroup = group.dataset.group === groupKey;
                 group.classList.toggle('active', isActiveGroup);
-                if (keepOpen) {
-                    group.classList.toggle('open', isActiveGroup);
-                }
+                group.classList.toggle('open', keepOpen && isActiveGroup);
             });
             document.querySelectorAll('.sidebar-link[href^="#"]').forEach((link) => {
                 const linkGroup = link.dataset.navGroup || link.closest('.sidebar-group')?.dataset.group || '';
@@ -4075,16 +4201,20 @@ async function renameUserMaterialProject() {
                 });
             if (!cards.length || !items.length) return;
             const taggedCards = cards.filter((node) => node instanceof HTMLElement && node.dataset.subtabGroup);
-            const nav = document.createElement('div');
-            nav.className = 'subtabs';
-            nav.dataset.tabHost = root.id || panelId;
+            const nav = options.hideNav ? null : document.createElement('div');
+            if (nav) {
+                nav.className = 'subtabs';
+                nav.dataset.tabHost = root.id || panelId;
+            }
             items.forEach((item, index) => {
-                const button = document.createElement('button');
-                button.type = 'button';
-                button.className = `subtab-btn${index === 0 ? ' active' : ''}`;
-                button.textContent = item.label;
-                button.dataset.target = item.id;
-                nav.appendChild(button);
+                if (nav) {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = `subtab-btn${index === 0 ? ' active' : ''}`;
+                    button.textContent = item.label;
+                    button.dataset.target = item.id;
+                    nav.appendChild(button);
+                }
 
                 const itemNodes = taggedCards.length
                     ? taggedCards.filter((node) => node.dataset.subtabGroup === item.id)
@@ -4101,21 +4231,23 @@ async function renameUserMaterialProject() {
             });
             const insertTarget = taggedCards[0] || cards[0];
             if (!insertTarget) return;
-            root.insertBefore(nav, insertTarget);
-            nav.querySelectorAll('.subtab-btn').forEach((button) => {
-                button.addEventListener('click', () => {
-                    activateSecondaryTab(root.id || panelId, button.dataset.target);
+            if (nav) {
+                root.insertBefore(nav, insertTarget);
+                nav.querySelectorAll('.subtab-btn').forEach((button) => {
+                    button.addEventListener('click', () => {
+                        activateSecondaryTab(root.id || panelId, button.dataset.target);
+                    });
                 });
-            });
+            }
             const activeItem = activeWorkspaceNav?.group ? getWorkspaceNavItem(activeWorkspaceNav.group, activeWorkspaceNav.item) : null;
             if (activeItem?.kind === 'subtab' && (activeItem.containerId || activeItem.panelId) === (root.id || panelId)) {
                 activateSecondaryTab(root.id || panelId, activeItem.target);
                 return;
             }
-            activateDefaultSecondaryTab(root.id || panelId);
+            activateDefaultSecondaryTab(root.id || panelId, {syncNav: false});
         }
 
-        function activateSecondaryTab(containerId, target) {
+        function activateSecondaryTab(containerId, target, options = {}) {
             if (!containerId || !target) return;
             const root = document.getElementById(containerId);
             if (!root) return;
@@ -4126,7 +4258,7 @@ async function renameUserMaterialProject() {
                         && item.target === target;
                 });
             });
-            if (matchedEntry) {
+            if (matchedEntry && options.syncNav !== false) {
                 const [groupKey, group] = matchedEntry;
                 const itemMatch = Object.entries(group.items || {}).find(([, item]) => {
                     return item.kind === 'subtab'
@@ -4161,13 +4293,13 @@ async function renameUserMaterialProject() {
             }
         }
 
-        function activateDefaultSecondaryTab(containerId) {
+        function activateDefaultSecondaryTab(containerId, options = {}) {
             const root = document.getElementById(containerId);
             if (!root) return;
             const nav = getDirectSubtabs(root);
             const first = nav?.querySelector('.subtab-btn');
             if (!first?.dataset?.target) return;
-            activateSecondaryTab(containerId, first.dataset.target);
+            activateSecondaryTab(containerId, first.dataset.target, options);
         }
 
         function activateHardSection(panelId, sectionId) {
@@ -4206,10 +4338,6 @@ async function renameUserMaterialProject() {
                     const key = toggle.getAttribute('data-group-toggle');
                     const group = document.querySelector(`.sidebar-group[data-group="${key}"]`);
                     if (!group) return;
-                    if (activeWorkspaceNav.group === key) {
-                        group.classList.toggle('open');
-                        return;
-                    }
                     const config = getWorkspaceNavGroup(key);
                     if (config?.defaultItem) {
                         applyWorkspaceNavigation(key, config.defaultItem, {openActiveGroup: true});
@@ -4228,7 +4356,7 @@ async function renameUserMaterialProject() {
             activateHardSection('panel-account', 'account-profile-section');
             activateHardSection('panel-resource-exchange', 'resource-square-section');
             activateHardSection('panel-settings', 'settings-basic-section');
-            applyWorkspaceNavigation('mix', 'group', {openActiveGroup: true, scroll: false});
+            applyWorkspaceNavigation('assistant', 'assistant-main', {openActiveGroup: true, scroll: false});
         }
 
         function initSplitWorkspace() {
@@ -4307,7 +4435,22 @@ async function renameUserMaterialProject() {
             const nextBtn = document.getElementById('resourceExchangeNextBtn');
             if (!box) return;
             box.innerHTML = items.length
-                ? items.map((item) => `<article class="resource-post-card"><div class="resource-post-head"><span class="resource-level-badge">${escapeHtml(item.membership_label || '试用用户')}</span><span class="resource-post-time">${escapeHtml(item.published_at ? new Date(item.published_at).toLocaleString() : '-')}</span></div><h4>${escapeHtml(item.project_name || '-')}</h4><p>${escapeHtml(item.project_intro || '-')}</p><div class="resource-post-meta"><span>联系方式：${escapeHtml(item.contact || '-')}</span><span>发布者：${escapeHtml(item.username || '-')}</span></div></article>`).join('')
+                ? `<div class="resource-table-shell">
+                    <div class="resource-table-head">
+                        <span>会员等级</span>
+                        <span>项目名称</span>
+                        <span>项目介绍</span>
+                        <span>联系方式</span>
+                        <span>发布时间</span>
+                    </div>
+                    ${items.map((item) => `<article class="resource-table-row">
+                        <div class="resource-table-cell"><span class="resource-level-badge">${escapeHtml(item.membership_label || '试用用户')}</span></div>
+                        <div class="resource-table-cell"><strong>${escapeHtml(item.project_name || '-')}</strong></div>
+                        <div class="resource-table-cell"><span>${escapeHtml(item.project_intro || '-')}</span></div>
+                        <div class="resource-table-cell"><span>${escapeHtml(item.contact || '-')}</span></div>
+                        <div class="resource-table-cell"><time>${escapeHtml(item.published_at ? new Date(item.published_at).toLocaleString() : '-')}</time></div>
+                    </article>`).join('')}
+                </div>`
                 : '<div class="tool-result">当前还没有通过审核的资源互换内容。</div>';
             if (pager) pager.textContent = `第 ${resourceExchangeState.page} / ${resourceExchangeState.pages} 页，共 ${resourceExchangeState.total} 条`;
             if (prevBtn) prevBtn.disabled = resourceExchangeState.page <= 1;
@@ -4318,7 +4461,7 @@ async function renameUserMaterialProject() {
             const box = document.getElementById('resourceMyPostsList');
             if (!box) return;
             box.innerHTML = items.length
-                ? items.map((item) => `<article class="resource-post-card is-owned"><div class="resource-post-head"><span class="resource-level-badge">${escapeHtml(item.membership_label || '试用用户')}</span><span class="resource-post-status ${escapeHtml(item.status || 'pending')}">${escapeHtml(formatResourceExchangeStatus(item.status))}</span></div><h4>${escapeHtml(item.project_name || '-')}</h4><p>${escapeHtml(item.project_intro || '-')}</p><div class="resource-post-meta"><span>联系方式：${escapeHtml(item.contact || '-')}</span><span>发布时间：${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : '-')}</span></div><div class="resource-review-note">${item.status === 'rejected' ? `拒绝原因：${escapeHtml(item.review_reason || '管理员未填写')}` : (item.status === 'approved' ? '审核已通过，内容已在资源大厅展示。' : '等待管理员审核通过后展示。')}</div></article>`).join('')
+                ? items.map((item) => `<article class="resource-post-card is-owned"><div class="resource-post-head"><span class="resource-level-badge">${escapeHtml(item.membership_label || '试用用户')}</span><span class="resource-post-status ${escapeHtml(item.status || 'pending')}">${escapeHtml(formatResourceExchangeStatus(item.status))}</span></div><div class="resource-detail-grid resource-detail-grid-wide"><div class="resource-detail-field"><span>项目名称</span><strong>${escapeHtml(item.project_name || '-')}</strong></div><div class="resource-detail-field"><span>项目介绍</span><strong>${escapeHtml(item.project_intro || '-')}</strong></div><div class="resource-detail-field"><span>联系方式</span><strong>${escapeHtml(item.contact || '-')}</strong></div><div class="resource-detail-field"><span>发布时间</span><strong>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : '-')}</strong></div></div><div class="resource-review-note">${item.status === 'rejected' ? `拒绝原因：${escapeHtml(item.review_reason || '管理员未填写')}` : (item.status === 'approved' ? '审核已通过，内容已在资源大厅展示。' : '等待管理员审核通过后展示。')}</div></article>`).join('')
                 : '<div class="tool-result">你今天还没有发布资源互换内容。</div>';
         }
 
@@ -4421,12 +4564,13 @@ async function renameUserMaterialProject() {
                 {id: 'split-file', label: '文件分割', indexes: [0]},
                 {id: 'split-draft', label: '草稿处理', indexes: [1, 2]},
                 {id: 'split-batch', label: '批量查看', indexes: [3]}
-            ]);
+            ], {hideNav: true});
             initSecondaryTabs('panel-effects', [
                 {id: 'effects-core', label: '效果配置', indexes: [0, 4]},
                 {id: 'effects-resource', label: '资源库', indexes: [1]},
                 {id: 'effects-duo', label: 'Duo 资源', indexes: [2, 3, 5, 6]}
             ], {
+                hideNav: true,
                 rootId: 'effects_section',
                 getNodes(root) {
                     return Array.from(root.children).filter((node) => {
@@ -4444,12 +4588,12 @@ async function renameUserMaterialProject() {
                 {id: 'clip-rhythm', label: '节奏变速', indexes: [1]},
                 {id: 'clip-transform', label: '画面校正', indexes: [2]},
                 {id: 'clip-shake', label: '摇晃关键帧', indexes: [3]}
-            ], {rootId: 'clipToolsGrid'});
+            ], {rootId: 'clipToolsGrid', hideNav: true});
             initSecondaryTabs('panel-export', [
                 {id: 'export-settings', label: '导出设置', indexes: [0, 1]},
                 {id: 'export-batch', label: '批量导出', indexes: [2]},
                 {id: 'export-segments', label: '片段导出', indexes: [3]}
-            ]);
+            ], {hideNav: true});
             initSettingsWorkspace();
             await Promise.all([loadAiProviders(), loadAiKeys()]);
             initAiWorkspace();
@@ -4554,41 +4698,69 @@ function renderAssistantPreview(data = null) {
     const box = document.getElementById('assistantPreviewBox');
     if (!box) return;
     if (!data) {
-        box.textContent = '助手会先回显将调用的功能、参数和影响范围。';
+        box.innerHTML = '<div class="assistant-preview-card"><strong>输入一句需求后，这里会显示推荐动作、会影响哪些内容，以及是否需要确认。</strong><span>例如：帮我创建素材目录、切到槽位拼接混剪、导出当前草稿。</span></div>';
         return;
     }
     if (!data.ok) {
-        box.textContent = data.error || '命令预览失败。';
+        box.innerHTML = `<div class="assistant-preview-card assistant-preview-warning"><strong>暂时无法处理这条命令</strong><span>${escapeHtml(data.error || '命令预览失败。')}</span></div>`;
         return;
     }
     const action = data.client_action || {};
-    const lines = [
-        `动作：${data.summary || '-'}`,
-        `影响：${data.impact || '未说明'}`,
-        `确认：${data.requires_confirmation ? '需要' : '不需要'}`,
-        `类型：${action.type || '-'}`
+    const meta = [
+        `<span class="assistant-preview-chip">${data.requires_confirmation ? '执行前需要确认' : '可直接执行'}</span>`,
+        `<span class="assistant-preview-chip">${escapeHtml(describeAssistantClientAction(action))}</span>`
     ];
     if (Array.isArray(data.missing) && data.missing.length) {
-        lines.push(`缺少参数：${data.missing.join(', ')}`);
+        meta.push(`<span class="assistant-preview-chip assistant-preview-chip-warn">还缺：${escapeHtml(data.missing.join('、'))}</span>`);
     }
-    if (action.mix_target) lines.push(`目标模式：${action.mix_target}`);
-    if (action.panel_id) lines.push(`目标面板：${action.panel_id}`);
-    box.textContent = lines.join('\n');
+    box.innerHTML = `
+        <article class="assistant-preview-card">
+            <div class="assistant-preview-label">推荐操作</div>
+            <h4>${escapeHtml(data.summary || '未识别动作')}</h4>
+            <p>${escapeHtml(data.impact || '本次操作不会修改草稿之外的内容。')}</p>
+            <div class="assistant-preview-meta">${meta.join('')}</div>
+        </article>
+    `;
 }
 
 function renderAssistantLogs(items = []) {
     const box = document.getElementById('assistantLogList');
     if (!box) return;
     if (!items.length) {
-        box.textContent = '登录后可查看助手预览和执行记录。';
+        box.innerHTML = '<div class="tool-result">登录后可以查看最近的助手记录。</div>';
         return;
     }
-    box.textContent = items.map((item) => {
+    box.innerHTML = items.map((item) => {
         const payload = item.payload || {};
         const summary = payload.command || payload.summary || payload.response?.summary || '-';
         const timeText = item.created_at ? new Date(item.created_at).toLocaleString() : '-';
-        return `[${item.stage || '-'}] ${timeText}\n${summary}`;
-    }).join('\n\n');
+        return `
+            <article class="assistant-log-card">
+                <div class="assistant-log-head">
+                    <span class="assistant-preview-chip">${escapeHtml(formatAssistantStageLabel(item.stage || '-'))}</span>
+                    <span>${escapeHtml(timeText)}</span>
+                </div>
+                <p>${escapeHtml(summary)}</p>
+            </article>
+        `;
+    }).join('');
+}
+
+function formatAssistantStageLabel(stage) {
+    const mapping = {
+        preview: '已预览',
+        execute: '已执行',
+        error: '异常'
+    };
+    return mapping[stage] || stage || '记录';
+}
+
+function describeAssistantClientAction(action = {}) {
+    if (!action || typeof action !== 'object') return '等待进一步识别';
+    if (action.type === 'navigate') return '会自动跳转到对应功能页';
+    if (action.type === 'material_layout_created') return '会直接创建素材目录';
+    if (action.type === 'fill_text_template') return '会自动填充文字模板';
+    return '会调用当前工作台已有能力';
 }
 
 async function loadAssistantLogs() {
@@ -5296,14 +5468,14 @@ function renderMangaDraftResult(result = {}) {
     const box = document.getElementById('mangaDraftResult');
     if (!box) return;
     if (!result || (!result.draft_path && !result.workspace && !result.scenes)) {
-        box.innerHTML = '生成成功后，这里会显示草稿路径、场景目录和分镜摘要。';
+        box.innerHTML = '生成成功后，这里会显示剪映草稿、场景目录和分镜摘要。';
         return;
     }
     const workspace = result.workspace || {};
     const scenes = Array.isArray(result.scenes) ? result.scenes : [];
     box.innerHTML = [
         `<div><strong>草稿名称：</strong>${escapeHtml(result.draft_name || '-')}</div>`,
-        `<div><strong>草稿路径：</strong>${escapeHtml(result.draft_path || '-')}</div>`,
+        `<div><strong>剪映草稿：</strong>${escapeHtml(result.draft_path || '-')}</div>`,
         `<div><strong>场景目录：</strong>${escapeHtml(workspace.materials_root || '-')}</div>`,
         `<div><strong>分镜说明：</strong>${escapeHtml(workspace.script_path || '-')}</div>`,
         `<div><strong>场景数量：</strong>${escapeHtml(String(result.scene_count || scenes.length || 0))} / <strong>总时长：</strong>${escapeHtml(String(result.total_duration || 0))} 秒</div>`,

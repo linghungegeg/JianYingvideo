@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ site_settings.site_title }}</title>
+    <meta name="keywords" content="{{ site_settings.site_keywords }}">
+    <meta name="description" content="{{ site_settings.site_description }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/landing.css') }}">
+</head>
+<body>
+    {% set official_site_url = site_settings.official_site_url or request.url_root.rstrip('/') %}
+    {% set logo_url = site_settings.official_logo_url or '' %}
+    <div class="landing-shell">
+        <header class="site-header">
+            <a class="brand-lockup" href="{{ official_site_url }}">
+                {% if logo_url %}
+                <span class="brand-logo brand-logo-image">
+                    <img src="{{ logo_url }}" alt="{{ site_settings.site_name }} Logo">
+                </span>
+                {% else %}
+                <span class="brand-logo brand-logo-fallback">VF</span>
+                {% endif %}
+                <span class="brand-copy">
+                    <strong>{{ site_settings.site_name }}</strong>
+                    <small>AI 视频生产工作台</small>
+                </span>
+            </a>
+            <nav class="site-actions">
+                <a class="download-link" href="{{ url_for('user.download_redirect') }}" {% if site_settings.download_url %}target="_blank" rel="noopener"{% endif %}>立即下载</a>
+            </nav>
+        </header>
+
+        <main class="page-stack">
+            <section class="hero-panel">
+                <div class="hero-copy">
+                    <span class="eyebrow">批量混剪 · AI 漫剧 · 商业化运营</span>
+                    <h1>从脚本到成片，常用流程一步接上</h1>
+                    <p class="hero-text">{{ site_settings.site_description }}</p>
+                    <div class="hero-actions">
+                        <a class="primary-action" href="{{ url_for('user.download_redirect') }}" {% if site_settings.download_url %}target="_blank" rel="noopener"{% endif %}>下载桌面版</a>
+                        <a class="secondary-action" href="{{ url_for('user.user_home') }}">先看工作台</a>
+                    </div>
+                    <div class="hero-points">
+                        <span>四种混剪模式完整保留</span>
+                        <span>AI 漫剧直接生成剪映草稿</span>
+                        <span>会员、CDK、邀请奖励服务端统一管理</span>
+                    </div>
+                </div>
+
+                <aside class="hero-side">
+                    <div class="hero-side-card major">
+                        <span class="card-kicker">适合谁</span>
+                        <h2>适合做短剧、混剪、批量出片和商用交付的人</h2>
+                        <p>下载后直接进入工作台，草稿、素材目录、效果配置、导出和后台运营都在同一套系统里完成。</p>
+                    </div>
+                    <div class="hero-side-grid">
+                        <article class="hero-side-card compact">
+                            <span class="card-kicker">AI 漫剧</span>
+                            <strong>先生成草稿结构，再补素材</strong>
+                            <p>系统先把剪映草稿、场景目录和分镜说明搭好，后续精修更直接。</p>
+                        </article>
+                        <article class="hero-side-card compact">
+                            <span class="card-kicker">批量工作流</span>
+                            <strong>混剪、效果、导出一套打通</strong>
+                            <p>不需要在多个页面之间来回切换，常用操作都能直接连续完成。</p>
+                        </article>
+                    </div>
+                </aside>
+            </section>
+
+            <section class="download-band">
+                <div class="download-band-copy">
+                    <span class="section-tag">下载即用</span>
+                    <h2>下载安装后，直接开始创作</h2>
+                    <p>常用流程已经打通，打开工作台就能继续混剪、搭草稿、配效果和导出成片。</p>
+                </div>
+                <div class="download-band-actions">
+                    <a class="primary-action block" href="{{ url_for('user.download_redirect') }}" {% if site_settings.download_url %}target="_blank" rel="noopener"{% endif %}>点击下载最新版本</a>
+                    <a class="secondary-action block" href="{{ url_for('user.user_home') }}">查看工作台</a>
+                </div>
+            </section>
+
+            <section class="feature-grid">
+                <article class="feature-card">
+                    <span>01</span>
+                    <strong>批量混剪</strong>
+                    <p>按组、混剪、分区、槽位拼接统一收口，适合持续批量出片。</p>
+                </article>
+                <article class="feature-card">
+                    <span>02</span>
+                    <strong>AI 智做</strong>
+                    <p>AI 漫剧直接给出剪映草稿与场景目录，方便继续人工精修。</p>
+                </article>
+                <article class="feature-card">
+                    <span>03</span>
+                    <strong>运营后台</strong>
+                    <p>站点设置、授权激活、用户管理、资源审核继续保留后台能力。</p>
+                </article>
+            </section>
+
+            <section class="guide-grid">
+                <article class="guide-card">
+                    <span class="section-tag">上手流程</span>
+                    <h2>3 步开始使用</h2>
+                    <div class="guide-list">
+                        <div><strong>下载并安装</strong><span>点击首页主按钮，安装完成后直接进入工作台。</span></div>
+                        <div><strong>选择业务入口</strong><span>按你的需求进入批量混剪、AI 漫剧、效果配置或导出流程。</span></div>
+                        <div><strong>开始出片</strong><span>先搭草稿，再补素材、加效果、批量导出，流程保持连续。</span></div>
+                    </div>
+                </article>
+                <article class="guide-card warm">
+                    <span class="section-tag">为什么好用</span>
+                    <h2>常用动作不拆散，打开就能直接做事</h2>
+                    <div class="guide-list">
+                        <div><strong>少来回切换</strong><span>草稿、效果、资源和导出在一套工作区里完成。</span></div>
+                        <div><strong>少重复搭结构</strong><span>AI 漫剧先生成草稿和目录，后面补内容更高效。</span></div>
+                        <div><strong>少运营断层</strong><span>会员、次数、邀请码、CDK、设备绑定都继续保留。</span></div>
+                    </div>
+                </article>
+            </section>
+
+            <section class="faq-card">
+                <span class="section-tag">常见问题</span>
+                <h2>下载前最关心的几个点</h2>
+                <div class="faq-grid">
+                    <article>
+                        <strong>下载后主要能做什么？</strong>
+                        <p>可以直接进入批量混剪、AI 漫剧、批量效果、批量导出和后台运营链路。</p>
+                    </article>
+                    <article>
+                        <strong>AI 漫剧现在怎么用？</strong>
+                        <p>输入脚本后直接生成剪映草稿、场景目录和分镜说明，后续自己补素材即可。</p>
+                    </article>
+                    <article>
+                        <strong>让创作更自由</strong>
+                        <p>从草稿、素材、效果到导出，常用流程已经串起来，做内容时不需要反复切换和重复搭结构。</p>
+                    </article>
+                    <article>
+                        <strong>不想先下载怎么办？</strong>
+                        <p>也可以先进入在线工作台查看功能布局和页面结构，再决定是否下载安装。</p>
+                    </article>
+                </div>
+            </section>
+        </main>
+    </div>
+</body>
+</html>

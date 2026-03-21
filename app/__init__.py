@@ -46,6 +46,6 @@ def create_app(config_class=Config):
 
     # Ensure model imports
     with app.app_context():
-        from app.models import user, user_token, user_quota, template, template_model, task, task_effect_log, api_usage, api_key, api_audit, api_quota, api_quota_usage, api_quota_template
+        from app.models import user, user_token, user_quota, template, template_model, task, task_effect_log, api_usage, api_key, api_audit, api_quota, api_quota_usage, api_quota_template, resource_exchange_post
 
     return app

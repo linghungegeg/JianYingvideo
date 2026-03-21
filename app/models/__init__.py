@@ -11,6 +11,7 @@ from .cdk_code import CdkCode
 from .license_binding import LicenseBinding
 from .manga_template import MangaTemplate
 from .manga_generation_log import MangaGenerationLog
+from .resource_exchange_post import ResourceExchangePost
 from .user_quota_log import UserQuotaLog
 
 __all__ = [
@@ -27,5 +28,6 @@ __all__ = [
     'LicenseBinding',
     'MangaTemplate',
     'MangaGenerationLog',
+    'ResourceExchangePost',
     'UserQuotaLog',
 ]

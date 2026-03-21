@@ -6,6 +6,7 @@ import base64
 import shutil
 import re
 import time
+import math
 from collections import defaultdict
 from typing import List, Optional, Union
 import tkinter as tk
@@ -48,6 +49,7 @@ from app.models.ai_task import AITask
 from app.models.user_material import UserMaterial
 from app.models.manga_template import MangaTemplate
 from app.models.manga_generation_log import MangaGenerationLog
+from app.models.resource_exchange_post import ResourceExchangePost
 from app.models.user_quota_log import UserQuotaLog
 from app.models.user_quota import UserQuota
 from app.utils.auth_token import extract_bearer_token, issue_token, validate_token
@@ -110,10 +112,9 @@ _QUOTA_REASON_LABELS = {
     "manga_generate": "AI 漫剧消耗",
     "license_activate": "激活授权",
     "refund": "失败返还",
-    "invite_referrer_reward": "邀请人奖励",
-    "invite_invitee_reward": "受邀注册奖励",
+    "invite_referrer_reward": "邀请激活奖励",
+    "invite_invitee_reward": "受邀激活加赠",
 }
-_RESOURCE_EXCHANGE_CONFIG_KEY = "resource_exchange_posts_v1"
 _RESOURCE_EXCHANGE_PROJECT_LIMIT = 15
 _RESOURCE_EXCHANGE_INTRO_LIMIT = 30
 _RESOURCE_EXCHANGE_PAGE_SIZE = 20
@@ -228,15 +229,6 @@ def _resource_exchange_membership_label(user: User, quota_payload: Optional[dict
     return "试用用户"
 
 
-def _load_resource_exchange_posts() -> list[dict]:
-    items = _get_json_config(_RESOURCE_EXCHANGE_CONFIG_KEY, [])
-    return items if isinstance(items, list) else []
-
-
-def _save_resource_exchange_posts(items: list[dict]) -> None:
-    _set_json_config(_RESOURCE_EXCHANGE_CONFIG_KEY, items if isinstance(items, list) else [])
-
-
 def _resource_exchange_sort_key(item: dict):
     status = str(item.get("status") or "pending")
     approved_at = _parse_iso_datetime(item.get("approved_at")) or _parse_iso_datetime(item.get("reviewed_at")) or _parse_iso_datetime(item.get("created_at")) or datetime.min
@@ -287,8 +279,26 @@ def _validate_resource_exchange_payload(data: dict) -> tuple[Optional[dict], Opt
     }, None
 
 
-def _normalize_resource_exchange_post(item: dict) -> dict:
+def _resource_exchange_post_to_dict(item: ResourceExchangePost | dict | None) -> dict:
     post = item if isinstance(item, dict) else {}
+    if isinstance(item, ResourceExchangePost):
+        post = {
+            "id": item.id,
+            "user_id": item.user_id,
+            "username": item.username,
+            "membership_label": item.membership_label,
+            "membership_value": item.membership_value,
+            "project_name": item.project_name,
+            "project_intro": item.project_intro,
+            "contact": item.contact,
+            "status": item.status,
+            "created_at": item.created_at.isoformat() if item.created_at else "",
+            "reviewed_at": item.reviewed_at.isoformat() if item.reviewed_at else "",
+            "approved_at": item.approved_at.isoformat() if item.approved_at else "",
+            "review_reason": item.review_reason or "",
+            "reviewer_id": item.reviewer_id or 0,
+            "reviewer_name": item.reviewer_name or "",
+        }
     return {
         "id": str(post.get("id") or uuid.uuid4().hex[:12]),
         "user_id": int(post.get("user_id") or 0),
@@ -309,7 +319,7 @@ def _normalize_resource_exchange_post(item: dict) -> dict:
 
 
 def _build_resource_exchange_public_item(item: dict) -> dict:
-    post = _normalize_resource_exchange_post(item)
+    post = _resource_exchange_post_to_dict(item)
     return {
         "id": post["id"],
         "membership_label": post["membership_label"],
@@ -478,6 +488,16 @@ def _get_invite_settings() -> dict:
     }
 
 
+def _extend_vip_expire_at(quota: UserQuota, days: int, now: Optional[datetime] = None) -> Optional[datetime]:
+    extra_days = int(days or 0)
+    if extra_days <= 0:
+        return quota.vip_expire_at
+    current_time = now or _now()
+    base = quota.vip_expire_at if quota.vip_expire_at and quota.vip_expire_at > current_time else current_time
+    quota.vip_expire_at = base + timedelta(days=extra_days)
+    return quota.vip_expire_at
+
+
 def _assistant_log_path(user_id: int) -> str:
     return os.path.join(get_user_data_dir(user_id), "assistant.log")
 
@@ -627,6 +647,16 @@ def _build_vip_rules_summary() -> dict:
 
 
 def _apply_invite_registration_rewards(user: User) -> dict:
+    return {"ok": False, "awards": {}, "deferred": True}
+
+
+def _invite_reward_days(duration_days: int, percent_value: int) -> int:
+    if int(duration_days or 0) <= 0 or int(percent_value or 0) <= 0:
+        return 0
+    return max(1, int(math.ceil((float(duration_days) * float(percent_value)) / 100.0 - 1e-9)))
+
+
+def _apply_invite_license_rewards(user: User, license_code: str, duration_days: int) -> dict:
     if not user or not user.referrer_id or user.referrer_id == user.id:
         return {"ok": False, "awards": {}}
 
@@ -635,10 +665,13 @@ def _apply_invite_registration_rewards(user: User) -> dict:
         return {"ok": False, "awards": {}}
 
     settings = _get_invite_settings()
-    project_id = f"invite:{user.id}"
+    project_id = f"invite_license:{license_code}"
+    current_time = _now()
     awards = {}
+    referrer_days = _invite_reward_days(duration_days, settings["referrer_reward"])
+    invitee_days = _invite_reward_days(duration_days, settings["invitee_reward"])
 
-    if settings["referrer_reward"] > 0:
+    if referrer_days > 0:
         existing = UserQuotaLog.query.filter_by(
             user_id=referrer.id,
             reason="invite_referrer_reward",
@@ -646,18 +679,18 @@ def _apply_invite_registration_rewards(user: User) -> dict:
         ).first()
         if not existing:
             quota = get_or_create_quota(referrer.id)
-            quota.remaining = (quota.remaining or 0) + settings["referrer_reward"]
-            awards["referrer_reward"] = settings["referrer_reward"]
+            _extend_vip_expire_at(quota, referrer_days, current_time)
             db.session.add(quota)
             db.session.add(UserQuotaLog(
                 user_id=referrer.id,
-                change=settings["referrer_reward"],
+                change=referrer_days,
                 reason="invite_referrer_reward",
                 project_id=project_id,
                 remaining_after=quota.remaining,
             ))
+            awards["referrer_reward"] = referrer_days
 
-    if settings["invitee_reward"] > 0:
+    if invitee_days > 0:
         existing = UserQuotaLog.query.filter_by(
             user_id=user.id,
             reason="invite_invitee_reward",
@@ -665,19 +698,17 @@ def _apply_invite_registration_rewards(user: User) -> dict:
         ).first()
         if not existing:
             quota = get_or_create_quota(user.id)
-            quota.remaining = (quota.remaining or 0) + settings["invitee_reward"]
-            awards["invitee_reward"] = settings["invitee_reward"]
+            _extend_vip_expire_at(quota, invitee_days, current_time)
             db.session.add(quota)
             db.session.add(UserQuotaLog(
                 user_id=user.id,
-                change=settings["invitee_reward"],
+                change=invitee_days,
                 reason="invite_invitee_reward",
                 project_id=project_id,
                 remaining_after=quota.remaining,
             ))
+            awards["invitee_reward"] = invitee_days
 
-    if awards:
-        db.session.commit()
     return {"ok": bool(awards), "awards": awards, "referrer": referrer.username}
 
 
@@ -2147,6 +2178,9 @@ def site_settings():
         'site_title': ('site_title', 'title'),
         'site_keywords': ('site_keywords', 'keywords'),
         'site_description': ('site_description', 'description'),
+        'official_site_url': ('official_site_url', 'site_url'),
+        'download_url': ('download_url',),
+        'official_logo_url': ('official_logo_url', 'logo_url'),
         'workspace_title': ('workspace_title',),
         'workspace_subtitle': ('workspace_subtitle',),
         'login_title': ('login_title',),
@@ -2642,9 +2676,8 @@ def license_activate():
         db.session.add(cdk)
 
         quota = get_or_create_quota(user.id)
-        if cdk.expire_at:
-            if not quota.vip_expire_at or cdk.expire_at > quota.vip_expire_at:
-                quota.vip_expire_at = cdk.expire_at
+        if cdk.duration_days:
+            _extend_vip_expire_at(quota, int(cdk.duration_days), now)
         if cdk.bonus_points:
             ratio = get_license_settings()["points_ratio"]
             add_times = int(cdk.bonus_points / max(ratio, 1))
@@ -2657,9 +2690,11 @@ def license_activate():
                     project_id=code,
                     remaining_after=quota.remaining,
                 ))
+        invite_rewards = _apply_invite_license_rewards(user, code, int(cdk.duration_days or 0))
         db.session.add(quota)
         db.session.commit()
     else:
+        invite_rewards = {"ok": False, "awards": {}}
         if cdk.expire_at and now > cdk.expire_at:
             cdk.status = 2
             db.session.add(cdk)
@@ -2676,7 +2711,8 @@ def license_activate():
         'code': code,
         'expire_at': cdk.expire_at.isoformat() if cdk.expire_at else None,
         'transfer_times_left': cdk.transfer_times_left or 0,
-        'offline_hours': settings["offline_hours"]
+        'offline_hours': settings["offline_hours"],
+        'invite_rewards': invite_rewards.get("awards") or {},
     })
 
 
@@ -2805,9 +2841,20 @@ def admin_quota_summary():
     active_trial_users = db.session.query(func.count(UserQuota.user_id)).filter(UserQuota.remaining > 0).scalar() or 0
     total_users = db.session.query(func.count(User.id)).scalar() or 0
     total_invited_users = db.session.query(func.count(User.id)).filter(User.referrer_id.isnot(None)).scalar() or 0
-    total_invite_reward = db.session.query(func.coalesce(func.sum(UserQuotaLog.change), 0)).filter(
-        UserQuotaLog.reason == 'invite_referrer_reward'
-    ).scalar() or 0
+    invite_reward_rows = db.session.query(
+        UserQuotaLog.reason,
+        func.coalesce(func.sum(UserQuotaLog.change), 0),
+    ).filter(
+        UserQuotaLog.reason.in_(('invite_referrer_reward', 'invite_invitee_reward'))
+    ).group_by(UserQuotaLog.reason).all()
+    total_invite_referrer_reward = 0
+    total_invite_invitee_reward = 0
+    for reason, total in invite_reward_rows:
+        if reason == 'invite_referrer_reward':
+            total_invite_referrer_reward = int(total or 0)
+        elif reason == 'invite_invitee_reward':
+            total_invite_invitee_reward = int(total or 0)
+    total_invite_reward = total_invite_referrer_reward + total_invite_invitee_reward
     invite_settings = _get_invite_settings()
 
     return jsonify({
@@ -2819,6 +2866,8 @@ def admin_quota_summary():
         'total_users': int(total_users),
         'total_invited_users': int(total_invited_users),
         'total_invite_reward': int(total_invite_reward),
+        'total_invite_referrer_reward': int(total_invite_referrer_reward),
+        'total_invite_invitee_reward': int(total_invite_invitee_reward),
         'default_user_quota': int(get_config('default_user_quota', str(current_app.config.get('DEFAULT_USER_QUOTA', 0))) or current_app.config.get('DEFAULT_USER_QUOTA', 0) or 0),
         'invite_referrer_reward': invite_settings['referrer_reward'],
         'invite_invitee_reward': invite_settings['invitee_reward'],
@@ -2851,6 +2900,35 @@ def admin_license_settings():
     settings['invite_referrer_reward'] = _safe_int_config('invite_referrer_reward', 3)
     settings['invite_invitee_reward'] = _safe_int_config('invite_invitee_reward', 2)
     return jsonify({"ok": True, "settings": settings})
+
+
+@api_bp.route('/license/card-types', methods=['GET'])
+def license_card_types():
+    rows = (
+        db.session.query(
+            CdkCode.card_type,
+            func.max(CdkCode.duration_days).label('duration_days'),
+            func.max(CdkCode.device_limit).label('device_limit'),
+            func.max(CdkCode.transfer_times).label('transfer_times'),
+            func.max(CdkCode.bonus_points).label('bonus_points'),
+        )
+        .filter(CdkCode.card_type.isnot(None))
+        .group_by(CdkCode.card_type)
+        .order_by(func.max(CdkCode.duration_days).asc(), CdkCode.card_type.asc())
+        .all()
+    )
+    items = [
+        {
+            'card_type': row.card_type or '',
+            'duration_days': int(row.duration_days or 0),
+            'device_limit': int(row.device_limit or 1),
+            'transfer_times': int(row.transfer_times or 0),
+            'bonus_points': int(row.bonus_points or 0),
+        }
+        for row in rows
+        if (row.card_type or '').strip()
+    ]
+    return jsonify({'ok': True, 'items': items})
 
 
 @api_bp.route('/admin/cdk/batch', methods=['POST'])
@@ -3352,9 +3430,8 @@ def resource_exchange_list():
     except Exception:
         page = 1
     approved_items = [
-        _normalize_resource_exchange_post(item)
-        for item in _load_resource_exchange_posts()
-        if str((item or {}).get('status') or '') == 'approved'
+        _resource_exchange_post_to_dict(item)
+        for item in ResourceExchangePost.query.filter_by(status='approved').all()
     ]
     approved_items.sort(key=_resource_exchange_sort_key, reverse=True)
     items = [_build_resource_exchange_public_item(item) for item in approved_items]
@@ -3368,9 +3445,8 @@ def resource_exchange_my_posts():
     if err:
         return err
     items = [
-        _normalize_resource_exchange_post(item)
-        for item in _load_resource_exchange_posts()
-        if int((item or {}).get('user_id') or 0) == user.id
+        _resource_exchange_post_to_dict(item)
+        for item in ResourceExchangePost.query.filter_by(user_id=user.id).all()
     ]
     items.sort(key=_resource_exchange_sort_key, reverse=True)
     return jsonify({'ok': True, 'items': items})
@@ -3385,39 +3461,35 @@ def resource_exchange_publish():
     if validation_error:
         return jsonify({'ok': False, 'error': validation_error}), 400
 
-    items = [_normalize_resource_exchange_post(item) for item in _load_resource_exchange_posts()]
     start_utc, end_utc, _server_day = _china_day_bounds()
-    today_posts = [
-        item for item in items
-        if item['user_id'] == user.id
-        and (_parse_iso_datetime(item.get('created_at')) or datetime.min) >= start_utc
-        and (_parse_iso_datetime(item.get('created_at')) or datetime.min) < end_utc
-    ]
+    today_posts = ResourceExchangePost.query.filter(
+        ResourceExchangePost.user_id == user.id,
+        ResourceExchangePost.created_at >= start_utc,
+        ResourceExchangePost.created_at < end_utc,
+    ).count()
     if today_posts:
         return jsonify({'ok': False, 'error': '每个用户每天只能发布一条资源互换信息'}), 400
 
     quota_payload = quota_to_dict(get_or_create_quota(user.id))
-    now = _now().isoformat()
-    post = {
-        'id': uuid.uuid4().hex[:12],
-        'user_id': user.id,
-        'username': user.username,
-        'membership_label': _resource_exchange_membership_label(user, quota_payload),
-        'membership_value': _resource_exchange_membership_value(user, quota_payload),
-        'project_name': payload['project_name'],
-        'project_intro': payload['project_intro'],
-        'contact': payload['contact'],
-        'status': 'pending',
-        'created_at': now,
-        'reviewed_at': '',
-        'approved_at': '',
-        'review_reason': '',
-        'reviewer_id': 0,
-        'reviewer_name': '',
-    }
-    items.append(post)
-    _save_resource_exchange_posts(items)
-    return jsonify({'ok': True, 'item': _normalize_resource_exchange_post(post)})
+    now = _now()
+    post = ResourceExchangePost(
+        id=uuid.uuid4().hex[:12],
+        user_id=user.id,
+        username=user.username,
+        membership_label=_resource_exchange_membership_label(user, quota_payload),
+        membership_value=_resource_exchange_membership_value(user, quota_payload),
+        project_name=payload['project_name'],
+        project_intro=payload['project_intro'],
+        contact=payload['contact'],
+        status='pending',
+        created_at=now,
+        updated_at=now,
+        review_reason='',
+        reviewer_name='',
+    )
+    db.session.add(post)
+    db.session.commit()
+    return jsonify({'ok': True, 'item': _resource_exchange_post_to_dict(post)})
 
 
 @api_bp.route('/admin/resource-exchange/posts', methods=['GET'])
@@ -3431,7 +3503,7 @@ def admin_resource_exchange_posts():
         page = 1
     status = (request.args.get('status') or 'pending').strip().lower()
     keyword = (request.args.get('kw') or '').strip().lower()
-    items = [_normalize_resource_exchange_post(item) for item in _load_resource_exchange_posts()]
+    items = [_resource_exchange_post_to_dict(item) for item in ResourceExchangePost.query.all()]
     if status and status != 'all':
         items = [item for item in items if item['status'] == status]
     if keyword:
@@ -3460,20 +3532,21 @@ def admin_resource_exchange_review(post_id):
     if action == 'reject' and not reason:
         return jsonify({'ok': False, 'error': '拒绝时必须填写原因'}), 400
 
-    items = [_normalize_resource_exchange_post(item) for item in _load_resource_exchange_posts()]
-    target = next((item for item in items if item['id'] == str(post_id)), None)
+    target = ResourceExchangePost.query.filter_by(id=str(post_id)).first()
     if not target:
         return jsonify({'ok': False, 'error': '发布记录不存在'}), 404
 
-    reviewed_at = _now().isoformat()
-    target['status'] = 'approved' if action == 'approve' else 'rejected'
-    target['reviewed_at'] = reviewed_at
-    target['approved_at'] = reviewed_at if action == 'approve' else ''
-    target['review_reason'] = '' if action == 'approve' else reason
-    target['reviewer_id'] = admin.id
-    target['reviewer_name'] = admin.username
-    _save_resource_exchange_posts(items)
-    return jsonify({'ok': True, 'item': target})
+    reviewed_at = _now()
+    target.status = 'approved' if action == 'approve' else 'rejected'
+    target.reviewed_at = reviewed_at
+    target.approved_at = reviewed_at if action == 'approve' else None
+    target.review_reason = '' if action == 'approve' else reason
+    target.reviewer_id = admin.id
+    target.reviewer_name = admin.username
+    target.updated_at = reviewed_at
+    db.session.add(target)
+    db.session.commit()
+    return jsonify({'ok': True, 'item': _resource_exchange_post_to_dict(target)})
 
 
 @api_bp.route('/materials/create-layout', methods=['POST'])

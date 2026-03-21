@@ -218,8 +218,8 @@ def get_site_settings():
     title = get_config('site_title', f'{site_name} 工作台') or f'{site_name} 工作台'
     keywords = get_config('site_keywords', 'video,ai,generate') or 'video,ai,generate'
     description = (
-        get_config('site_description', f'{site_name} 站点与工作台配置中心')
-        or f'{site_name} 站点与工作台配置中心'
+        get_config('site_description', f'{site_name} 让创作更自由')
+        or f'{site_name} 让创作更自由'
     )
     workspace_title = get_config('workspace_title', '工作台') or '工作台'
     workspace_subtitle = (
@@ -244,6 +244,9 @@ def get_site_settings():
         get_config('admin_subtitle', '授权、CDK、设备、用户与日志。')
         or '授权、CDK、设备、用户与日志。'
     )
+    official_site_url = get_config('official_site_url', '') or ''
+    download_url = get_config('download_url', '') or ''
+    official_logo_url = get_config('official_logo_url', '') or ''
     return {
         'site_name': site_name,
         'title': title,
@@ -252,6 +255,9 @@ def get_site_settings():
         'site_keywords': keywords,
         'description': description,
         'site_description': description,
+        'official_site_url': official_site_url,
+        'download_url': download_url,
+        'official_logo_url': official_logo_url,
         'workspace_title': workspace_title,
         'workspace_subtitle': workspace_subtitle,
         'login_title': login_title,
@@ -265,6 +271,11 @@ def get_site_settings():
             'title': title,
             'keywords': keywords,
             'description': description,
+        },
+        'links': {
+            'official_site_url': official_site_url,
+            'download_url': download_url,
+            'official_logo_url': official_logo_url,
         },
         'workspace': {
             'title': workspace_title,

@@ -269,7 +269,7 @@ def check_admin_console(browser):
     expect(layout_metrics["sidebarWidth"] >= 300, f"admin sidebar still too narrow: {layout_metrics}")
     expect(layout_metrics["pagebarHeight"] >= 110, f"admin pagebar still too compressed: {layout_metrics}")
     expect("保存" in site_status, f"site save did not succeed: {site_status}")
-    expect(site_card_count == 4, f"site card count mismatch: {site_card_count}")
+    expect(site_card_count == 5, f"site card count mismatch: {site_card_count}")
     expect(preview_count == 0, f"site preview should be removed: {preview_count}")
     expect("保存" in license_status, f"license save did not succeed: {license_status}")
     expect(license_values["default_user_quota"] != "", f"default user quota not rendered: {license_values}")

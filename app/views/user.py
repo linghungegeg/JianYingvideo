@@ -27,12 +27,18 @@ def login_required(func):
 
 @user_bp.route("/")
 def dashboard():
-    return render_template("user/index.html", site_settings=get_site_settings())
+    return redirect("/user")
 
 
 @user_bp.route("/user")
 def user_home():
     return render_template("user/index.html", site_settings=get_site_settings())
+
+
+@user_bp.route("/download")
+def download_redirect():
+    url = (get_site_settings().get("download_url") or "").strip()
+    return redirect(url or "/user")
 
 
 @user_bp.route("/user/home")
