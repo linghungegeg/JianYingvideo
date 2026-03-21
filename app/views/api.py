@@ -2096,7 +2096,8 @@ def draft_split_main_track_api():
     os.makedirs(save_path, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
     svc = JianYingService(save_path=save_path, output_path=output_dir)
-    draft_name = f"split_main_{os.path.basename(draft_path.rstrip('\\/')) or uuid.uuid4().hex[:8]}"
+    draft_basename = os.path.basename(draft_path.rstrip('/\\')) or uuid.uuid4().hex[:8]
+    draft_name = f"split_main_{draft_basename}"
     create_resp = svc.create_draft(draft_name=draft_name, width=width, height=height, fps=fps)
     if not create_resp.ok:
         return jsonify({'ok': False, 'error': create_resp.message or '创建新草稿失败'}), 500
