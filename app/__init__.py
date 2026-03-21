@@ -8,6 +8,7 @@ from app.extensions import db, migrate
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
+    enable_mcp_api = os.getenv("VF_ENABLE_MCP_API", "1") == "1"
 
     CORS(
         app,
@@ -32,17 +33,19 @@ def create_app(config_class=Config):
     if os.getenv('VF_MINIMAL_APP') != '1':
         from app.views.auth import auth_bp
         from app.views.api import api_bp
-        from app.views.mcp_api import mcp_api_bp
         from app.views.user import user_bp
         from app.views.admin import admin_bp
-        from app.views.admin_mcp import mcp_admin_bp
 
         app.register_blueprint(auth_bp)
         app.register_blueprint(api_bp)
-        app.register_blueprint(mcp_api_bp)
         app.register_blueprint(user_bp)
         app.register_blueprint(admin_bp)
-        app.register_blueprint(mcp_admin_bp)
+        if enable_mcp_api:
+            from app.views.mcp_api import mcp_api_bp
+            from app.views.admin_mcp import mcp_admin_bp
+
+            app.register_blueprint(mcp_api_bp)
+            app.register_blueprint(mcp_admin_bp)
 
     # Ensure model imports
     with app.app_context():
