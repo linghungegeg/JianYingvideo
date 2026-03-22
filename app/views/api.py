@@ -631,7 +631,7 @@ def _build_usage_policy() -> dict:
             {
                 "key": "license_activate_bonus",
                 "label": "授权激活附赠次数",
-                "description": "只有卡密本身带 bonus_points 时才会增加次数，按后台倍率换算",
+                "description": "只有卡密本身带 bonus_points 时才会增加次数，按后台倍率直接发放",
             },
             {
                 "key": "failed_task_refund",
@@ -1197,7 +1197,7 @@ def _apply_invite_license_rewards(user: User, license_code: str, duration_days: 
             project_id=project_id,
         ).first()
         if not existing:
-            quota = get_or_create_quota(referrer.id)
+            quota = get_or_create_quota(referrer.id, auto_commit=False)
             _extend_vip_expire_at(quota, referrer_days, current_time)
             db.session.add(quota)
             db.session.add(UserQuotaLog(
@@ -1216,7 +1216,7 @@ def _apply_invite_license_rewards(user: User, license_code: str, duration_days: 
             project_id=project_id,
         ).first()
         if not existing:
-            quota = get_or_create_quota(user.id)
+            quota = get_or_create_quota(user.id, auto_commit=False)
             _extend_vip_expire_at(quota, invitee_days, current_time)
             db.session.add(quota)
             db.session.add(UserQuotaLog(
@@ -3367,7 +3367,14 @@ def _build_user_points_overview(user_id: int):
     }
 
 
-def _bind_device_to_code(user: User, cdk: CdkCode, device_fingerprint: str, device_label: str = None, device_info: dict = None):
+def _bind_device_to_code(
+    user: User,
+    cdk: CdkCode,
+    device_fingerprint: str,
+    device_label: str = None,
+    device_info: dict = None,
+    auto_commit: bool = True,
+):
     settings = get_license_settings()
     cooldown_hours = settings["transfer_cooldown_hours"]
     now = _now()
@@ -3389,7 +3396,8 @@ def _bind_device_to_code(user: User, cdk: CdkCode, device_fingerprint: str, devi
         if _fingerprint_match(b.device_fingerprint, device_fingerprint):
             b.last_seen_at = now
             db.session.add(b)
-            db.session.commit()
+            if auto_commit:
+                db.session.commit()
             return True, None
 
     if len(active_bindings) >= (cdk.device_limit or 1):
@@ -3418,7 +3426,8 @@ def _bind_device_to_code(user: User, cdk: CdkCode, device_fingerprint: str, devi
         last_seen_at=now,
     )
     db.session.add(binding)
-    db.session.commit()
+    if auto_commit:
+        db.session.commit()
     return True, None
 
 
@@ -3448,66 +3457,80 @@ def license_activate():
 
     if not code or not device_fingerprint:
         audit_security_event("license_activate_invalid_payload", level="warning", request_obj=request, user_id=user.id, details={"code": code})
-        return jsonify({'ok': False, 'error': '缺少设备指纹'}), 400
+        return jsonify({'ok': False, 'error': '\u7f3a\u5c11\u8bbe\u5907\u6307\u7eb9'}), 400
 
     cdk = CdkCode.query.filter_by(code=code).first()
     if not cdk:
         audit_security_event("license_activate_missing_code", level="warning", request_obj=request, user_id=user.id, details={"code": code})
-        return jsonify({'ok': False, 'error': '卡密不存在'}), 404
+        return jsonify({'ok': False, 'error': '\u5361\u5bc6\u4e0d\u5b58\u5728'}), 404
     if cdk.status == 3:
         audit_security_event("license_activate_disabled_code", level="warning", request_obj=request, user_id=user.id, details={"code": code})
-        return jsonify({'ok': False, 'error': '卡密已禁用'}), 400
+        return jsonify({'ok': False, 'error': '\u5361\u5bc6\u5df2\u7981\u7528'}), 400
     now = _now()
     if cdk.redeem_deadline and now > cdk.redeem_deadline:
         cdk.status = 2
         db.session.add(cdk)
         db.session.commit()
-        return jsonify({'ok': False, 'error': '已过期'}), 400
+        return jsonify({'ok': False, 'error': '\u5df2\u8fc7\u671f'}), 400
 
     if cdk.activated_by and cdk.activated_by != user.id:
         audit_security_event("license_activate_conflict", level="warning", request_obj=request, user_id=user.id, details={"code": code, "activated_by": cdk.activated_by})
-        return jsonify({'ok': False, 'error': '已被其他账号激活'}), 400
-
-    if not cdk.activated_by:
-        cdk.activated_by = user.id
-        cdk.activated_at = now
-        cdk.expire_at = now + timedelta(days=int(cdk.duration_days))
-        cdk.status = 1
-        cdk.transfer_times_left = cdk.transfer_times or 0
-        db.session.add(cdk)
-
-        quota = get_or_create_quota(user.id)
-        if cdk.duration_days:
-            _extend_vip_expire_at(quota, int(cdk.duration_days), now)
-        if cdk.bonus_points:
-            ratio = get_license_settings()["points_ratio"]
-            add_times = int(cdk.bonus_points / max(ratio, 1))
-            if add_times:
-                quota.remaining = (quota.remaining or 0) + add_times
-                db.session.add(UserQuotaLog(
-                    user_id=user.id,
-                    change=add_times,
-                    reason='license_activate',
-                    project_id=code,
-                    remaining_after=quota.remaining,
-                ))
-        invite_rewards = _apply_invite_license_rewards(user, code, int(cdk.duration_days or 0))
-        db.session.add(quota)
-        db.session.commit()
-    else:
-        invite_rewards = {"ok": False, "awards": {}}
-        if cdk.expire_at and now > cdk.expire_at:
-            cdk.status = 2
-            db.session.add(cdk)
-            db.session.commit()
-            return jsonify({'ok': False, 'error': '已过期'}), 400
-
-    ok, msg = _bind_device_to_code(user, cdk, device_fingerprint, device_label, device_info)
-    if not ok:
-        audit_security_event("license_activate_bind_failed", level="warning", request_obj=request, user_id=user.id, details={"code": code, "reason": msg})
-        return jsonify({'ok': False, 'error': msg}), 400
+        return jsonify({'ok': False, 'error': '\u5df2\u88ab\u5176\u4ed6\u8d26\u53f7\u6fc0\u6d3b'}), 400
 
     settings = get_license_settings()
+
+    try:
+        if not cdk.activated_by:
+            cdk.activated_by = user.id
+            cdk.activated_at = now
+            cdk.expire_at = now + timedelta(days=int(cdk.duration_days))
+            cdk.status = 1
+            cdk.transfer_times_left = cdk.transfer_times or 0
+            db.session.add(cdk)
+
+            quota = get_or_create_quota(user.id, auto_commit=False)
+            if cdk.duration_days:
+                _extend_vip_expire_at(quota, int(cdk.duration_days), now)
+            if cdk.bonus_points:
+                ratio = max(1, int(settings["points_ratio"] or 1))
+                add_times = int(cdk.bonus_points or 0) * ratio
+                if add_times:
+                    quota.remaining = (quota.remaining or 0) + add_times
+                    db.session.add(UserQuotaLog(
+                        user_id=user.id,
+                        change=add_times,
+                        reason='license_activate',
+                        project_id=code,
+                        remaining_after=quota.remaining,
+                    ))
+            invite_rewards = _apply_invite_license_rewards(user, code, int(cdk.duration_days or 0))
+            db.session.add(quota)
+        else:
+            invite_rewards = {"ok": False, "awards": {}}
+            if cdk.expire_at and now > cdk.expire_at:
+                cdk.status = 2
+                db.session.add(cdk)
+                db.session.commit()
+                return jsonify({'ok': False, 'error': '\u5df2\u8fc7\u671f'}), 400
+
+        ok, msg = _bind_device_to_code(
+            user,
+            cdk,
+            device_fingerprint,
+            device_label,
+            device_info,
+            auto_commit=False,
+        )
+        if not ok:
+            db.session.rollback()
+            audit_security_event("license_activate_bind_failed", level="warning", request_obj=request, user_id=user.id, details={"code": code, "reason": msg})
+            return jsonify({'ok': False, 'error': msg}), 400
+
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+
     audit_security_event("license_activate_success", request_obj=request, user_id=user.id, details={"code": code})
     return jsonify({
         'ok': True,
@@ -6716,24 +6739,8 @@ def api_user_deduct():
     user, err = get_auth_user()
     if err:
         return err
-    online_err = _require_remote_online('user_deduct')
-    if online_err:
-        return online_err
-    quota = get_or_create_quota(user.id)
-    if quota.remaining < 1:
-        return jsonify({'ok': False, 'error': '次数不足', **quota_to_dict(quota)}), 400
-    quota.remaining = max(0, (quota.remaining or 0) - 1)
-    quota.total_generated = (quota.total_generated or 0) + 1
-    db.session.add(quota)
-    db.session.add(UserQuotaLog(
-        user_id=user.id,
-        change=-1,
-        reason='manual_deduct',
-        project_id='legacy_user_deduct',
-        remaining_after=quota.remaining,
-    ))
-    db.session.commit()
-    return jsonify({'ok': True, **quota_to_dict(quota)})
+    audit_security_event("user_deduct_blocked", level="warning", request_obj=request, user_id=user.id)
+    return jsonify({'ok': False, 'error': '\u8be5\u63a5\u53e3\u5df2\u505c\u7528\uff0c\u8bf7\u8d70\u6b63\u5f0f\u4e1a\u52a1\u6d41\u7a0b\u6263\u6b21\u3002'}), 403
 
 
 # ========== Legacy-compatible generation entry ==========
