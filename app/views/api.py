@@ -2242,9 +2242,16 @@ def _cleanup_expired_desktop_claims(user_id: int) -> None:
     for task in claimed_tasks:
         payload = _load_task_progress_payload(task)
         amount = _clamp_int(payload.get("quota_amount", 0), 0, 0, 9999)
-        if amount > 0:
+        if amount > 0 and not payload.get("claim_released"):
             quota.remaining = (quota.remaining or 0) + amount
             changed = True
+            db.session.add(UserQuotaLog(
+                user_id=user_id,
+                change=amount,
+                reason="refund",
+                project_id=str(task.id),
+                remaining_after=quota.remaining,
+            ))
         task.status = "failed"
         task.error_msg = "desktop claim expired"
         payload["claim_released"] = True
@@ -2278,6 +2285,13 @@ def _finalize_desktop_task_claim(task: Task, user_id: int, success: bool, error_
     else:
         if not payload.get("claim_released") and amount > 0:
             quota.remaining = (quota.remaining or 0) + amount
+            db.session.add(UserQuotaLog(
+                user_id=user_id,
+                change=amount,
+                reason='refund',
+                project_id=str(task.id),
+                remaining_after=quota.remaining,
+            ))
             payload["claim_released"] = True
         task.status = "failed"
         task.error_msg = error_msg or task.error_msg
@@ -6570,24 +6584,28 @@ def api_register():
     user = User(username=username, email=email, role='user')
     user.referrer_id = referrer_id
     user.password_hash = generate_password_hash(password)
-    db.session.add(user)
-    _ensure_user_ref_code(user)
-    db.session.commit()
+    try:
+        db.session.add(user)
+        db.session.flush()
+        _ensure_user_ref_code(user)
 
-    _apply_invite_registration_rewards(user)
-    trial_claim = _claim_trial_device_quota(device_fingerprint, user.id)
-    initial_trial_quota = _get_default_user_quota_value() if trial_claim.get('granted') else 0
-    quota = UserQuota(user_id=user.id, total_generated=0, remaining=initial_trial_quota)
-    db.session.add(quota)
-    if initial_trial_quota > 0:
-        db.session.add(UserQuotaLog(
-            user_id=user.id,
-            change=initial_trial_quota,
-            reason='register_trial',
-            project_id=trial_claim.get('log_key'),
-            remaining_after=initial_trial_quota,
-        ))
-    db.session.commit()
+        _apply_invite_registration_rewards(user)
+        trial_claim = _claim_trial_device_quota(device_fingerprint, user.id)
+        initial_trial_quota = _get_default_user_quota_value() if trial_claim.get('granted') else 0
+        quota = UserQuota(user_id=user.id, total_generated=0, remaining=initial_trial_quota)
+        db.session.add(quota)
+        if initial_trial_quota > 0:
+            db.session.add(UserQuotaLog(
+                user_id=user.id,
+                change=initial_trial_quota,
+                reason='register_trial',
+                project_id=trial_claim.get('log_key'),
+                remaining_after=initial_trial_quota,
+            ))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
     audit_security_event(
         "register_success",
         request_obj=request,
@@ -7034,34 +7052,7 @@ def refund_task_usage(task_id):
     user, err = get_auth_user()
     if err:
         return err
-    if _should_use_remote_auth():
-        return jsonify({'ok': False, 'error': 'remote-auth desktop tasks auto release quota on failure'}), 400
-    task = Task.query.get(task_id)
-    if not task:
-        return jsonify({'ok': False, 'error': 'task not found'}), 404
-    if task.user_id and task.user_id != user.id:
-        return jsonify({'ok': False, 'error': 'permission denied'}), 403
-    if task.status != 'failed':
-        return jsonify({'ok': False, 'error': 'only failed tasks can be refunded'}), 400
-    if getattr(task, "refunded", False):
-        return jsonify({'ok': False, 'error': 'task already refunded'}), 400
-    try:
-        quota = get_or_create_quota(user.id)
-        quota.remaining = (quota.remaining or 0) + 1
-        setattr(task, "refunded", True)
-        db.session.add(quota)
-        db.session.add(task)
-        db.session.add(UserQuotaLog(
-            user_id=user.id,
-            change=1,
-            reason='refund',
-            project_id=str(task.id),
-            remaining_after=quota.remaining,
-        ))
-        db.session.commit()
-        return jsonify({'ok': True, **quota_to_dict(quota)})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'ok': False, 'error': f'refund failed: {e}'}), 500
+    audit_security_event("task_refund_blocked", level="warning", request_obj=request, user_id=user.id, details={"task_id": task_id})
+    return jsonify({'ok': False, 'error': '该退款接口已停用，失败任务请走正式回退流程。'}), 403
 
 
