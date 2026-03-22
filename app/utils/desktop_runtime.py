@@ -1,4 +1,5 @@
 import os
+import socket
 import threading
 import time
 import webbrowser
@@ -25,6 +26,29 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except Exception:
         return default
+
+
+def _pick_desktop_port(preferred_port: int, host: str) -> int:
+    candidates = [preferred_port]
+    if preferred_port == 5000:
+        candidates.extend([5001, 5050, 8000, 8765])
+
+    for port in candidates:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind((host, port))
+            return port
+        except OSError:
+            continue
+        finally:
+            sock.close()
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+    finally:
+        sock.close()
 
 
 def ensure_runtime_dirs(app) -> None:
@@ -83,9 +107,11 @@ def run_startup_migrations(app) -> None:
 
 
 def desktop_server_options() -> dict:
+    host = os.getenv("VF_HOST", "127.0.0.1")
+    preferred_port = _env_int("VF_PORT", 5000)
     return {
-        "host": os.getenv("VF_HOST", "127.0.0.1"),
-        "port": _env_int("VF_PORT", 5000),
+        "host": host,
+        "port": _pick_desktop_port(preferred_port, host),
         "debug": _env_flag("VF_DEBUG", False),
         "threaded": True,
         "use_reloader": False,

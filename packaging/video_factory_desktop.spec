@@ -40,11 +40,13 @@ hiddenimports.extend([
     "cryptography.fernet",
     "redis",
     "rq",
+    "webview",
 ])
+hiddenimports.extend(collect_submodules("webview"))
 
 
 a = Analysis(
-    [str(PROJECT_ROOT / "run.py")],
+    [str(PROJECT_ROOT / "desktop_app.py")],
     pathex=[str(PROJECT_ROOT)],
     binaries=[],
     datas=datas,

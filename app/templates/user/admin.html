@@ -11,9 +11,9 @@
         .admin-shell{position:relative;min-height:calc(100vh - 40px)}.admin-shell.is-locked{filter:blur(16px);opacity:.45;pointer-events:none;user-select:none}
         .admin-layout{display:grid;grid-template-columns:320px minmax(0,1fr);gap:22px;align-items:start}.admin-main{display:grid;gap:14px}
         .admin-sidebar,.admin-panel,.admin-card,.admin-pagebar{border-radius:30px;box-shadow:0 26px 60px rgba(15,23,42,.08)}
-        .admin-sidebar{position:sticky;top:12px;min-height:calc(100vh - 24px);padding:30px 24px 24px;display:grid;gap:18px;background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(244,249,255,.98));border:1px solid rgba(198,213,229,.96)}
+        .admin-sidebar{position:sticky;top:12px;min-height:calc(100vh - 24px);padding:30px 24px 24px;display:grid;gap:18px;align-content:start;grid-auto-rows:max-content;background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(244,249,255,.98));border:1px solid rgba(198,213,229,.96)}
         .admin-panel,.admin-card,.admin-pagebar{background:rgba(255,255,255,.97);border:1px solid rgba(148,163,184,.18);padding:30px}
-        .admin-brand{display:grid;gap:10px}.admin-brand strong{font-size:32px;line-height:1.08;color:#0f172a;letter-spacing:-.03em}
+        .admin-brand{display:grid;gap:10px;align-self:start}.admin-brand strong{font-size:32px;line-height:1.08;color:#0f172a;letter-spacing:-.03em}
         .admin-brand span,.hint,.notice,.section-copy{color:#64748b;line-height:1.68}
         .admin-brand-badge,.section-kicker,.admin-kicker{display:none}
         .admin-nav,.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.admin-nav{flex-direction:column;align-items:stretch}
@@ -23,7 +23,7 @@
         .admin-tab.exit-tab:hover{border-color:rgba(239,68,68,.35);background:#fff1f2;color:#b91c1c}
         .admin-pagebar{display:grid;gap:8px;min-height:auto;padding:24px 32px 16px;background:linear-gradient(180deg,#ffffff,#f7fbff)}
         .admin-pagebar-main{display:grid;align-content:start;gap:0}
-        .admin-pagebar h1{margin:0;color:#0f172a;font-size:40px;line-height:1.04;letter-spacing:-.04em}
+        .admin-pagebar h1{margin:0;color:#0f172a;font-size:34px;line-height:1.06;letter-spacing:-.03em}
         .admin-pagebar p{margin:0;max-width:760px;color:#64748b;line-height:1.7;font-size:15px}
         .section{display:none}.section.active{display:block}.section-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:18px}.card-title{margin:6px 0 0;font-size:24px;line-height:1.15;color:#0f172a;letter-spacing:-.03em}
         .admin-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
@@ -72,11 +72,11 @@
                     <div class="admin-brand"><div class="admin-brand-badge">管理员专用</div><strong id="adminBrandTitle">{{ site_settings.admin_title }}</strong></div>
                     <nav id="adminNav" class="admin-nav">
                         <button class="admin-tab active" data-section="overview" type="button">数据看板</button>
+                        <button class="admin-tab" data-section="users" type="button">用户列表</button>
                         <button class="admin-tab" data-section="site" type="button">站点管理</button>
                         <button class="admin-tab" data-section="license" type="button">授权激活</button>
                         <button class="admin-tab" data-section="cdk" type="button">CDK管理</button>
                         <button class="admin-tab" data-section="bindings" type="button">设备绑定</button>
-                        <button class="admin-tab" data-section="users" type="button">用户列表</button>
                         <button class="admin-tab" data-section="resource-review" type="button">审核发布</button>
                         <button class="admin-tab" data-section="logs" type="button">生成记录</button>
                         <button class="admin-tab" data-section="security" type="button">安全运维</button>

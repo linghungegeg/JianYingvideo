@@ -14,36 +14,72 @@ AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}
 AppUpdatesURL={#AppURL}
-DefaultDirName={autopf}\{#InstallSubdir}
+DefaultDirName={code:GetDefaultInstallDir}
 DefaultGroupName={#AppName}
-AllowNoIcons=yes
+AllowNoIcons=no
 OutputDir=.
 OutputBaseFilename={#AppName}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
+DisableWelcomePage=yes
+DisableProgramGroupPage=yes
+DisableReadyPage=yes
+DisableDirPage=no
+DirExistsWarning=no
+UninstallDisplayIcon={app}\{#AppExeName}
+SetupLogging=yes
+CloseApplications=yes
+RestartApplications=no
+CloseApplicationsFilter={#AppExeName}
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
 
-[Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项："
-
 [Files]
 Source: "{#DistRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-[Dirs]
-Name: "{app}\logs"
-Name: "{app}\user_data"
-Name: "{app}\runtime_tools"
-Name: "{app}\duo_cache"
-Name: "{app}\mcp_cache"
-
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "启动 {#AppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function GetDefaultInstallDir(Param: string): string;
+var
+  PreferredDrive: string;
+begin
+  PreferredDrive := ExpandConstant('{src}');
+  if (Length(PreferredDrive) >= 2) and (PreferredDrive[2] = ':') then
+  begin
+    Result := Copy(PreferredDrive, 1, 2) + '\{#InstallSubdir}';
+    exit;
+  end;
+
+  if DirExists('D:\') then
+  begin
+    Result := 'D:\{#InstallSubdir}';
+    exit;
+  end;
+
+  if DirExists('E:\') then
+  begin
+    Result := 'E:\{#InstallSubdir}';
+    exit;
+  end;
+
+  Result := ExpandConstant('{localappdata}\Programs\{#InstallSubdir}');
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  Result := True;
+  if WizardSilent then
+  begin
+    SuppressibleMsgBox('当前安装包不使用静默安装，请在安装界面选择安装位置后继续。', mbInformation, MB_OK, IDOK);
+  end;
+end;

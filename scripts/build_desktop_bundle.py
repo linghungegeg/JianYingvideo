@@ -24,6 +24,7 @@ OBFUSCATE_COPY_TARGETS = [
     "packaging",
     "runtime_tools",
     ".env.example",
+    "desktop_app.py",
     "run.py",
 ]
 PYARMOR_TARGETS = [
@@ -257,8 +258,12 @@ def build_pyinstaller(
         env["VF_EXE_ICON"] = icon_path
 
     upx_path = which("upx")
-    if not upx_path and DEFAULT_WINGET_UPX.exists():
-        upx_path = str(DEFAULT_WINGET_UPX)
+    if not upx_path:
+        try:
+            if DEFAULT_WINGET_UPX.exists():
+                upx_path = str(DEFAULT_WINGET_UPX)
+        except OSError:
+            upx_path = ""
     resolved_upx_dir = ""
     if upx_path:
         resolved_upx_dir = str(Path(upx_path).resolve().parent)
