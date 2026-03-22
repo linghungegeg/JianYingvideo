@@ -34,6 +34,8 @@ for package_name in (
     hiddenimports.extend(collect_submodules(package_name))
 
 hiddenimports.extend([
+    "logging.config",
+    "logging.handlers",
     "pymysql",
     "cryptography.fernet",
     "redis",

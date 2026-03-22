@@ -19,16 +19,18 @@ depends_on = None
 def upgrade():
     bind = op.get_bind()
     inspector = inspect(bind)
-    task_columns = {c["name"] for c in inspector.get_columns("tasks")}
-    if "refunded" not in task_columns:
-        with op.batch_alter_table("tasks") as batch_op:
-            batch_op.add_column(sa.Column("refunded", sa.Boolean(), server_default=sa.text("0")))
+    if inspector.has_table("tasks"):
+        task_columns = {c["name"] for c in inspector.get_columns("tasks")}
+        if "refunded" not in task_columns:
+            with op.batch_alter_table("tasks") as batch_op:
+                batch_op.add_column(sa.Column("refunded", sa.Boolean(), server_default=sa.text("0")))
 
 
 def downgrade():
     bind = op.get_bind()
     inspector = inspect(bind)
-    task_columns = {c["name"] for c in inspector.get_columns("tasks")}
-    if "refunded" in task_columns:
-        with op.batch_alter_table("tasks") as batch_op:
-            batch_op.drop_column("refunded")
+    if inspector.has_table("tasks"):
+        task_columns = {c["name"] for c in inspector.get_columns("tasks")}
+        if "refunded" in task_columns:
+            with op.batch_alter_table("tasks") as batch_op:
+                batch_op.drop_column("refunded")

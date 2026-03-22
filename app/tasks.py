@@ -19,6 +19,7 @@ from app.models.template_model import TemplateModel
 from app.models.task_effect_log import TaskEffectLog
 from app.utils.helpers import get_drafts_folder
 from app.utils.ffmpeg_utils import find_ffmpeg
+from app.utils.remote_service import call_remote_api
 
 # MCP 路径当前不匹配实际目录结构，避免误用导致退回字符串替换
 MCP_AVAILABLE = False
@@ -536,6 +537,25 @@ def handle_generate_success(job, connection, result, *args, **kwargs):
     except Exception as e:
         logging.error(f"quota deduct failed: {e}")
 
+
+def _complete_remote_desktop_task(task_id, auth_token, success, error_msg=""):
+    if not task_id or not auth_token:
+        return
+    try:
+        call_remote_api(
+            "/api/desktop/task-complete",
+            method="POST",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            json_data={
+                "task_id": task_id,
+                "success": bool(success),
+                "error_msg": error_msg or "",
+            },
+            timeout=15,
+        )
+    except Exception as exc:
+        logging.warning("remote desktop task finalize failed: %s", exc)
+
 def generate_video_task(template_id, materials_root, texts_input, batch_count,
                         replace_materials=True, replace_texts=True,
                         replace_audios=False,
@@ -544,7 +564,7 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                         audio_enabled=False, audio_root=None, export_enabled=False, export_path=None, export_format=None,
                         export_resolution=None, export_fps=None,
                         effects_config=None, duo_config=None, user_id=None, template_path=None,
-                        task_id_override=None):
+                        task_id_override=None, auth_token=None):
     app = create_app()
     with app.app_context():
         job = get_current_job()
@@ -800,7 +820,9 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
             if task:
                 task.status = 'finished'
                 db.session.commit()
-            if user_id and not job:
+            if auth_token and task_id:
+                _complete_remote_desktop_task(task_id, auth_token, True, "")
+            elif user_id and not job:
                 try:
                     from app.services.user_quota_service import deduct_quota
                     deduct_quota(user_id, amount=1)
@@ -814,6 +836,8 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                 task.status = 'failed'
                 task.error_msg = str(e)
                 db.session.commit()
+            if auth_token and task_id:
+                _complete_remote_desktop_task(task_id, auth_token, False, str(e))
             raise e
         finally:
             if hasattr(_LOCAL_TASK_CONTEXT, "task_id"):

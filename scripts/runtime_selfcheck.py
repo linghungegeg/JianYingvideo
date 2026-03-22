@@ -14,6 +14,7 @@ from sqlalchemy import text
 from app import create_app
 from app.extensions import db
 from app.utils.ffmpeg_utils import find_ffmpeg_with_source
+from app.utils.runtime_paths import runtime_path
 
 
 REQUIRED_DIR_KEYS = [
@@ -42,8 +43,12 @@ def sanitize_url(value):
 
 def check_database(app):
     uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+    remote_auth_mode = str(os.getenv("VF_REMOTE_AUTH_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
     is_mysql = uri.startswith("mysql+")
-    ok = record("database/backend", is_mysql, sanitize_url(uri))
+    is_sqlite = uri.startswith("sqlite:///")
+    backend_ok = is_sqlite if remote_auth_mode else is_mysql
+    backend_label = "sqlite(local runtime)" if remote_auth_mode else sanitize_url(uri)
+    ok = record("database/backend", backend_ok, backend_label)
     if not ok:
         warn("database/backend", "commercial packaging should use MySQL")
 
@@ -70,11 +75,12 @@ def check_directories(app):
         exists = path.exists() and path.is_dir()
         ok = record(f"dir/{key}", exists, str(path)) and ok
 
-    base_dir = Path(app.root_path).parent
     extra_dirs = [
-        base_dir / "user_data",
-        base_dir / "app" / "uploads",
-        base_dir / "logs",
+        runtime_path("user_data"),
+        runtime_path("uploads"),
+        runtime_path("logs"),
+        runtime_path("duo_cache"),
+        runtime_path("mcp_cache"),
     ]
     for path in extra_dirs:
         if path in seen:

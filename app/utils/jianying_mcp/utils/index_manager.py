@@ -8,12 +8,13 @@ import os
 import uuid
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
+from app.utils.runtime_paths import runtime_path
 
 # 加载环境变量
 load_dotenv()
 
-# 获取环境变量（缺省时使用当前目录下的缓存目录，避免导入时报错）
-SAVE_PATH = os.getenv('SAVE_PATH') or os.path.join(os.getcwd(), "mcp_cache")
+# 获取环境变量（缺省时使用用户可写缓存目录，避免导入时报错）
+SAVE_PATH = os.getenv('SAVE_PATH') or str(runtime_path("mcp_cache"))
 
 
 class IndexManager:

@@ -18,7 +18,7 @@ DefaultDirName={autopf}\{#InstallSubdir}
 DefaultGroupName={#AppName}
 AllowNoIcons=yes
 OutputDir=.
-OutputBaseFilename=VideoFactorySetup
+OutputBaseFilename={#AppName}Setup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -29,7 +29,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create desktop shortcut"; GroupDescription: "Additional tasks:"
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项："
 
 [Files]
 Source: "{#DistRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -46,4 +46,4 @@ Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Description: "启动 {#AppName}"; Flags: nowait postinstall skipifsilent

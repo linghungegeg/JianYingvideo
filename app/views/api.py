@@ -10,6 +10,8 @@ import time
 import math
 import platform
 import socket
+import sys
+import subprocess
 from collections import defaultdict
 from typing import List, Optional, Union
 from types import SimpleNamespace
@@ -82,6 +84,15 @@ from app.utils.remote_service import (
     get_official_site_origin,
     remote_auth_mode_enabled,
 )
+from app.utils.security_ops import (
+    audit_security_event,
+    _audit_log_path,
+    _rate_limit_path,
+    build_identity,
+    consume_rate_limit,
+    get_request_ip,
+)
+from app.utils.runtime_paths import app_resource_path, runtime_file_path, runtime_path
 
 api_bp = Blueprint('api', __name__, url_prefix='/api')
 draft_logger = logging.getLogger("draft_inspect")
@@ -334,6 +345,34 @@ def _is_local_runtime_request() -> bool:
     return host in {"127.0.0.1", "localhost", "::1"} and remote_addr in {"127.0.0.1", "localhost", "::1", ""}
 
 
+def _require_local_runtime_same_origin():
+    if not _is_local_runtime_request():
+        return jsonify({'ok': False, 'error': 'not available'}), 404
+
+    request_origin = _get_request_origin().lower()
+    origin = (request.headers.get("Origin") or "").strip().lower()
+    referer = (request.headers.get("Referer") or "").strip().lower()
+    if origin and origin != request_origin:
+        return jsonify({'ok': False, 'error': 'cross-origin local runtime request blocked'}), 403
+    if referer and not referer.startswith(f"{request_origin}/"):
+        return jsonify({'ok': False, 'error': 'cross-origin local runtime request blocked'}), 403
+    return None
+
+
+def _normalize_http_service_url(value: str, *, allow_localhost: bool = True) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("service url must be a valid http/https address")
+    hostname = (parsed.hostname or "").strip().lower()
+    if not allow_localhost and hostname in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("localhost service url is not allowed in current mode")
+    normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path or ''}"
+    return normalized.rstrip("/")
+
+
 def _should_use_remote_auth() -> bool:
     return _is_local_runtime_request() and remote_auth_mode_enabled() and bool(_get_official_site_origin())
 
@@ -419,6 +458,23 @@ def _get_native_device_fingerprint_payload() -> dict:
                 machine_guid = str(winreg.QueryValueEx(key, "MachineGuid")[0] or "").strip()
         except Exception:
             machine_guid = ""
+    volume_serial = ""
+    if os.name == "nt":
+        try:
+            import subprocess
+
+            system_drive = (os.getenv("SystemDrive") or "C:").strip()
+            output = subprocess.check_output(
+                ["cmd", "/c", "vol", system_drive],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+            )
+            matched = re.search(r"([A-F0-9]{4}-[A-F0-9]{4})", output.upper())
+            if matched:
+                volume_serial = matched.group(1)
+        except Exception:
+            volume_serial = ""
 
     hostname = socket.gethostname() or platform.node() or "desktop-runtime"
     label = os.getenv("COMPUTERNAME") or hostname
@@ -427,9 +483,12 @@ def _get_native_device_fingerprint_payload() -> dict:
         platform.system(),
         platform.release(),
         platform.version(),
+        platform.machine(),
         hostname,
+        os.getenv("PROCESSOR_IDENTIFIER") or "",
         str(uuid.getnode() or ""),
         machine_guid,
+        volume_serial,
     ]
     raw = "|".join([item for item in raw_parts if item])
     fingerprint = f"desktop-{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
@@ -510,6 +569,34 @@ def _require_remote_online(action_key: str):
         "online_required": True,
         "online_status": status,
     }), 503
+
+
+def _rate_limit_response(action_key: str, message: str, retry_after: int):
+    return jsonify({
+        "ok": False,
+        "error": message,
+        "action_key": action_key,
+        "retry_after": int(retry_after or 0),
+    }), 429
+
+
+def _enforce_rate_limit(action_key: str, *, limit: int, window_seconds: int, identity_parts: list, user_id=None, details: dict = None):
+    identity = build_identity(*identity_parts)
+    allowed, remaining, retry_after = consume_rate_limit(action_key, identity, limit, window_seconds)
+    if allowed:
+        return None
+    audit_security_event(
+        f"{action_key}_rate_limited",
+        level="warning",
+        request_obj=request,
+        user_id=user_id,
+        details={
+            "remaining": remaining,
+            "retry_after": retry_after,
+            **(details or {}),
+        },
+    )
+    return _rate_limit_response(action_key, "请求过于频繁，请稍后重试", retry_after)
 
 
 def _build_usage_policy() -> dict:
@@ -1582,9 +1669,7 @@ def _download_to_path(url: str, path: str) -> None:
 
 
 def _openclaw_log_path() -> str:
-    base = os.path.join(os.getcwd(), 'user_data', 'logs')
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, 'openclaw_error.log')
+    return str(runtime_file_path("user_data", "logs", "openclaw_error.log"))
 
 
 def _log_openclaw_error(user_id: int, params: dict, error: str) -> None:
@@ -2618,8 +2703,7 @@ def draft_split_main_track_api():
 
     from app.services.jianying_service import JianYingService
 
-    save_path = os.path.join(current_app.root_path, '..', 'user_data', 'mcp_cache_split')
-    save_path = os.path.abspath(save_path)
+    save_path = str(runtime_path("user_data", "mcp_cache_split"))
     os.makedirs(save_path, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
     svc = JianYingService(save_path=save_path, output_path=output_dir)
@@ -2808,8 +2892,9 @@ def runtime_device_fingerprint():
 
 @api_bp.route('/runtime/local-state', methods=['GET', 'POST', 'DELETE'])
 def runtime_local_state():
-    if not _is_local_runtime_request():
-        return jsonify({'ok': False, 'error': 'not available'}), 404
+    guard = _require_local_runtime_same_origin()
+    if guard:
+        return guard
 
     if request.method == 'GET':
         key = request.args.get('key', '')
@@ -3001,8 +3086,15 @@ def workspace_settings():
         services_patch = {}
         openclaw_cfg = services.get('openclaw') or {}
         if openclaw_cfg:
+            try:
+                normalized_openclaw_base = _normalize_http_service_url(
+                    openclaw_cfg.get('base_url') or '',
+                    allow_localhost=True,
+                )
+            except ValueError as exc:
+                return jsonify({'ok': False, 'error': str(exc)}), 400
             openclaw_payload = {
-                'base_url': (openclaw_cfg.get('base_url') or '').strip(),
+                'base_url': normalized_openclaw_base,
                 'token': (openclaw_cfg.get('token') or '').strip(),
             }
             services_patch['openclaw'] = openclaw_payload
@@ -3343,14 +3435,27 @@ def license_activate():
     device_fingerprint = (data.get('device_fingerprint') or '').strip()
     device_label = (data.get('device_label') or '').strip() or None
     device_info = data.get('device_info')
+    limit_err = _enforce_rate_limit(
+        "license_activate",
+        limit=8,
+        window_seconds=1800,
+        identity_parts=[user.id, get_request_ip(request), code, device_fingerprint],
+        user_id=user.id,
+        details={"code": code},
+    )
+    if limit_err:
+        return limit_err
 
     if not code or not device_fingerprint:
+        audit_security_event("license_activate_invalid_payload", level="warning", request_obj=request, user_id=user.id, details={"code": code})
         return jsonify({'ok': False, 'error': '缺少设备指纹'}), 400
 
     cdk = CdkCode.query.filter_by(code=code).first()
     if not cdk:
+        audit_security_event("license_activate_missing_code", level="warning", request_obj=request, user_id=user.id, details={"code": code})
         return jsonify({'ok': False, 'error': '卡密不存在'}), 404
     if cdk.status == 3:
+        audit_security_event("license_activate_disabled_code", level="warning", request_obj=request, user_id=user.id, details={"code": code})
         return jsonify({'ok': False, 'error': '卡密已禁用'}), 400
     now = _now()
     if cdk.redeem_deadline and now > cdk.redeem_deadline:
@@ -3360,6 +3465,7 @@ def license_activate():
         return jsonify({'ok': False, 'error': '已过期'}), 400
 
     if cdk.activated_by and cdk.activated_by != user.id:
+        audit_security_event("license_activate_conflict", level="warning", request_obj=request, user_id=user.id, details={"code": code, "activated_by": cdk.activated_by})
         return jsonify({'ok': False, 'error': '已被其他账号激活'}), 400
 
     if not cdk.activated_by:
@@ -3398,9 +3504,11 @@ def license_activate():
 
     ok, msg = _bind_device_to_code(user, cdk, device_fingerprint, device_label, device_info)
     if not ok:
+        audit_security_event("license_activate_bind_failed", level="warning", request_obj=request, user_id=user.id, details={"code": code, "reason": msg})
         return jsonify({'ok': False, 'error': msg}), 400
 
     settings = get_license_settings()
+    audit_security_event("license_activate_success", request_obj=request, user_id=user.id, details={"code": code})
     return jsonify({
         'ok': True,
         'code': code,
@@ -3416,10 +3524,21 @@ def license_verify():
     data = request.get_json() or {}
     code = (data.get('code') or '').strip().upper()
     device_fingerprint = (data.get('device_fingerprint') or '').strip()
+    limit_err = _enforce_rate_limit(
+        "license_verify",
+        limit=20,
+        window_seconds=1800,
+        identity_parts=[get_request_ip(request), code, device_fingerprint],
+        details={"code": code},
+    )
+    if limit_err:
+        return limit_err
     if not code or not device_fingerprint:
+        audit_security_event("license_verify_invalid_payload", level="warning", request_obj=request, details={"code": code})
         return jsonify({'ok': False, 'error': '缺少设备指纹'}), 400
     cdk = CdkCode.query.filter_by(code=code).first()
     if not cdk or cdk.status != 1:
+        audit_security_event("license_verify_invalid_code", level="warning", request_obj=request, details={"code": code})
         return jsonify({'ok': False, 'error': '无效或未激活'}), 400
     now = _now()
     if cdk.expire_at and now > cdk.expire_at:
@@ -3429,6 +3548,7 @@ def license_verify():
         return jsonify({'ok': False, 'error': '已过期'}), 400
     binding = LicenseBinding.query.filter_by(code_id=cdk.id, device_fingerprint=device_fingerprint, active=True).first()
     if not binding:
+        audit_security_event("license_verify_unbound_device", level="warning", request_obj=request, details={"code": code})
         return jsonify({'ok': False, 'error': '设备未绑定'}), 400
     binding.last_seen_at = now
     db.session.add(binding)
@@ -3445,6 +3565,7 @@ def license_verify():
         "transfer_times_left": cdk.transfer_times_left or 0,
     }
     token = sign_payload(payload)
+    audit_security_event("license_verify_success", request_obj=request, user_id=cdk.activated_by, details={"code": code})
     return jsonify({
         "ok": True,
         "token": token,
@@ -3464,18 +3585,32 @@ def license_deactivate():
     data = request.get_json() or {}
     code = (data.get('code') or '').strip().upper()
     device_fingerprint = (data.get('device_fingerprint') or '').strip()
+    limit_err = _enforce_rate_limit(
+        "license_deactivate",
+        limit=6,
+        window_seconds=1800,
+        identity_parts=[user.id, get_request_ip(request), code, device_fingerprint],
+        user_id=user.id,
+        details={"code": code},
+    )
+    if limit_err:
+        return limit_err
     if not code or not device_fingerprint:
+        audit_security_event("license_deactivate_invalid_payload", level="warning", request_obj=request, user_id=user.id, details={"code": code})
         return jsonify({'ok': False, 'error': '缺少设备指纹'}), 400
     cdk = CdkCode.query.filter_by(code=code).first()
     if not cdk or cdk.activated_by != user.id:
+        audit_security_event("license_deactivate_forbidden", level="warning", request_obj=request, user_id=user.id, details={"code": code})
         return jsonify({'ok': False, 'error': '无权限'}), 403
     binding = LicenseBinding.query.filter_by(code_id=cdk.id, device_fingerprint=device_fingerprint, active=True).first()
     if not binding:
+        audit_security_event("license_deactivate_unbound_device", level="warning", request_obj=request, user_id=user.id, details={"code": code})
         return jsonify({'ok': False, 'error': '设备未绑定'}), 400
     binding.active = False
     binding.unbound_at = _now()
     db.session.add(binding)
     db.session.commit()
+    audit_security_event("license_deactivate_success", request_obj=request, user_id=user.id, details={"code": code})
     return jsonify({'ok': True})
 
 
@@ -3964,6 +4099,145 @@ def admin_logs_api():
     logs = read_generate_logs(limit=500)
     logs = list(reversed(logs))
     return jsonify({"ok": True, "items": logs})
+
+
+@api_bp.route('/admin/security/overview', methods=['GET'])
+def admin_security_overview():
+    user, err = get_auth_user(require_admin=True)
+    if err:
+        return err
+
+    audit_items = []
+    audit_path = _audit_log_path()
+    if audit_path.exists():
+        try:
+            with open(audit_path, "r", encoding="utf-8") as handle:
+                for line in handle.readlines()[-200:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                        if isinstance(payload, dict):
+                            audit_items.append(payload)
+                    except Exception:
+                        continue
+        except Exception:
+            audit_items = []
+
+    rate_limit_buckets = 0
+    rate_limit_path = _rate_limit_path()
+    if rate_limit_path.exists():
+        try:
+            with open(rate_limit_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+                if isinstance(payload, dict):
+                    rate_limit_buckets = len(payload)
+        except Exception:
+            rate_limit_buckets = 0
+
+    return jsonify({
+        "ok": True,
+        "audit_events": audit_items[-100:],
+        "rate_limit_buckets": int(rate_limit_buckets),
+        "audit_log_path": str(audit_path),
+        "rate_limit_path": str(rate_limit_path),
+    })
+
+
+@api_bp.route('/admin/server/ops', methods=['GET'])
+def admin_server_ops_overview():
+    user, err = get_auth_user(require_admin=True)
+    if err:
+        return err
+
+    project_root = os.path.abspath(os.path.join(current_app.root_path, ".."))
+    backup_root = os.path.join(project_root, "backups", "server")
+    backup_items = []
+    if os.path.isdir(backup_root):
+        for name in sorted(os.listdir(backup_root), reverse=True):
+            path = os.path.join(backup_root, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                stat = os.stat(path)
+                backup_items.append({
+                    "name": name,
+                    "path": path,
+                    "size": int(stat.st_size or 0),
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                })
+            except Exception:
+                continue
+
+    deploy_steps = [
+        "1. 先创建服务端备份",
+        "2. 同步变更文件到 current 目录",
+        "3. 重启 videofactory-auth.service",
+        "4. 验证 /api/runtime-features 返回 200",
+        "5. 验证 /user 与 /admin 页面可打开",
+    ]
+    rollback_steps = [
+        "1. 回退到上一份备份或上一版文件",
+        "2. 重启 videofactory-auth.service",
+        "3. 确认 systemctl is-active 为 active",
+        "4. 再验域名与核心接口",
+    ]
+
+    return jsonify({
+        "ok": True,
+        "project_root": project_root,
+        "backup_root": backup_root,
+        "backups": backup_items[:20],
+        "deploy_steps": deploy_steps,
+        "rollback_steps": rollback_steps,
+        "security": {
+            "audit_log_path": str(_audit_log_path()),
+            "rate_limit_path": str(_rate_limit_path()),
+        },
+    })
+
+
+@api_bp.route('/admin/server/backup/create', methods=['POST'])
+def admin_server_backup_create():
+    user, err = get_auth_user(require_admin=True)
+    if err:
+        return err
+
+    project_root = os.path.abspath(os.path.join(current_app.root_path, ".."))
+    script_path = os.path.join(project_root, "scripts", "server_backup.py")
+    if not os.path.isfile(script_path):
+        return jsonify({"ok": False, "error": "server_backup.py not found"}), 404
+
+    include_env = bool((request.get_json(silent=True) or {}).get("include_env"))
+    command = [sys.executable, script_path]
+    if include_env:
+        command.append("--include-env")
+    try:
+        result = subprocess.run(
+            command,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        return jsonify({
+            "ok": False,
+            "error": "backup script failed",
+            "detail": (exc.stderr or exc.stdout or "").strip()[:800],
+        }), 500
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    archive_path = (result.stdout or "").strip().splitlines()
+    archive_value = archive_path[-1].strip() if archive_path else ""
+    return jsonify({
+        "ok": True,
+        "archive_path": archive_value,
+        "include_env": include_env,
+    })
 
 
 @api_bp.route('/admin/license/binding/<int:binding_id>/disable', methods=['POST'])
@@ -5048,7 +5322,10 @@ def ai_keys():
     api_key = (data.get('api_key') or '').strip()
     api_secret = (data.get('api_secret') or '').strip()
     endpoint = (data.get('endpoint') or '').strip()
-    base_url = (data.get('base_url') or '').strip()
+    try:
+        base_url = _normalize_http_service_url(data.get('base_url') or '', allow_localhost=False)
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
     is_active = data.get('is_active', True)
 
     provider = None
@@ -5095,7 +5372,10 @@ def user_keys():
     api_key = (data.get('api_key') or '').strip()
     api_secret = (data.get('api_secret') or '').strip()
     endpoint = (data.get('endpoint') or '').strip()
-    base_url = (data.get('base_url') or '').strip()
+    try:
+        base_url = _normalize_http_service_url(data.get('base_url') or '', allow_localhost=False)
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
     if not key_name or not api_key:
         return jsonify({'ok': False, 'error': 'Key 名称或 API Key 不能为空'}), 400
 
@@ -5149,7 +5429,10 @@ def ai_key_update_delete(key_id):
     if endpoint is not None:
         key.endpoint = endpoint.strip() or None
     if base_url is not None:
-        key.base_url = base_url.strip() or None
+        try:
+            key.base_url = _normalize_http_service_url(base_url, allow_localhost=False) or None
+        except ValueError as exc:
+            return jsonify({'ok': False, 'error': str(exc)}), 400
     if is_active is not None:
         key.is_active = bool(is_active)
 
@@ -5435,7 +5718,10 @@ def openclaw_test():
     if err:
         return err
     data = request.get_json(silent=True) or {}
-    base_url = (data.get('base_url') or '').strip()
+    try:
+        base_url = _normalize_http_service_url(data.get('base_url') or '', allow_localhost=True)
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
     token = (data.get('token') or '').strip()
     if not base_url:
         return jsonify({'ok': False, 'error': 'Missing service base_url'}), 400
@@ -6113,7 +6399,7 @@ def duo_cache_status():
         'cache_file': cache_file,
         'exists': os.path.exists(cache_file),
         'version': svc.get_version(),
-        'resource_path': svc.resource_path,
+        'resource_path': str(svc.resource_path or ''),
         'resource_count': svc.resource_count(),
         'search_mode': 'sqlite' if os.getenv('DUO_USE_SQLITE', '0') == '1' else 'memory'
     })
@@ -6137,7 +6423,7 @@ def duo_resources_upload():
     f = request.files['file']
     if not f.filename:
         return jsonify({'ok': False, 'error': 'filename required'}), 400
-    save_dir = os.path.join(os.getcwd(), 'app', 'utils', 'duo_resources')
+    save_dir = str(app_resource_path('app', 'utils', 'duo_resources'))
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, 'resources.json')
     f.save(save_path)
@@ -6226,6 +6512,15 @@ def api_register():
     online_err = _require_remote_online('register')
     if online_err:
         return online_err
+    limit_err = _enforce_rate_limit(
+        "register",
+        limit=6,
+        window_seconds=3600,
+        identity_parts=[get_request_ip(request), request.headers.get("User-Agent")],
+        details={"path": "/api/auth/register"},
+    )
+    if limit_err:
+        return limit_err
     username = (data.get('username') or '').strip()
     password = data.get('password') or ''
     email = (data.get('email') or '').strip() or None
@@ -6234,10 +6529,13 @@ def api_register():
     device_fingerprint = (data.get('device_fingerprint') or '').strip()
 
     if not username or not password:
+        audit_security_event("register_invalid_payload", level="warning", request_obj=request, details={"username": username, "email": email})
         return jsonify({'ok': False, 'error': 'username and password are required'}), 400
     if User.query.filter_by(username=username).first():
+        audit_security_event("register_duplicate_username", level="warning", request_obj=request, details={"username": username})
         return jsonify({'ok': False, 'error': 'username already exists'}), 400
     if email and User.query.filter_by(email=email).first():
+        audit_security_event("register_duplicate_email", level="warning", request_obj=request, details={"email": email})
         return jsonify({'ok': False, 'error': 'email already exists'}), 400
 
     referrer_id = None
@@ -6267,6 +6565,12 @@ def api_register():
             remaining_after=initial_trial_quota,
         ))
     db.session.commit()
+    audit_security_event(
+        "register_success",
+        request_obj=request,
+        user_id=user.id,
+        details={"username": username, "trial_granted": bool(initial_trial_quota > 0)},
+    )
     token_obj = issue_token(user.id) if auto_login else None
     return jsonify({
         'ok': True,
@@ -6286,16 +6590,28 @@ def api_login():
         return online_err
     account = (data.get('username') or data.get('email') or data.get('account') or '').strip()
     password = data.get('password') or ''
+    limit_err = _enforce_rate_limit(
+        "login",
+        limit=12,
+        window_seconds=900,
+        identity_parts=[get_request_ip(request), account],
+        details={"account": account},
+    )
+    if limit_err:
+        return limit_err
     if not account or not password:
+        audit_security_event("login_invalid_payload", level="warning", request_obj=request, details={"account": account})
         return jsonify({'ok': False, 'error': '请输入账号和密码'}), 400
 
     user = User.query.filter(or_(User.username == account, User.email == account)).first()
     if not user or not check_password_hash(user.password_hash, password):
+        audit_security_event("login_failed", level="warning", request_obj=request, details={"account": account})
         return jsonify({'ok': False, 'error': '账号或密码错误'}), 401
     _ensure_user_ref_code(user, commit=True)
 
     token_obj = issue_token(user.id)
     quota = get_or_create_quota(user.id)
+    audit_security_event("login_success", request_obj=request, user_id=user.id, details={"account": account})
     return jsonify({
         'ok': True,
         'token': token_obj.token,
@@ -6335,6 +6651,15 @@ def api_user_checkin():
     online_err = _require_remote_online('daily_checkin')
     if online_err:
         return online_err
+    limit_err = _enforce_rate_limit(
+        "daily_checkin",
+        limit=8,
+        window_seconds=3600,
+        identity_parts=[user.id, get_request_ip(request)],
+        user_id=user.id,
+    )
+    if limit_err:
+        return limit_err
 
     quota = get_or_create_quota(user.id)
     _, _, local_day = _china_day_bounds()
@@ -6363,6 +6688,7 @@ def api_user_checkin():
     db.session.add(quota)
     db.session.add(log_item)
     db.session.commit()
+    audit_security_event("daily_checkin_success", request_obj=request, user_id=user.id, details={"reward": reward})
     return jsonify({
         'ok': True,
         'message': f'签到成功，已到账 {reward} 次',

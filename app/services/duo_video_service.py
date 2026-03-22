@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 import sqlite3
 
+from app.utils.runtime_paths import app_resource_path, runtime_path
+
 
 @dataclass
 class DuoResource:
@@ -49,9 +51,9 @@ class DuoVideoService:
     def __init__(self, resource_path: Optional[str] = None, cache_dir: Optional[str] = None,
                  logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger("duo_video_service")
-        default_path = os.path.join(os.getcwd(), "app", "utils", "duo_resources", "resources.json")
+        default_path = app_resource_path("app", "utils", "duo_resources", "resources.json")
         self.resource_path = resource_path or os.getenv("DUO_VIDEO_RESOURCE_PATH") or (default_path if os.path.exists(default_path) else None)
-        self.cache_dir = cache_dir or os.path.join(os.getcwd(), "duo_cache")
+        self.cache_dir = cache_dir or str(runtime_path("duo_cache"))
         os.makedirs(self.cache_dir, exist_ok=True)
         self._resources: List[DuoResource] = []
         self._index: Dict[str, List[DuoResource]] = {}
@@ -64,13 +66,14 @@ class DuoVideoService:
                 self._build_sqlite_index()
 
     def load_resources(self, path_or_url: str) -> None:
+        source = str(path_or_url or "")
         data = None
-        if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
-            resp = requests.get(path_or_url, timeout=15)
+        if source.startswith("http://") or source.startswith("https://"):
+            resp = requests.get(source, timeout=15)
             resp.raise_for_status()
             data = resp.json()
         else:
-            with open(path_or_url, "r", encoding="utf-8") as f:
+            with open(source, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
         def _flatten_categories(categories: Dict[str, Any]) -> List[Dict[str, Any]]:

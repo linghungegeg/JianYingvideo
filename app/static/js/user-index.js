@@ -69,6 +69,8 @@
         const themeKey = 'vf_theme';
         const workspaceSettingsKey = 'vf_workspace_settings';
         const recentMaterialFoldersKey = 'vf_recent_material_folders';
+        const runtimeUserTokenStateKey = 'user_session_token';
+        const workspaceSensitiveSettingKeys = ['net_provider', 'net_base_url', 'net_token'];
         let workspaceSettingsConfigCache = null;
         let siteSettingsCache = readInitialSiteSettings();
 
@@ -105,8 +107,7 @@
                 login_subtitle: String(data.login_subtitle || login.subtitle || '登录后继续使用当前工作台。'),
                 locked_title: String(data.locked_title || locked.title || '登录后进入工作台'),
                 locked_subtitle: String(data.locked_subtitle || locked.subtitle || '登录后继续当前工作台。'),
-                admin_title: String(data.admin_title || admin.title || `${siteName} 管理后台`),
-                admin_subtitle: String(data.admin_subtitle || admin.subtitle || '集中处理授权、试用额度、CDK、设备绑定和用户检索。')
+                admin_title: String(data.admin_title || admin.title || `${siteName} 管理后台`)
             };
         }
 
@@ -381,7 +382,12 @@
 
         function getWorkspaceSettings() {
             try {
-                return JSON.parse(localStorage.getItem(workspaceSettingsKey) || '{}');
+                const parsed = JSON.parse(localStorage.getItem(workspaceSettingsKey) || '{}');
+                const sanitized = sanitizeWorkspaceSettings(parsed);
+                if (sanitized.changed) {
+                    localStorage.setItem(workspaceSettingsKey, JSON.stringify(sanitized.value));
+                }
+                return sanitized.value;
             } catch (e) {
                 return {};
             }
@@ -389,8 +395,22 @@
 
         function setWorkspaceSettings(patch = {}) {
             const next = Object.assign({}, getWorkspaceSettings(), patch || {});
-            localStorage.setItem(workspaceSettingsKey, JSON.stringify(next));
-            return next;
+            const sanitized = sanitizeWorkspaceSettings(next);
+            localStorage.setItem(workspaceSettingsKey, JSON.stringify(sanitized.value));
+            return sanitized.value;
+        }
+
+        function sanitizeWorkspaceSettings(raw = {}) {
+            const source = raw && typeof raw === 'object' ? raw : {};
+            const next = Object.assign({}, source);
+            let changed = false;
+            workspaceSensitiveSettingKeys.forEach((key) => {
+                if (Object.prototype.hasOwnProperty.call(next, key)) {
+                    delete next[key];
+                    changed = true;
+                }
+            });
+            return { value: next, changed };
         }
 
         function getWorkspaceSettingsConfigCache() {
@@ -483,16 +503,96 @@
             box.innerHTML = list.map((item, index) => `<button class="recent-folder-chip" type="button" onclick="useRecentMaterialFolder(${index})" title="${item}">${item}</button>`).join('');
         }
 
+        function isLocalRuntimeClient() {
+            const host = String(window.location.hostname || '').trim().toLowerCase();
+            return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+        }
+
+        function getTokenStorage() {
+            return isLocalRuntimeClient() ? window.sessionStorage : window.localStorage;
+        }
+
+        async function getRuntimeLocalStateValue(key) {
+            if (!isLocalRuntimeClient()) return '';
+            try {
+                const res = await fetch(`/api/runtime/local-state?key=${encodeURIComponent(key)}`);
+                if (!res.ok) return '';
+                const data = await res.json();
+                return data && data.ok ? (data.value || '') : '';
+            } catch (e) {
+                return '';
+            }
+        }
+
+        async function setRuntimeLocalStateValue(key, value) {
+            if (!isLocalRuntimeClient()) return;
+            try {
+                await fetch('/api/runtime/local-state', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ key, value: value || '' })
+                });
+            } catch (e) {}
+        }
+
+        async function removeRuntimeLocalStateValue(key) {
+            if (!isLocalRuntimeClient()) return;
+            try {
+                await fetch(`/api/runtime/local-state?key=${encodeURIComponent(key)}`, {
+                    method: 'DELETE'
+                });
+            } catch (e) {}
+        }
+
+        async function restoreRuntimeToken() {
+            if (!isLocalRuntimeClient()) return '';
+            const active = window.sessionStorage.getItem(tokenKey) || '';
+            if (active) {
+                window.localStorage.removeItem(tokenKey);
+                return active;
+            }
+            const stored = await getRuntimeLocalStateValue(runtimeUserTokenStateKey);
+            if (stored) {
+                window.sessionStorage.setItem(tokenKey, stored);
+            }
+            window.localStorage.removeItem(tokenKey);
+            return stored || '';
+        }
+
         function getToken() {
-            return localStorage.getItem(tokenKey) || '';
+            return getTokenStorage().getItem(tokenKey) || '';
         }
 
         function setToken(token) {
-            localStorage.setItem(tokenKey, token || '');
+            const value = token || '';
+            const storage = getTokenStorage();
+            if (value) {
+                storage.setItem(tokenKey, value);
+            } else {
+                storage.removeItem(tokenKey);
+            }
+            if (isLocalRuntimeClient()) {
+                window.localStorage.removeItem(tokenKey);
+                if (value) {
+                    void setRuntimeLocalStateValue(runtimeUserTokenStateKey, value);
+                } else {
+                    void removeRuntimeLocalStateValue(runtimeUserTokenStateKey);
+                }
+                return;
+            }
+            if (value) {
+                window.localStorage.setItem(tokenKey, value);
+            } else {
+                window.localStorage.removeItem(tokenKey);
+            }
         }
 
         function clearToken() {
-            localStorage.removeItem(tokenKey);
+            window.sessionStorage.removeItem(tokenKey);
+            window.localStorage.removeItem(tokenKey);
+            if (isLocalRuntimeClient()) {
+                void removeRuntimeLocalStateValue(runtimeUserTokenStateKey);
+            }
         }
 
         function setAuthMessage(msg, isError = true) {
@@ -567,6 +667,7 @@
 
         function renderVipRules() {
             const rules = accountOverview?.vip_rules || {};
+            const usagePolicy = rules.usage_policy || {};
             const defaultQuota = rules.default_user_quota ?? 0;
             const checkinReward = rules.daily_checkin_reward ?? 0;
             const inviteReferrer = rules.invite_referrer_reward ?? 0;
@@ -577,6 +678,7 @@
             const inviteRuleEl = document.getElementById('accountInviteRule');
             const mangaCostEl = document.getElementById('accountMangaCost');
             const rulesText = document.getElementById('accountVipRulesText');
+            const usagePolicyEl = document.getElementById('accountUsagePolicyList');
             if (defaultQuotaEl) defaultQuotaEl.textContent = `${defaultQuota} 次`;
             if (checkinRewardEl) checkinRewardEl.textContent = `${checkinReward} 次`;
             if (inviteRuleEl) inviteRuleEl.textContent = `${inviteReferrer}% / ${inviteeReward}%`;
@@ -588,6 +690,45 @@
                     `邀请奖励：被邀请人首次激活会员后，按开卡时长比例给邀请人 ${inviteReferrer}% / 给被邀请人 ${inviteeReward}%`,
                     `AI 漫剧消耗：每次 ${mangaCost} 次`
                 ].join('\n');
+            }
+            if (usagePolicyEl) {
+                const countItems = Array.isArray(usagePolicy.count_consuming_actions) ? usagePolicy.count_consuming_actions : [];
+                const gainItems = Array.isArray(usagePolicy.quota_gain_actions) ? usagePolicy.quota_gain_actions : [];
+                const vipGainItems = Array.isArray(usagePolicy.vip_gain_actions) ? usagePolicy.vip_gain_actions : [];
+                const freeItems = Array.isArray(usagePolicy.free_actions) ? usagePolicy.free_actions : [];
+                const onlineItems = Array.isArray(usagePolicy.online_required_actions) ? usagePolicy.online_required_actions : [];
+                const onlineStatus = usagePolicy.online_status || {};
+                const offlinePolicy = usagePolicy.offline_policy || {};
+                const lines = [
+                    '扣次数功能：',
+                    ...(countItems.length
+                        ? countItems.map((item) => `- ${item.label}：${item.cost_display}${item.online_required ? '，需联网校验' : ''}`)
+                        : ['- 暂无']),
+                    '',
+                    '加次数来源：',
+                    ...(gainItems.length
+                        ? gainItems.map((item) => `- ${item.label}：${item.description}`)
+                        : ['- 暂无']),
+                    '',
+                    'VIP 时长变化：',
+                    ...(vipGainItems.length
+                        ? vipGainItems.map((item) => `- ${item.label}：${item.description}`)
+                        : ['- 暂无']),
+                    '',
+                    '免费功能：',
+                    ...(freeItems.length
+                        ? freeItems.map((item) => `- ${item.label}：${item.description}`)
+                        : ['- 暂无']),
+                    '',
+                    `联网校验状态：${onlineStatus.ok === false ? '当前不可用' : '正常'}`
+                ];
+                if (onlineItems.length) {
+                    lines.push(`联网后才能执行：${onlineItems.map((item) => item.label).join('、')}`);
+                }
+                if (offlinePolicy.message) {
+                    lines.push(offlinePolicy.message);
+                }
+                usagePolicyEl.textContent = lines.join('\n');
             }
         }
 
@@ -1318,6 +1459,8 @@
             }
         }
 
+        let deviceFingerprintPromise = null;
+
         function buildDeviceFingerprint() {
             const raw = [
                 navigator.userAgent || '',
@@ -1332,6 +1475,33 @@
                 hash |= 0;
             }
             return `web-${Math.abs(hash)}`;
+        }
+
+        async function getDeviceFingerprintPayload() {
+            if (deviceFingerprintPromise) return deviceFingerprintPromise;
+            deviceFingerprintPromise = (async () => {
+                const fallback = {
+                    fingerprint: buildDeviceFingerprint(),
+                    label: 'Web Workspace'
+                };
+                const host = String(window.location.hostname || '').toLowerCase();
+                if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
+                    return fallback;
+                }
+                try {
+                    const res = await fetch('/api/runtime/device-fingerprint');
+                    const data = await res.json();
+                    if (res.ok && data.ok && data.fingerprint) {
+                        return {
+                            fingerprint: data.fingerprint,
+                            label: data.label || 'Desktop Runtime'
+                        };
+                    }
+                } catch (e) {
+                }
+                return fallback;
+            })();
+            return deviceFingerprintPromise;
         }
 
         async function loadLicenseStatus() {
@@ -1386,13 +1556,14 @@
             }
             if (statusEl) statusEl.textContent = '授权激活中，请稍候...';
             try {
+                const deviceIdentity = await getDeviceFingerprintPayload();
                 const res = await authFetch('/api/license/activate', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         code,
-                        device_fingerprint: buildDeviceFingerprint(),
-                        device_label: 'Web Workspace'
+                        device_fingerprint: deviceIdentity.fingerprint,
+                        device_label: deviceIdentity.label
                     })
                 });
                 const data = await res.json();
@@ -3172,15 +3343,22 @@
                     setAuthMessage('请输入用户名和密码');
                     return;
                 }
+                const deviceIdentity = await getDeviceFingerprintPayload();
                 const res = await fetch('/api/auth/register', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({username, password, ref_code: refCode, auto_login: true})
+                    body: JSON.stringify({
+                        username,
+                        password,
+                        ref_code: refCode,
+                        auto_login: true,
+                        device_fingerprint: deviceIdentity.fingerprint
+                    })
                 });
                 const data = await res.json();
                 if (data.ok) {
                     setToken(data.token || '');
-                    setAuthMessage('注册成功', false);
+                    setAuthMessage(data.message || '注册成功', false);
                     updateUserPanel(data.user);
                     await Promise.all([loadAiProviders(), loadAiKeys()]);
                     closeAuthModal();
@@ -4552,6 +4730,7 @@ async function renameUserMaterialProject() {
             initTheme();
             initAuthUI();
             await loadRuntimeFeatures();
+            await restoreRuntimeToken();
             await loadUserInfo();
             initWorkspaceSidebar();
             initDraftWorkspace();

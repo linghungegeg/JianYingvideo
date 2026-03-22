@@ -4,7 +4,6 @@ from app.extensions import db
 from app.models.user_quota import UserQuota
 from app.utils.helpers import get_config
 
-
 def get_or_create_quota(user_id):
     quota = UserQuota.query.get(user_id)
     if not quota:
@@ -14,6 +13,7 @@ def get_or_create_quota(user_id):
             default_quota = int(saved_default or current_app.config.get('DEFAULT_USER_QUOTA', 0))
         except Exception:
             default_quota = 0
+        default_quota = max(0, int(default_quota or 0))
         quota = UserQuota(user_id=user_id, total_generated=0, remaining=default_quota)
         db.session.add(quota)
         db.session.commit()

@@ -3,17 +3,61 @@ import os
 import json
 import uuid
 import logging
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from flask import current_app
 from app.extensions import db
 from app.models.config import Config
 from app.models.user_material import UserMaterial
+from app.utils.crypto import encrypt_text, decrypt_text
+from app.utils.runtime_paths import runtime_file_path, runtime_path
+
+
+_SECURE_VALUE_PREFIX = "enc::"
+_SENSITIVE_CONFIG_KEYS = {
+    "token",
+    "api_key",
+    "api_secret",
+    "secret",
+    "access_token",
+}
+_RUNTIME_LOCAL_STATE_KEYS = {
+    "user_session_token",
+    "admin_session_token",
+    "license_offline_token",
+    "license_offline_meta",
+}
+_SITE_SETTING_ENV_KEYS = {
+    "site_name": "VF_SITE_NAME",
+    "site_title": "VF_SITE_TITLE",
+    "site_keywords": "VF_SITE_KEYWORDS",
+    "site_description": "VF_SITE_DESCRIPTION",
+    "workspace_title": "VF_WORKSPACE_TITLE",
+    "workspace_subtitle": "VF_WORKSPACE_SUBTITLE",
+    "login_title": "VF_LOGIN_TITLE",
+    "login_subtitle": "VF_LOGIN_SUBTITLE",
+    "locked_title": "VF_LOCKED_TITLE",
+    "locked_subtitle": "VF_LOCKED_SUBTITLE",
+    "admin_title": "VF_ADMIN_TITLE",
+    "official_site_url": "VF_OFFICIAL_SITE_URL",
+    "download_url": "VF_DOWNLOAD_URL",
+    "official_logo_url": "VF_OFFICIAL_LOGO_URL",
+}
 
 
 def get_config(key, default=''):
-    config = Config.query.filter_by(key=key).first()
-    return config.value if config else default
+    env_key = _SITE_SETTING_ENV_KEYS.get(str(key or "").strip())
+    if env_key:
+        env_value = (os.getenv(env_key) or "").strip()
+        if env_value:
+            return env_value
+    try:
+        config = Config.query.filter_by(key=key).first()
+        return config.value if config else default
+    except Exception as exc:
+        logging.warning("get_config fallback for %s: %s", key, exc)
+        return default
 
 
 def set_config(key, value):
@@ -164,9 +208,7 @@ def pick_random_material():
 
 
 def _generate_log_path() -> str:
-    base = os.path.join(os.getcwd(), "user_data", "logs")
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, "generate.log")
+    return str(runtime_file_path("user_data", "logs", "generate.log"))
 
 
 def log_generate(template_id, template_name, user_id, username, status, draft_name=None, error_msg=None):
@@ -240,10 +282,6 @@ def get_site_settings():
         or '登录后继续当前工作台。'
     )
     admin_title = get_config('admin_title', f'{site_name} 管理后台') or f'{site_name} 管理后台'
-    admin_subtitle = (
-        get_config('admin_subtitle', '授权、CDK、设备、用户与日志。')
-        or '授权、CDK、设备、用户与日志。'
-    )
     official_site_url = get_config('official_site_url', '') or ''
     download_url = get_config('download_url', '') or ''
     official_logo_url = get_config('official_logo_url', '') or ''
@@ -265,7 +303,6 @@ def get_site_settings():
         'locked_title': locked_title,
         'locked_subtitle': locked_subtitle,
         'admin_title': admin_title,
-        'admin_subtitle': admin_subtitle,
         'meta': {
             'site_name': site_name,
             'title': title,
@@ -291,15 +328,142 @@ def get_site_settings():
         },
         'admin': {
             'title': admin_title,
-            'subtitle': admin_subtitle,
         },
     }
 
 
 def get_user_data_dir(user_id: int) -> str:
-    base = os.path.join(os.getcwd(), "user_data", f"user_{user_id}")
+    base = str(runtime_path("user_data", f"user_{user_id}"))
     os.makedirs(base, exist_ok=True)
     return base
+
+
+def _is_sensitive_config_key(key: str) -> bool:
+    return str(key or "").strip().lower() in _SENSITIVE_CONFIG_KEYS
+
+
+def _encrypt_sensitive_value(value):
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str) and value.startswith(_SECURE_VALUE_PREFIX):
+        return value
+    if isinstance(value, str):
+        raw = value
+    else:
+        raw = json.dumps(value, ensure_ascii=False)
+    return f"{_SECURE_VALUE_PREFIX}{encrypt_text(raw)}"
+
+
+def _decrypt_sensitive_value(value):
+    if not isinstance(value, str):
+        return value
+    if not value.startswith(_SECURE_VALUE_PREFIX):
+        return value
+    return decrypt_text(value[len(_SECURE_VALUE_PREFIX):])
+
+
+def _transform_sensitive_config_values(data, encrypt: bool):
+    if isinstance(data, dict):
+        result = {}
+        for key, value in data.items():
+            if _is_sensitive_config_key(key):
+                result[key] = _encrypt_sensitive_value(value) if encrypt else _decrypt_sensitive_value(value)
+            else:
+                result[key] = _transform_sensitive_config_values(value, encrypt)
+        return result
+    if isinstance(data, list):
+        return [_transform_sensitive_config_values(item, encrypt) for item in data]
+    return data
+
+
+def _runtime_local_state_path() -> str:
+    return str(runtime_file_path("user_data", ".runtime_secure_state.json"))
+
+
+def _write_json_file_atomic(path: str, payload: dict) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=f"{target.stem}_", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(temp_path, 0o600)
+        except Exception:
+            pass
+        os.replace(temp_path, target)
+        try:
+            os.chmod(target, 0o600)
+        except Exception:
+            pass
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
+def _validate_runtime_local_state_key(key: str) -> str:
+    normalized = str(key or "").strip()
+    if normalized not in _RUNTIME_LOCAL_STATE_KEYS:
+        raise ValueError("unsupported runtime local state key")
+    return normalized
+
+
+def _read_runtime_local_state_file() -> dict:
+    path = _runtime_local_state_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        logging.error("read runtime local state failed: %s", exc)
+        return {}
+
+
+def _write_runtime_local_state_file(data: dict) -> dict:
+    payload = data if isinstance(data, dict) else {}
+    path = _runtime_local_state_path()
+    _write_json_file_atomic(path, payload)
+    return payload
+
+
+def load_runtime_local_state() -> dict:
+    payload = _read_runtime_local_state_file()
+    result = {}
+    for key in _RUNTIME_LOCAL_STATE_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.startswith(_SECURE_VALUE_PREFIX):
+            result[key] = decrypt_text(value[len(_SECURE_VALUE_PREFIX):])
+        elif value is not None:
+            result[key] = value
+    return result
+
+
+def get_runtime_local_state_value(key: str):
+    normalized = _validate_runtime_local_state_key(key)
+    return load_runtime_local_state().get(normalized, "")
+
+
+def set_runtime_local_state_value(key: str, value) -> dict:
+    normalized = _validate_runtime_local_state_key(key)
+    payload = _read_runtime_local_state_file()
+    payload[normalized] = _encrypt_sensitive_value("" if value is None else str(value))
+    return _write_runtime_local_state_file(payload)
+
+
+def remove_runtime_local_state_value(key: str) -> dict:
+    normalized = _validate_runtime_local_state_key(key)
+    payload = _read_runtime_local_state_file()
+    if normalized in payload:
+        payload.pop(normalized, None)
+        return _write_runtime_local_state_file(payload)
+    return payload
 
 
 def load_user_config(user_id: int) -> dict:
@@ -309,7 +473,9 @@ def load_user_config(user_id: int) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                return {}
+            return _transform_sensitive_config_values(data, encrypt=False)
     except Exception as exc:
         logging.error("load_user_config failed: %s", exc)
         return {}
@@ -330,8 +496,8 @@ def save_user_config(user_id: int, data: dict, merge: bool = True) -> dict:
         current = load_user_config(user_id)
         payload = _merge_dict(current, payload)
     path = os.path.join(get_user_data_dir(user_id), "config.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    file_payload = _transform_sensitive_config_values(payload, encrypt=True)
+    _write_json_file_atomic(path, file_payload)
     return payload
 
 

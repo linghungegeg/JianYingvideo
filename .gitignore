@@ -32,3 +32,9 @@ duo_cache/
 mcp_cache/
 user_data/
 runtime_tools/
+build/
+dist/
+runtime_server_5000.err.log
+runtime_server_5000.out.log
+runtime_server_5001.err.log
+runtime_server_5001.out.log

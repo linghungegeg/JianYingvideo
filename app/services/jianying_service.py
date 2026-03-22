@@ -7,6 +7,7 @@ import uuid
 from typing import Optional, Dict, Any, List
 
 from dotenv import load_dotenv
+from app.utils.runtime_paths import runtime_path
 
 from app.utils.jianying_mcp.services.track_service import create_track_service
 from app.utils.jianying_mcp.services.video_service import (
@@ -97,9 +98,7 @@ class JianYingService:
     ):
         runtime_save_path = save_path or os.getenv("SAVE_PATH", "")
         if not runtime_save_path:
-            runtime_save_path = os.path.abspath(
-                os.path.join(os.path.dirname(__file__), "..", "..", "user_data", "mcp_cache")
-            )
+            runtime_save_path = str(runtime_path("mcp_cache"))
         os.makedirs(runtime_save_path, exist_ok=True)
         os.environ["SAVE_PATH"] = runtime_save_path
         if output_path:

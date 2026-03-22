@@ -18,14 +18,20 @@ depends_on = None
 def upgrade():
     bind = op.get_bind()
     inspector = inspect(bind)
+    dialect = bind.dialect.name
     user_columns = {c["name"] for c in inspector.get_columns("users")}
-    with op.batch_alter_table("users") as batch_op:
-        if "ref_code" not in user_columns:
-            batch_op.add_column(sa.Column("ref_code", sa.String(length=16), nullable=True))
-            batch_op.create_unique_constraint("uq_users_ref_code", ["ref_code"])
-        if "referrer_id" not in user_columns:
-            batch_op.add_column(sa.Column("referrer_id", sa.Integer(), nullable=True))
-            batch_op.create_foreign_key("fk_users_referrer", "users", ["referrer_id"], ["id"])
+    user_indexes = {item["name"] for item in inspector.get_indexes("users")}
+    user_unique_constraints = {item["name"] for item in inspector.get_unique_constraints("users") if item.get("name")}
+    if "ref_code" not in user_columns:
+        op.add_column("users", sa.Column("ref_code", sa.String(length=16), nullable=True))
+    if "uq_users_ref_code" not in user_indexes and "uq_users_ref_code" not in user_unique_constraints:
+        op.create_index("uq_users_ref_code", "users", ["ref_code"], unique=True)
+    if "referrer_id" not in user_columns:
+        op.add_column("users", sa.Column("referrer_id", sa.Integer(), nullable=True))
+    if dialect != "sqlite":
+        foreign_keys = {item.get("name") for item in inspector.get_foreign_keys("users") if item.get("name")}
+        if "fk_users_referrer" not in foreign_keys:
+            op.create_foreign_key("fk_users_referrer", "users", "users", ["referrer_id"], ["id"])
 
     if not inspector.has_table("cdk_codes"):
         op.create_table(
@@ -68,17 +74,27 @@ def upgrade():
             sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
         )
 
-    task_columns = {c["name"] for c in inspector.get_columns("tasks")}
-    if "refunded" not in task_columns:
-        with op.batch_alter_table("tasks") as batch_op:
-            batch_op.add_column(sa.Column("refunded", sa.Boolean(), server_default=sa.text("0")))
+    if inspector.has_table("tasks"):
+        task_columns = {c["name"] for c in inspector.get_columns("tasks")}
+        if "refunded" not in task_columns:
+            with op.batch_alter_table("tasks") as batch_op:
+                batch_op.add_column(sa.Column("refunded", sa.Boolean(), server_default=sa.text("0")))
 
 
 def downgrade():
     op.drop_table("license_bindings")
     op.drop_table("cdk_codes")
-    with op.batch_alter_table("users") as batch_op:
-        batch_op.drop_constraint("fk_users_referrer", type_="foreignkey")
-        batch_op.drop_constraint("uq_users_ref_code", type_="unique")
-        batch_op.drop_column("referrer_id")
-        batch_op.drop_column("ref_code")
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if bind.dialect.name != "sqlite":
+        foreign_keys = {item.get("name") for item in inspector.get_foreign_keys("users") if item.get("name")}
+        if "fk_users_referrer" in foreign_keys:
+            op.drop_constraint("fk_users_referrer", "users", type_="foreignkey")
+    user_indexes = {item["name"] for item in inspector.get_indexes("users")}
+    if "uq_users_ref_code" in user_indexes:
+        op.drop_index("uq_users_ref_code", table_name="users")
+    user_columns = {c["name"] for c in inspector.get_columns("users")}
+    if "referrer_id" in user_columns:
+        op.drop_column("users", "referrer_id")
+    if "ref_code" in user_columns:
+        op.drop_column("users", "ref_code")

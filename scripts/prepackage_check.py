@@ -1,4 +1,5 @@
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,11 @@ import runtime_selfcheck
 
 
 TARGET_OFFICIAL_SITE_URL = "https://www.zysj.site"
+PACKAGING_FILES = [
+    ROOT_DIR / "packaging" / "video_factory_desktop.spec",
+    ROOT_DIR / "packaging" / "video_factory_installer.iss",
+    ROOT_DIR / "scripts" / "build_desktop_bundle.py",
+]
 
 
 def record(name, ok, detail=""):
@@ -67,9 +73,19 @@ def check_site_links(app):
     with app.app_context():
         settings = get_site_settings()
 
-    official_site_url = str(settings.get("official_site_url") or "").strip()
-    official_ok = official_site_url == TARGET_OFFICIAL_SITE_URL
-    ok = record("site/official_url", official_ok, official_site_url or "<empty>") and True
+    remote_auth_mode = str(os.getenv("VF_REMOTE_AUTH_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+    env_official_site_url = str(os.getenv("VF_OFFICIAL_SITE_URL") or "").strip()
+    official_site_url = str(settings.get("official_site_url") or env_official_site_url).strip()
+    enforce_official_site = remote_auth_mode or bool(env_official_site_url)
+    if enforce_official_site:
+        official_ok = official_site_url == TARGET_OFFICIAL_SITE_URL
+        ok = record("site/official_url", official_ok, official_site_url or "<empty>") and True
+    else:
+        ok = True
+        if official_site_url:
+            record("site/official_url", True, official_site_url)
+        else:
+            warn("site/official_url", "empty in local dev env; release build will use preset/env value")
 
     download_url = str(settings.get("download_url") or "").strip()
     if download_url:
@@ -83,6 +99,14 @@ def check_site_links(app):
     else:
         warn("site/logo_url", "empty, optional for packaging")
 
+    return ok
+
+
+def check_packaging_files():
+    ok = True
+    for path in PACKAGING_FILES:
+        exists = path.exists() and path.is_file()
+        ok = record(f"packaging/{path.name}", exists, str(path)) and ok
     return ok
 
 
@@ -119,11 +143,13 @@ def main():
         runtime_selfcheck.check_secret_settings(app),
         check_http_entrypoints(app),
         check_site_links(app),
+        check_packaging_files(),
     ]
     runtime_selfcheck.check_feature_switches(app)
 
+    remote_auth_mode = str(os.getenv("VF_REMOTE_AUTH_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
     if not args.skip_final_regression:
-        checks.append(run_python_script("final_regression.py"))
+        checks.append(run_python_script("remote_auth_mode_check.py" if remote_auth_mode else "final_regression.py"))
 
     if args.with_admin_browser_regression:
         checks.append(run_python_script("admin_user_browser_regression.py"))

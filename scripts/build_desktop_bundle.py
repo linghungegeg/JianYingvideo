@@ -250,6 +250,9 @@ def build_pyinstaller(
     env["VF_BUILD_APP_NAME"] = app_name
     env["VF_BUILD_CONSOLE"] = "1" if console else "0"
     env["VF_PROJECT_ROOT"] = str(project_root)
+    pyinstaller_cache_root = work_root / "pyinstaller-cache"
+    pyinstaller_cache_root.mkdir(parents=True, exist_ok=True)
+    env["PYINSTALLER_CONFIG_DIR"] = str(pyinstaller_cache_root)
     if icon_path:
         env["VF_EXE_ICON"] = icon_path
 

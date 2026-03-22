@@ -2,13 +2,24 @@ import os
 
 from dotenv import load_dotenv
 
+from app.utils.runtime_paths import runtime_file_path, runtime_path
 
 load_dotenv()
 
 
 def _default_sqlite_uri() -> str:
-    base_dir = os.path.abspath(os.path.dirname(__file__))
-    return "sqlite:///" + os.path.join(base_dir, "data-dev.sqlite")
+    return "sqlite:///" + str(runtime_file_path("data", "data-runtime.sqlite"))
+
+
+def _normalize_sqlite_uri(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw.startswith("sqlite:///") or raw.startswith("sqlite:////"):
+        return raw
+    relative = raw[len("sqlite:///"):].strip().replace("\\", "/")
+    if not relative:
+        return raw
+    normalized = runtime_file_path("data", relative).resolve()
+    return "sqlite:///" + str(normalized)
 
 
 class Config:
@@ -21,14 +32,17 @@ class Config:
         or os.environ.get("DEV_DATABASE_URL")
         or _default_sqlite_uri()
     )
+    SQLALCHEMY_DATABASE_URI = _normalize_sqlite_uri(SQLALCHEMY_DATABASE_URI)
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # Upload/log folders
-    UPLOAD_FOLDER = os.path.join(os.path.abspath(os.path.dirname(__file__)), "app", "uploads")
-    LOG_FOLDER = os.path.join(os.path.abspath(os.path.dirname(__file__)), "logs")
+    UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER") or str(runtime_path("uploads"))
+    LOG_FOLDER = os.environ.get("LOG_FOLDER") or str(runtime_path("logs"))
+    SECURITY_RUNTIME_FOLDER = os.environ.get("SECURITY_RUNTIME_FOLDER") or str(runtime_path("logs", "security"))
 
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     os.makedirs(LOG_FOLDER, exist_ok=True)
+    os.makedirs(SECURITY_RUNTIME_FOLDER, exist_ok=True)
 
     # Redis
     REDIS_URL = os.environ.get("REDIS_URL") or "redis://localhost:6379/0"
