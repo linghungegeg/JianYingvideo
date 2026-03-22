@@ -1725,22 +1725,42 @@
             font-weight: 800;
             letter-spacing: 0.06em;
         }
+        #duo_results {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
+            align-items: start;
+        }
+        #duo_results .tool-result {
+            margin: 0;
+        }
         #duo_results .resource-browser-card {
             gap: 12px;
             padding: 12px;
             border-radius: 14px;
+            min-height: 100%;
         }
         #duo_results .resource-browser-card-media {
-            grid-template-columns: 56px minmax(0, 1fr);
+            grid-template-columns: 52px minmax(0, 1fr);
+            gap: 10px;
         }
         #duo_results .resource-browser-thumb,
         #duo_results .resource-browser-thumb-empty {
-            width: 56px;
-            height: 56px;
+            width: 52px;
+            height: 52px;
             border-radius: 12px;
         }
+        #duo_results .resource-browser-head {
+            gap: 10px;
+            align-items: flex-start;
+        }
         #duo_results .resource-browser-head h4 {
-            font-size: 15px;
+            font-size: 14px;
+            line-height: 1.45;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
         }
         #duo_results .resource-browser-chip {
             min-height: 24px;
@@ -1748,9 +1768,14 @@
             font-size: 11px;
         }
         #duo_results .effect-add {
-            min-height: 34px;
-            padding: 0 12px;
+            min-height: 32px;
+            padding: 0 10px;
             margin-top: 0;
+            flex: 0 0 auto;
+        }
+        #duo_results .resource-browser-meta {
+            margin-top: 8px;
+            gap: 6px;
         }
         .resource-browser-body {
             min-width: 0;
@@ -2950,5 +2975,8 @@
             .assistant-preview-meta,
             .resource-browser-meta {
                 gap: 8px;
+            }
+            #duo_results {
+                grid-template-columns: 1fr;
             }
         }

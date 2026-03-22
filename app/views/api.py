@@ -3,17 +3,21 @@ import json
 import uuid
 import threading
 import base64
+import hashlib
 import shutil
 import re
 import time
 import math
+import platform
+import socket
 from collections import defaultdict
 from typing import List, Optional, Union
+from types import SimpleNamespace
 import requests
 import logging
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, unquote, urlparse
-from flask import Blueprint, request, jsonify, current_app, session, send_file
+from flask import Blueprint, request, jsonify, current_app, session, send_file, Response
 from sqlalchemy import or_, func
 from werkzeug.security import generate_password_hash, check_password_hash
 from app.utils.helpers import (
@@ -29,6 +33,9 @@ from app.utils.helpers import (
     save_user_config,
     get_user_material_dir,
     get_user_data_dir,
+    get_runtime_local_state_value,
+    set_runtime_local_state_value,
+    remove_runtime_local_state_value,
     generate_uuid,
     add_user_material,
     read_generate_logs,
@@ -70,6 +77,11 @@ from app.utils.split_utils import (
     probe_video_info,
 )
 from app.utils.ffmpeg_utils import find_ffmpeg_with_source
+from app.utils.remote_service import (
+    call_remote_api,
+    get_official_site_origin,
+    remote_auth_mode_enabled,
+)
 
 api_bp = Blueprint('api', __name__, url_prefix='/api')
 draft_logger = logging.getLogger("draft_inspect")
@@ -106,9 +118,12 @@ _FEATURE_FLAG_META = {
 }
 
 _QUOTA_REASON_LABELS = {
+    "register_trial": "新用户试用",
     "daily_checkin": "每日签到",
     "manga_generate": "AI 漫剧消耗",
+    "generate_batch": "批量生成消耗",
     "license_activate": "激活授权",
+    "manual_deduct": "手动扣减",
     "refund": "失败返还",
     "invite_referrer_reward": "邀请激活奖励",
     "invite_invitee_reward": "受邀激活加赠",
@@ -116,6 +131,65 @@ _QUOTA_REASON_LABELS = {
 _RESOURCE_EXCHANGE_PROJECT_LIMIT = 15
 _RESOURCE_EXCHANGE_INTRO_LIMIT = 30
 _RESOURCE_EXCHANGE_PAGE_SIZE = 20
+_MAX_INVITE_REWARD_PERCENT = 100
+_TRIAL_DEVICE_CLAIM_PREFIX = "trial_device_claim:"
+_REMOTE_ONLINE_CACHE_TTL_SECONDS = 8
+_DESKTOP_TASK_CLAIM_TTL_MINUTES = 30
+_remote_online_guard_cache = {
+    "checked_at": 0.0,
+    "status": None,
+}
+_native_device_fingerprint_cache = None
+_ASSISTANT_FREE_ACTIONS = {
+    "navigate",
+    "create_material_layout",
+    "fill_text_template",
+}
+_REMOTE_PROXY_PREFIXES = (
+    "/api/auth/",
+    "/api/license/",
+    "/api/admin/",
+    "/api/resource-exchange/",
+    "/api/ai/",
+    "/api/user/keys",
+    "/api/user/materials",
+    "/api/manga/templates",
+    "/api/manga/history",
+    "/api/site-settings",
+)
+_REMOTE_PROXY_EXACTS = {
+    "/api/user/info",
+    "/api/user/points/overview",
+    "/api/user/checkin",
+    "/api/user/deduct",
+}
+_LOCAL_ONLY_PREFIXES = (
+    "/api/runtime/",
+    "/api/runtime-features",
+    "/api/desktop/",
+    "/api/browse-folder",
+    "/api/browse-file",
+    "/api/open-folder",
+    "/api/workspace/settings",
+    "/api/user/config",
+    "/api/drafts/",
+    "/api/draft/",
+    "/api/generate-batch",
+    "/api/task/",
+    "/api/materials/",
+    "/api/effects/",
+    "/api/assistant/",
+    "/api/openclaw/test",
+    "/api/ai/manga/generate",
+    "/api/ai/manga/generate-draft",
+    "/api/duo/",
+    "/api/split",
+    "/api/export/",
+    "/api/micro-adjust",
+)
+_REMOTE_PROXY_LOCAL_EXACTS = {
+    "/api/task/refund",
+}
 
 
 def _desktop_dialog_unavailable_response():
@@ -188,6 +262,8 @@ def _run_background(app, target, *args, **kwargs):
 @api_bp.before_request
 def _guard_optional_api_features():
     path = request.path or ""
+    if _should_proxy_remote_request():
+        return _proxy_remote_response()
     raw_flags = _raw_runtime_flags()
     for config_key, prefixes in _OPTIONAL_API_FEATURE_PREFIXES.items():
         if not raw_flags.get(next((name for name, meta in _FEATURE_FLAG_META.items() if meta["config_key"] == config_key), ""), False):
@@ -222,6 +298,324 @@ def _safe_int_config(key: str, default: int = 0) -> int:
         return int(get_config(key, str(default)) or default)
     except Exception:
         return default
+
+
+def _clamp_int(value, default: int = 0, minimum: int = 0, maximum: Optional[int] = None) -> int:
+    try:
+        number = int(value)
+    except Exception:
+        number = int(default)
+    if number < minimum:
+        number = minimum
+    if maximum is not None and number > maximum:
+        number = maximum
+    return number
+
+
+def _get_default_user_quota_value() -> int:
+    raw = get_config("default_user_quota", str(current_app.config.get("DEFAULT_USER_QUOTA", 0)))
+    return _clamp_int(raw or current_app.config.get("DEFAULT_USER_QUOTA", 0) or 0, 0, 0, None)
+
+
+def _get_official_site_origin() -> str:
+    return get_official_site_origin()
+
+
+def _get_request_origin() -> str:
+    try:
+        return f"{request.scheme}://{request.host}"
+    except Exception:
+        return ""
+
+
+def _is_local_runtime_request() -> bool:
+    host = (request.host or "").split(":", 1)[0].strip().lower()
+    remote_addr = (request.remote_addr or "").strip().lower()
+    return host in {"127.0.0.1", "localhost", "::1"} and remote_addr in {"127.0.0.1", "localhost", "::1", ""}
+
+
+def _should_use_remote_auth() -> bool:
+    return _is_local_runtime_request() and remote_auth_mode_enabled() and bool(_get_official_site_origin())
+
+
+def _build_remote_user(raw_user: dict):
+    data = raw_user if isinstance(raw_user, dict) else {}
+    return SimpleNamespace(
+        id=int(data.get("id") or 0),
+        username=data.get("username") or "",
+        email=data.get("email"),
+        role=data.get("role") or "user",
+        ref_code=data.get("ref_code") or "",
+        referrer_id=data.get("referrer_id"),
+        membership_label=data.get("membership_label") or "",
+        is_vip=bool(data.get("is_vip")),
+    )
+
+
+def _fetch_remote_user_by_token(token: str):
+    response = call_remote_api(
+        "/api/user/info",
+        method="GET",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    try:
+        data = response.json()
+    except Exception:
+        data = {}
+    if not response.ok or not isinstance(data, dict) or not data.get("ok"):
+        error = data.get("error") if isinstance(data, dict) else "remote auth failed"
+        if response.status_code == 401:
+            return None, error or "remote auth failed", 401
+        if response.status_code == 403:
+            return None, error or "remote auth failed", 403
+        return None, error or f"remote auth failed: {response.status_code}", response.status_code or 502
+    return _build_remote_user(data.get("user") or {}), None, None
+
+
+def _should_proxy_remote_request() -> bool:
+    if not _should_use_remote_auth():
+        return False
+    path = request.path or ""
+    if path.endswith("/refund") and path.startswith("/api/task/"):
+        return True
+    if path in _REMOTE_PROXY_LOCAL_EXACTS:
+        return True
+    if any(path.startswith(prefix) for prefix in _LOCAL_ONLY_PREFIXES):
+        return False
+    if path in _REMOTE_PROXY_EXACTS:
+        return True
+    return any(path.startswith(prefix) for prefix in _REMOTE_PROXY_PREFIXES)
+
+
+def _proxy_remote_response():
+    response = call_remote_api(
+        path=request.full_path if request.query_string else request.path,
+        method=request.method,
+        headers=dict(request.headers),
+        data=request.get_data() if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None,
+        timeout=30,
+    )
+    flask_response = Response(response.content, status=response.status_code)
+    for key, value in response.headers.items():
+        lower_key = key.lower()
+        if lower_key in {"content-length", "transfer-encoding", "content-encoding", "connection"}:
+            continue
+        flask_response.headers[key] = value
+    return flask_response
+
+
+def _get_native_device_fingerprint_payload() -> dict:
+    global _native_device_fingerprint_cache
+    if isinstance(_native_device_fingerprint_cache, dict) and _native_device_fingerprint_cache.get("fingerprint"):
+        return dict(_native_device_fingerprint_cache)
+
+    machine_guid = ""
+    if os.name == "nt":
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+                machine_guid = str(winreg.QueryValueEx(key, "MachineGuid")[0] or "").strip()
+        except Exception:
+            machine_guid = ""
+
+    hostname = socket.gethostname() or platform.node() or "desktop-runtime"
+    label = os.getenv("COMPUTERNAME") or hostname
+    raw_parts = [
+        "desktop-runtime",
+        platform.system(),
+        platform.release(),
+        platform.version(),
+        hostname,
+        str(uuid.getnode() or ""),
+        machine_guid,
+    ]
+    raw = "|".join([item for item in raw_parts if item])
+    fingerprint = f"desktop-{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
+    _native_device_fingerprint_cache = {
+        "fingerprint": fingerprint,
+        "label": label,
+        "source": "desktop_runtime",
+    }
+    return dict(_native_device_fingerprint_cache)
+
+
+def _remote_online_status(force_refresh: bool = False) -> dict:
+    now_ts = time.time()
+    cached = _remote_online_guard_cache.get("status")
+    checked_at = float(_remote_online_guard_cache.get("checked_at") or 0.0)
+    if cached and not force_refresh and (now_ts - checked_at) < _REMOTE_ONLINE_CACHE_TTL_SECONDS:
+        return dict(cached)
+
+    official_origin = _get_official_site_origin()
+    current_origin = _get_request_origin()
+    official_netloc = (urlparse(official_origin).netloc or "").lower() if official_origin else ""
+    current_netloc = (urlparse(current_origin).netloc or "").lower() if current_origin else ""
+
+    if not official_origin:
+        status = {
+            "enabled": False,
+            "ok": True,
+            "reason": "official_site_url_not_configured",
+            "official_origin": "",
+            "server_time": _now().isoformat(),
+        }
+    elif official_netloc == current_netloc:
+        status = {
+            "enabled": False,
+            "ok": True,
+            "reason": "same_origin_server_mode",
+            "official_origin": official_origin,
+            "server_time": _now().isoformat(),
+        }
+    else:
+        probe_url = f"{official_origin.rstrip('/')}/api/runtime-features"
+        try:
+            response = requests.get(probe_url, timeout=3)
+            data = response.json() if response.headers.get("content-type", "").lower().find("application/json") >= 0 else {}
+            ok = bool(response.ok and isinstance(data, dict) and data.get("ok"))
+            status = {
+                "enabled": True,
+                "ok": ok,
+                "reason": "remote_probe_ok" if ok else f"remote_probe_failed:{response.status_code}",
+                "official_origin": official_origin,
+                "server_time": _now().isoformat(),
+            }
+            if isinstance(data, dict):
+                status["remote_server_time"] = data.get("server_time")
+        except Exception as exc:
+            status = {
+                "enabled": True,
+                "ok": False,
+                "reason": "remote_probe_error",
+                "official_origin": official_origin,
+                "server_time": _now().isoformat(),
+                "error": str(exc),
+            }
+
+    _remote_online_guard_cache["checked_at"] = now_ts
+    _remote_online_guard_cache["status"] = dict(status)
+    return status
+
+
+def _require_remote_online(action_key: str):
+    status = _remote_online_status()
+    if status.get("ok"):
+        return None
+    return jsonify({
+        "ok": False,
+        "error": "当前功能需要联网校验后才能执行，请恢复网络后重试。",
+        "action_key": action_key,
+        "online_required": True,
+        "online_status": status,
+    }), 503
+
+
+def _build_usage_policy() -> dict:
+    manga_cost = int(get_config("manga_generate_cost", "1") or 1)
+    online_status = _remote_online_status()
+    return {
+        "count_consuming_actions": [
+            {
+                "key": "generate_batch",
+                "label": "批量混剪 / 批量生成",
+                "cost_display": "每次成功生成任务扣 1 次",
+                "online_required": True,
+            },
+            {
+                "key": "ai_manga",
+                "label": "AI 漫剧",
+                "cost_display": f"每次成功生成扣 {manga_cost} 次",
+                "online_required": True,
+            },
+        ],
+        "quota_gain_actions": [
+            {
+                "key": "register_trial",
+                "label": "新用户试用",
+                "description": f"后台设置多少就发多少，但同一设备只发放一次，当前默认值为 {_get_default_user_quota_value()} 次",
+            },
+            {
+                "key": "daily_checkin",
+                "label": "每日签到",
+                "description": f"每天签到可增加 {_get_daily_checkin_reward()} 次",
+            },
+            {
+                "key": "license_activate_bonus",
+                "label": "授权激活附赠次数",
+                "description": "只有卡密本身带 bonus_points 时才会增加次数，按后台倍率换算",
+            },
+            {
+                "key": "failed_task_refund",
+                "label": "失败任务返还",
+                "description": "已扣除但任务失败时，可返还对应次数",
+            },
+        ],
+        "vip_gain_actions": [
+            {
+                "key": "license_activate_vip",
+                "label": "CDK / 会员开卡",
+                "description": "开卡成功后按卡时长延长 VIP 到期时间",
+            },
+            {
+                "key": "invite_rewards",
+                "label": "邀请奖励",
+                "description": "被邀请人首次开卡后，邀请人与被邀请人按后台百分比加赠 VIP 天数",
+            },
+        ],
+        "free_actions": [
+            {"key": "resource_exchange", "label": "资源互换", "description": "免费功能，不扣次数"},
+            {"key": "effects_and_duo", "label": "效果配置 / Duo 资源浏览", "description": "只浏览、搜索和配置时不扣次数"},
+            {"key": "draft_tools", "label": "草稿读取 / 批量分割 / 批量导出 / 片段微调", "description": "当前不扣次数"},
+            {"key": "account_center", "label": "账户中心 / 邀请中心 / 使用教程", "description": "查看信息不扣次数"},
+            {"key": "byok_ai_tools", "label": "AI 成片 / 文本 / 音频 / 视频生成", "description": "当前走 BYOK，不走平台次数"},
+            {"key": "assistant", "label": "智能助手", "description": "当前只允许导航、创建素材目录、生成文字模板这类免费动作，不直接代执行扣次功能"},
+        ],
+        "online_required_actions": [
+            {"key": "register", "label": "注册"},
+            {"key": "login", "label": "登录"},
+            {"key": "daily_checkin", "label": "每日签到"},
+            {"key": "license_activate", "label": "授权激活"},
+            {"key": "license_deactivate", "label": "授权解绑"},
+            {"key": "generate_batch", "label": "批量混剪 / 批量生成"},
+            {"key": "ai_manga", "label": "AI 漫剧"},
+        ],
+        "offline_policy": {
+            "count_changing_actions_require_online": True,
+            "authorization_actions_require_online": True,
+            "message": "断网或无法连到验证服务时，扣次数、加次数、改授权状态这类服务端校验动作会直接拦截。",
+        },
+        "online_status": online_status,
+    }
+
+
+def _hash_trial_device_fingerprint(device_fingerprint: str) -> str:
+    clean = (device_fingerprint or "").strip()
+    if not clean:
+        return ""
+    return hashlib.sha256(clean.encode("utf-8")).hexdigest()
+
+
+def _claim_trial_device_quota(device_fingerprint: str, user_id: int) -> dict:
+    fingerprint_hash = _hash_trial_device_fingerprint(device_fingerprint)
+    if not fingerprint_hash:
+        return {"granted": False, "reason": "missing_device_fingerprint"}
+    claim_key = f"{_TRIAL_DEVICE_CLAIM_PREFIX}{fingerprint_hash}"
+    existing = get_config(claim_key, "")
+    if existing:
+        return {"granted": False, "reason": "device_already_claimed"}
+    set_config(claim_key, json.dumps({
+        "user_id": int(user_id),
+        "claimed_at": _now().isoformat(),
+        "fingerprint_hash": fingerprint_hash,
+    }, ensure_ascii=False))
+    return {
+        "granted": True,
+        "reason": "first_device",
+        "claim_key": claim_key,
+        "log_key": f"trial:{fingerprint_hash[:24]}",
+    }
 
 
 def _get_json_config(key: str, default):
@@ -520,8 +914,8 @@ def _build_manga_material_workspace(user_id: int, project_id: str, project_name:
 
 def _get_invite_settings() -> dict:
     return {
-        "referrer_reward": max(0, _safe_int_config("invite_referrer_reward", 3)),
-        "invitee_reward": max(0, _safe_int_config("invite_invitee_reward", 2)),
+        "referrer_reward": _clamp_int(_safe_int_config("invite_referrer_reward", 3), 3, 0, _MAX_INVITE_REWARD_PERCENT),
+        "invitee_reward": _clamp_int(_safe_int_config("invite_invitee_reward", 2), 2, 0, _MAX_INVITE_REWARD_PERCENT),
     }
 
 
@@ -674,12 +1068,13 @@ def _build_vip_rules_summary() -> dict:
     settings = get_license_settings()
     invite_settings = _get_invite_settings()
     return {
-        "default_user_quota": int(get_config("default_user_quota", str(current_app.config.get("DEFAULT_USER_QUOTA", 0))) or current_app.config.get("DEFAULT_USER_QUOTA", 0) or 0),
+        "default_user_quota": _get_default_user_quota_value(),
         "daily_checkin_reward": _get_daily_checkin_reward(),
         "license_points_ratio": int(settings.get("points_ratio", 1) or 1),
         "manga_generate_cost": int(get_config("manga_generate_cost", "1") or 1),
         "invite_referrer_reward": invite_settings["referrer_reward"],
         "invite_invitee_reward": invite_settings["invitee_reward"],
+        "usage_policy": _build_usage_policy(),
     }
 
 
@@ -1734,8 +2129,96 @@ def _parse_extra_body(value):
         return None
 
 
+def _load_task_progress_payload(task: Task) -> dict:
+    if not task or not task.progress:
+        return {}
+    try:
+        data = json.loads(task.progress)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _store_task_progress_payload(task: Task, payload: dict) -> None:
+    task.progress = json.dumps(payload or {}, ensure_ascii=False)
+
+
+def _cleanup_expired_desktop_claims(user_id: int) -> None:
+    cutoff = _now() - timedelta(minutes=_DESKTOP_TASK_CLAIM_TTL_MINUTES)
+    claimed_tasks = Task.query.filter(
+        Task.user_id == user_id,
+        Task.status == "claimed",
+        Task.updated_at < cutoff,
+    ).all()
+    if not claimed_tasks:
+        return
+    quota = get_or_create_quota(user_id)
+    changed = False
+    for task in claimed_tasks:
+        payload = _load_task_progress_payload(task)
+        amount = _clamp_int(payload.get("quota_amount", 0), 0, 0, 9999)
+        if amount > 0:
+            quota.remaining = (quota.remaining or 0) + amount
+            changed = True
+        task.status = "failed"
+        task.error_msg = "desktop claim expired"
+        payload["claim_released"] = True
+        payload["claim_release_reason"] = "expired"
+        _store_task_progress_payload(task, payload)
+        db.session.add(task)
+    if changed:
+        db.session.add(quota)
+    db.session.commit()
+
+
+def _finalize_desktop_task_claim(task: Task, user_id: int, success: bool, error_msg: str = "") -> dict:
+    payload = _load_task_progress_payload(task)
+    amount = _clamp_int(payload.get("quota_amount", 0), 0, 0, 9999)
+    action_key = str(payload.get("action_key") or "generate_batch").strip() or "generate_batch"
+    quota = get_or_create_quota(user_id)
+
+    if success:
+        if not payload.get("quota_applied") and amount > 0:
+            quota.total_generated = (quota.total_generated or 0) + amount
+            db.session.add(UserQuotaLog(
+                user_id=user_id,
+                change=-amount,
+                reason=action_key,
+                project_id=str(task.id),
+                remaining_after=quota.remaining,
+            ))
+            payload["quota_applied"] = True
+        task.status = "success"
+        task.error_msg = None
+    else:
+        if not payload.get("claim_released") and amount > 0:
+            quota.remaining = (quota.remaining or 0) + amount
+            payload["claim_released"] = True
+        task.status = "failed"
+        task.error_msg = error_msg or task.error_msg
+
+    payload["completed_at"] = _now().isoformat()
+    _store_task_progress_payload(task, payload)
+    db.session.add(quota)
+    db.session.add(task)
+    db.session.commit()
+    return quota_to_dict(quota)
+
+
 def get_auth_user(require_admin=False):
     token = extract_bearer_token(request)
+    if _should_use_remote_auth():
+        if not token:
+            return None, _auth_error('missing auth token', 401)
+        try:
+            user, error_msg, error_code = _fetch_remote_user_by_token(token)
+        except Exception as exc:
+            return None, _auth_error(f'remote auth unavailable: {exc}', 503)
+        if error_msg:
+            return None, _auth_error(error_msg, error_code or 401)
+        if require_admin and user.role != 'admin':
+            return None, _auth_error('admin permission required', 403)
+        return user, None
     user, _token_obj, err = validate_token(token)
     if err == 'missing':
         return None, _auth_error('missing auth token', 401)
@@ -1748,6 +2231,50 @@ def get_auth_user(require_admin=False):
     if require_admin and user.role != 'admin':
         return None, _auth_error('admin permission required', 403)
     return user, None
+
+
+def _remote_desktop_task_claim(task_id: str, action_key: str, quota_amount: int = 1):
+    token = extract_bearer_token(request)
+    if not token:
+        return None, _auth_error('missing auth token', 401)
+    try:
+        response = call_remote_api(
+            "/api/desktop/task-claim",
+            method="POST",
+            headers={"Authorization": f"Bearer {token}"},
+            json_data={
+                "task_id": task_id,
+                "action_key": action_key,
+                "quota_amount": quota_amount,
+            },
+            timeout=15,
+        )
+        data = response.json()
+    except Exception as exc:
+        return None, jsonify({'ok': False, 'error': f'remote task claim failed: {exc}'}), 503
+    if not response.ok or not isinstance(data, dict) or not data.get("ok"):
+        status_code = response.status_code or 502
+        return None, jsonify(data if isinstance(data, dict) else {'ok': False, 'error': 'remote task claim failed'}), status_code
+    return token, None
+
+
+def _remote_desktop_task_complete(task_id: str, token: str, success: bool, error_msg: str = ""):
+    if not token:
+        return
+    try:
+        call_remote_api(
+            "/api/desktop/task-complete",
+            method="POST",
+            headers={"Authorization": f"Bearer {token}"},
+            json_data={
+                "task_id": task_id,
+                "success": bool(success),
+                "error_msg": error_msg or "",
+            },
+            timeout=15,
+        )
+    except Exception as exc:
+        logging.warning("remote desktop task complete failed: %s", exc)
 
 def browse_folder_thread():
     return _select_local_directory()
@@ -2222,7 +2749,6 @@ def site_settings():
         'locked_title': ('locked_title',),
         'locked_subtitle': ('locked_subtitle',),
         'admin_title': ('admin_title',),
-        'admin_subtitle': ('admin_subtitle',),
     }
     if request.method == 'POST':
         user, err = get_auth_user(require_admin=True)
@@ -2250,6 +2776,138 @@ def site_settings():
         settings = get_site_settings()
         return jsonify({'ok': True, 'success': True, 'settings': settings, **settings})
     return jsonify(get_site_settings())
+
+
+@api_bp.route('/runtime/online-status', methods=['GET'])
+def runtime_online_status():
+    return jsonify({
+        'ok': True,
+        'server_time': _now().isoformat(),
+        'official_origin': _get_official_site_origin(),
+    })
+
+
+@api_bp.route('/runtime/usage-policy', methods=['GET'])
+def runtime_usage_policy():
+    return jsonify({
+        'ok': True,
+        'policy': _build_usage_policy(),
+    })
+
+
+@api_bp.route('/runtime/device-fingerprint', methods=['GET'])
+def runtime_device_fingerprint():
+    if not _is_local_runtime_request():
+        return jsonify({'ok': False, 'error': 'not available'}), 404
+    payload = _get_native_device_fingerprint_payload()
+    return jsonify({
+        'ok': True,
+        **payload,
+    })
+
+
+@api_bp.route('/runtime/local-state', methods=['GET', 'POST', 'DELETE'])
+def runtime_local_state():
+    if not _is_local_runtime_request():
+        return jsonify({'ok': False, 'error': 'not available'}), 404
+
+    if request.method == 'GET':
+        key = request.args.get('key', '')
+        try:
+            value = get_runtime_local_state_value(key)
+        except ValueError as exc:
+            return jsonify({'ok': False, 'error': str(exc)}), 400
+        return jsonify({'ok': True, 'key': key, 'value': value})
+
+    if request.method == 'DELETE':
+        key = request.args.get('key', '')
+        try:
+            remove_runtime_local_state_value(key)
+        except ValueError as exc:
+            return jsonify({'ok': False, 'error': str(exc)}), 400
+        return jsonify({'ok': True, 'key': key, 'removed': True})
+
+    data = request.get_json(silent=True) or {}
+    key = data.get('key', '')
+    try:
+        set_runtime_local_state_value(key, data.get('value', ''))
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+    return jsonify({'ok': True, 'key': key})
+
+
+@api_bp.route('/desktop/task-claim', methods=['POST'])
+def desktop_task_claim():
+    user, err = get_auth_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    task_id = str(data.get('task_id') or '').strip()
+    action_key = str(data.get('action_key') or 'generate_batch').strip() or 'generate_batch'
+    quota_amount = _clamp_int(data.get('quota_amount', 1), 1, 1, 9999)
+    if not task_id:
+        return jsonify({'ok': False, 'error': 'task_id required'}), 400
+
+    _cleanup_expired_desktop_claims(user.id)
+
+    existing = Task.query.get(task_id)
+    if existing:
+        if existing.user_id != user.id:
+            return jsonify({'ok': False, 'error': 'task_id already exists'}), 409
+        if existing.status == 'claimed':
+            quota = get_or_create_quota(user.id)
+            return jsonify({'ok': True, 'task_id': task_id, 'claimed': True, **quota_to_dict(quota)})
+        return jsonify({'ok': False, 'error': 'task claim already finished'}), 409
+
+    quota = get_or_create_quota(user.id)
+    if (quota.remaining or 0) < quota_amount:
+        return jsonify({'ok': False, 'error': 'quota exhausted', **quota_to_dict(quota)}), 403
+
+    quota.remaining = max(0, (quota.remaining or 0) - quota_amount)
+    task = Task(
+        id=task_id,
+        user_id=user.id,
+        template_id=None,
+        status='claimed',
+    )
+    _store_task_progress_payload(task, {
+        'action_key': action_key,
+        'quota_amount': quota_amount,
+        'claimed_at': _now().isoformat(),
+        'quota_applied': False,
+        'claim_released': False,
+    })
+    db.session.add(task)
+    db.session.add(quota)
+    db.session.commit()
+    return jsonify({'ok': True, 'task_id': task_id, 'claimed': True, **quota_to_dict(quota)})
+
+
+@api_bp.route('/desktop/task-complete', methods=['POST'])
+def desktop_task_complete():
+    user, err = get_auth_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    task_id = str(data.get('task_id') or '').strip()
+    if not task_id:
+        return jsonify({'ok': False, 'error': 'task_id required'}), 400
+    task = Task.query.get(task_id)
+    if not task or task.user_id != user.id:
+        return jsonify({'ok': False, 'error': 'task not found'}), 404
+
+    if task.status in {'success', 'finished'}:
+        quota = get_or_create_quota(user.id)
+        return jsonify({'ok': True, 'task_id': task_id, 'status': task.status, **quota_to_dict(quota)})
+
+    success = bool(data.get('success', True))
+    quota_payload = _finalize_desktop_task_claim(
+        task=task,
+        user_id=user.id,
+        success=success,
+        error_msg=str(data.get('error_msg') or ''),
+    )
+    return jsonify({'ok': True, 'task_id': task_id, 'status': task.status, **quota_payload})
 
 
 @api_bp.route('/runtime-features', methods=['GET'])
@@ -2677,6 +3335,9 @@ def license_activate():
     user, err = get_auth_user()
     if err:
         return err
+    online_err = _require_remote_online('license_activate')
+    if online_err:
+        return online_err
     data = request.get_json() or {}
     code = (data.get('code') or '').strip().upper()
     device_fingerprint = (data.get('device_fingerprint') or '').strip()
@@ -2797,6 +3458,9 @@ def license_deactivate():
     user, err = get_auth_user()
     if err:
         return err
+    online_err = _require_remote_online('license_deactivate')
+    if online_err:
+        return online_err
     data = request.get_json() or {}
     code = (data.get('code') or '').strip().upper()
     device_fingerprint = (data.get('device_fingerprint') or '').strip()
@@ -2902,7 +3566,7 @@ def admin_quota_summary():
         'total_invite_reward': int(total_invite_reward),
         'total_invite_referrer_reward': int(total_invite_referrer_reward),
         'total_invite_invitee_reward': int(total_invite_invitee_reward),
-        'default_user_quota': int(get_config('default_user_quota', str(current_app.config.get('DEFAULT_USER_QUOTA', 0))) or current_app.config.get('DEFAULT_USER_QUOTA', 0) or 0),
+        'default_user_quota': _get_default_user_quota_value(),
         'invite_referrer_reward': invite_settings['referrer_reward'],
         'invite_invitee_reward': invite_settings['invitee_reward'],
     })
@@ -2927,12 +3591,17 @@ def admin_license_settings():
             "invite_invitee_reward",
         ):
             if key in data:
-                set_config(key, str(data.get(key)))
+                raw_value = data.get(key)
+                if key == "default_user_quota":
+                    raw_value = _clamp_int(raw_value, _get_default_user_quota_value(), 0, None)
+                elif key in ("invite_referrer_reward", "invite_invitee_reward"):
+                    raw_value = _clamp_int(raw_value, 0, 0, _MAX_INVITE_REWARD_PERCENT)
+                set_config(key, str(raw_value))
     settings = get_license_settings()
     settings['manga_generate_cost'] = int(get_config('manga_generate_cost', '1') or 1)
-    settings['default_user_quota'] = int(get_config('default_user_quota', str(current_app.config.get('DEFAULT_USER_QUOTA', 0))) or current_app.config.get('DEFAULT_USER_QUOTA', 0) or 0)
-    settings['invite_referrer_reward'] = _safe_int_config('invite_referrer_reward', 3)
-    settings['invite_invitee_reward'] = _safe_int_config('invite_invitee_reward', 2)
+    settings['default_user_quota'] = _get_default_user_quota_value()
+    settings['invite_referrer_reward'] = _clamp_int(_safe_int_config('invite_referrer_reward', 3), 3, 0, _MAX_INVITE_REWARD_PERCENT)
+    settings['invite_invitee_reward'] = _clamp_int(_safe_int_config('invite_invitee_reward', 2), 2, 0, _MAX_INVITE_REWARD_PERCENT)
     return jsonify({"ok": True, "settings": settings})
 
 
@@ -3659,6 +4328,13 @@ def assistant_command_execute():
         return jsonify({'ok': False, 'error': '该命令需要确认后才能执行', 'preview': preview}), 400
 
     action = (preview.get('client_action') or {}).get('type')
+    if action and action not in _ASSISTANT_FREE_ACTIONS:
+        return jsonify({
+            'ok': False,
+            'error': '当前智能助手只允许执行免费白名单动作，不能直接代执行扣次数功能。',
+            'action': action,
+            'preview': preview,
+        }), 400
     response_payload = {
         'ok': True,
         'summary': preview.get('summary'),
@@ -4775,61 +5451,81 @@ def ai_manga_generate_draft():
     user, err = get_auth_user()
     if err:
         return err
+    online_err = _require_remote_online('ai_manga')
+    if online_err:
+        return online_err
     if not _effective_runtime_features().get("manga"):
         return jsonify({'ok': False, 'error': 'AI manga feature is disabled in this build'}), 404
 
     cost = int(get_config('manga_generate_cost', '1') or 1)
-    quota = get_or_create_quota(user.id)
-    if quota.remaining < cost:
-        return jsonify({'ok': False, 'error': '额度不足，无法继续生成 AI 漫剧草稿。', **quota_to_dict(quota)}), 403
+    remote_task_id = f"manga_draft_{uuid.uuid4().hex}"
+    remote_task_token = None
+    quota = None
+    if _should_use_remote_auth():
+        remote_task_token, remote_claim_error = _remote_desktop_task_claim(remote_task_id, 'manga_generate', cost)
+        if remote_claim_error:
+            return remote_claim_error
+    else:
+        quota = get_or_create_quota(user.id)
+        if quota.remaining < cost:
+            return jsonify({'ok': False, 'error': '额度不足，无法继续生成 AI 漫剧草稿。', **quota_to_dict(quota)}), 403
 
     data = request.get_json(silent=True) or {}
     try:
         result = _build_manga_draft_result(user, data)
+        params_for_log = {
+            'mode': 'draft_builder',
+            'project_name': result['project_name'],
+            'script': result['script'],
+            'aspect': result['aspect'],
+            'aspect_label': result['aspect_label'],
+            'scene_duration': result['scene_duration'],
+            'scene_count': result['scene_count'],
+            'total_duration': result['total_duration'],
+            'draft_name': result['draft_name'],
+            'draft_path': result['draft_path'],
+            'output_dir': result['output_dir'],
+            'workspace_root': result['workspace']['workspace_root'],
+            'materials_root': result['workspace']['materials_root'],
+            'script_path': result['workspace']['script_path'],
+            'scenes': result['scenes'],
+        }
+        log = MangaGenerationLog(
+            user_id=user.id,
+            project_id=result['project_id'],
+            project_name=result['project_name'],
+            params_json=json.dumps(params_for_log, ensure_ascii=False),
+            first_material_id=None,
+            status='success',
+            created_at=datetime.utcnow(),
+        )
+        db.session.add(log)
+
+        if quota is not None:
+            quota.remaining = max(0, (quota.remaining or 0) - cost)
+            quota.total_generated = (quota.total_generated or 0) + cost
+            db.session.add(quota)
+            db.session.add(UserQuotaLog(
+                user_id=user.id,
+                change=-cost,
+                reason='manga_generate',
+                project_id=result['project_id'],
+                remaining_after=quota.remaining,
+            ))
+        db.session.commit()
     except ValueError as exc:
+        db.session.rollback()
+        if remote_task_token:
+            _remote_desktop_task_complete(remote_task_id, remote_task_token, False, str(exc))
         return jsonify({'ok': False, 'error': str(exc)}), 400
     except Exception as exc:
+        db.session.rollback()
+        if remote_task_token:
+            _remote_desktop_task_complete(remote_task_id, remote_task_token, False, str(exc))
         return jsonify({'ok': False, 'error': f'生成 AI 漫剧草稿失败: {exc}'}), 500
 
-    params_for_log = {
-        'mode': 'draft_builder',
-        'project_name': result['project_name'],
-        'script': result['script'],
-        'aspect': result['aspect'],
-        'aspect_label': result['aspect_label'],
-        'scene_duration': result['scene_duration'],
-        'scene_count': result['scene_count'],
-        'total_duration': result['total_duration'],
-        'draft_name': result['draft_name'],
-        'draft_path': result['draft_path'],
-        'output_dir': result['output_dir'],
-        'workspace_root': result['workspace']['workspace_root'],
-        'materials_root': result['workspace']['materials_root'],
-        'script_path': result['workspace']['script_path'],
-        'scenes': result['scenes'],
-    }
-    log = MangaGenerationLog(
-        user_id=user.id,
-        project_id=result['project_id'],
-        project_name=result['project_name'],
-        params_json=json.dumps(params_for_log, ensure_ascii=False),
-        first_material_id=None,
-        status='success',
-        created_at=datetime.utcnow(),
-    )
-    db.session.add(log)
-
-    quota.remaining = max(0, (quota.remaining or 0) - cost)
-    quota.total_generated = (quota.total_generated or 0) + cost
-    db.session.add(quota)
-    db.session.add(UserQuotaLog(
-        user_id=user.id,
-        change=-cost,
-        reason='manga_generate',
-        project_id=result['project_id'],
-        remaining_after=quota.remaining,
-    ))
-    db.session.commit()
+    if remote_task_token:
+        _remote_desktop_task_complete(remote_task_id, remote_task_token, True, "")
 
     return jsonify({
         'ok': True,
@@ -4846,7 +5542,7 @@ def ai_manga_generate_draft():
         'total_duration': result['total_duration'],
         'workspace': result['workspace'],
         'scenes': result['scenes'],
-        'quota': quota_to_dict(quota),
+        'quota': quota_to_dict(quota) if quota is not None else None,
         'message': f"已生成 {result['scene_count']} 个场景的剪映草稿，可继续往场景目录里放素材。",
     })
 
@@ -4856,6 +5552,9 @@ def ai_manga_generate():
     user, err = get_auth_user()
     if err:
         return err
+    online_err = _require_remote_online('ai_manga')
+    if online_err:
+        return online_err
     if not _effective_runtime_features().get("manga"):
         return jsonify({'ok': False, 'error': 'AI manga feature is disabled in this build'}), 404
     data = request.get_json(silent=True) or {}
@@ -4866,10 +5565,22 @@ def ai_manga_generate():
     if not base_url:
         return jsonify({'ok': False, 'error': 'OpenClaw base_url not configured'}), 400
 
+    user_material_dir = get_user_material_dir(user.id)
+    if not user_material_dir:
+        return jsonify({'ok': False, 'error': 'Material folder not configured'}), 400
+
     cost = int(get_config('manga_generate_cost', '1') or 1)
-    quota = get_or_create_quota(user.id)
-    if quota.remaining < cost:
-        return jsonify({'ok': False, 'error': '额度不足，无法生成', **quota_to_dict(quota)}), 403
+    remote_task_id = f"manga_ai_{uuid.uuid4().hex}"
+    remote_task_token = None
+    quota = None
+    if _should_use_remote_auth():
+        remote_task_token, remote_claim_error = _remote_desktop_task_claim(remote_task_id, 'manga_generate', cost)
+        if remote_claim_error:
+            return remote_claim_error
+    else:
+        quota = get_or_create_quota(user.id)
+        if quota.remaining < cost:
+            return jsonify({'ok': False, 'error': '额度不足，无法生成', **quota_to_dict(quota)}), 403
 
     client = OpenClawClient(base_url, token)
     script = (data.get('script') or '').strip()
@@ -4891,154 +5602,155 @@ def ai_manga_generate():
 
     try:
         result = client.generate_manga(params)
+        date_str = datetime.utcnow().strftime('%Y%m%d')
+        manga_root = os.path.join(user_material_dir, 'manga')
+        os.makedirs(manga_root, exist_ok=True)
+
+        def _next_seq(root_dir, prefix):
+            max_idx = 0
+            if os.path.isdir(root_dir):
+                for name in os.listdir(root_dir):
+                    if not name.startswith(prefix):
+                        continue
+                    suffix = name.replace(prefix, '')
+                    if suffix.isdigit():
+                        max_idx = max(max_idx, int(suffix))
+            return max_idx + 1
+
+        prefix = f"manga_{date_str}_"
+        seq = _next_seq(manga_root, prefix)
+        project_id = f"manga_{date_str}_{seq:03d}"
+        project_name = f"漫剧_{date_str}_{seq:03d}"
+
+        save_dir = os.path.join(manga_root, project_id)
+        os.makedirs(save_dir, exist_ok=True)
+
+        character_path = _save_character_image(save_dir, character_image)
+
+        script_summary = script[:100]
+        created_at = datetime.utcnow().isoformat()
+        base_meta = {
+            'project_id': project_id,
+            'project_name': project_name,
+            'script_summary': script_summary,
+            'style': style,
+            'shot_types': shot_types,
+            'created_at': created_at,
+            'frame_count': frame_count,
+            'image_resolution': image_resolution,
+            'video_bitrate': video_bitrate,
+            'character_image_path': character_path,
+        }
+        tags = ['manga', f'project:{project_id}']
+
+        saved_frames = []
+        material_ids = []
+        frames = result.get('frames') or []
+        for idx, frame in enumerate(frames, start=1):
+            url = ''
+            data_b64 = ''
+            if isinstance(frame, dict):
+                url = frame.get('url') or ''
+                data_b64 = frame.get('data') or frame.get('base64') or ''
+            elif isinstance(frame, str):
+                url = frame
+            ext = '.png'
+            if url:
+                resp = requests.get(url, timeout=120)
+                resp.raise_for_status()
+                ext = _guess_extension(url, resp.headers.get('Content-Type', ''), '.png')
+                path = os.path.join(save_dir, f"frame_{idx:03d}{ext}")
+                with open(path, 'wb') as f:
+                    f.write(resp.content)
+            elif data_b64:
+                path = os.path.join(save_dir, f"frame_{idx:03d}{ext}")
+                with open(path, 'wb') as f:
+                    f.write(_decode_data_uri(data_b64))
+            else:
+                continue
+            meta = dict(base_meta)
+            meta['frame_index'] = idx
+            mid = add_user_material(user.id, path, 'image', tags=tags, source='openclaw', metadata_json=meta)
+            material_ids.append(mid)
+            saved_frames.append({
+                'id': mid,
+                'path': path,
+                'preview_url': f"/api/user/materials/file/{mid}",
+            })
+
+        video_info = result.get('video') or result.get('preview') or None
+        video_payload = None
+        video_path = None
+        if isinstance(video_info, str):
+            video_info = {'url': video_info}
+        if isinstance(video_info, dict):
+            v_url = video_info.get('url') or ''
+            v_b64 = video_info.get('data') or video_info.get('base64') or ''
+            if v_url:
+                resp = requests.get(v_url, timeout=180)
+                resp.raise_for_status()
+                ext = _guess_extension(v_url, resp.headers.get('Content-Type', ''), '.mp4')
+                video_path = os.path.join(save_dir, f"preview{ext}")
+                with open(video_path, 'wb') as f:
+                    f.write(resp.content)
+            elif v_b64:
+                video_path = os.path.join(save_dir, 'preview.mp4')
+                with open(video_path, 'wb') as f:
+                    f.write(_decode_data_uri(v_b64))
+
+        if video_path:
+            meta = dict(base_meta)
+            meta['type'] = 'video'
+            mid = add_user_material(user.id, video_path, 'video', tags=tags, source='openclaw', metadata_json=meta)
+            material_ids.append(mid)
+            video_payload = {
+                'id': mid,
+                'path': video_path,
+                'preview_url': f"/api/user/materials/file/{mid}",
+            }
+
+        params_for_log = {
+            'script': script,
+            'style': style,
+            'shot_types': shot_types,
+            'frame_count': frame_count,
+            'image_resolution': image_resolution,
+            'video_bitrate': video_bitrate,
+            'character_image_path': character_path,
+        }
+        first_material_id = saved_frames[0]['id'] if saved_frames else None
+        log = MangaGenerationLog(
+            user_id=user.id,
+            project_id=project_id,
+            project_name=project_name,
+            params_json=json.dumps(params_for_log, ensure_ascii=False),
+            first_material_id=first_material_id,
+            status='success',
+            created_at=datetime.utcnow(),
+        )
+        db.session.add(log)
+
+        if quota is not None:
+            quota.remaining = max(0, (quota.remaining or 0) - cost)
+            quota.total_generated = (quota.total_generated or 0) + cost
+            db.session.add(quota)
+            db.session.add(UserQuotaLog(
+                user_id=user.id,
+                change=-cost,
+                reason='manga_generate',
+                project_id=project_id,
+                remaining_after=quota.remaining,
+            ))
+        db.session.commit()
     except Exception as e:
+        db.session.rollback()
         _log_openclaw_error(user.id, params, str(e))
+        if remote_task_token:
+            _remote_desktop_task_complete(remote_task_id, remote_task_token, False, str(e))
         return jsonify({'ok': False, 'error': f'OpenClaw call failed: {e}'}), 500
 
-    user_material_dir = get_user_material_dir(user.id)
-    if not user_material_dir:
-        return jsonify({'ok': False, 'error': 'Material folder not configured'}), 400
-
-    date_str = datetime.utcnow().strftime('%Y%m%d')
-    manga_root = os.path.join(user_material_dir, 'manga')
-    os.makedirs(manga_root, exist_ok=True)
-
-    def _next_seq(root_dir, prefix):
-        max_idx = 0
-        if os.path.isdir(root_dir):
-            for name in os.listdir(root_dir):
-                if not name.startswith(prefix):
-                    continue
-                suffix = name.replace(prefix, '')
-                if suffix.isdigit():
-                    max_idx = max(max_idx, int(suffix))
-        return max_idx + 1
-
-    prefix = f"manga_{date_str}_"
-    seq = _next_seq(manga_root, prefix)
-    project_id = f"manga_{date_str}_{seq:03d}"
-    project_name = f"漫剧_{date_str}_{seq:03d}"
-
-    save_dir = os.path.join(manga_root, project_id)
-    os.makedirs(save_dir, exist_ok=True)
-
-    character_path = _save_character_image(save_dir, character_image)
-
-    script_summary = script[:100]
-    created_at = datetime.utcnow().isoformat()
-    base_meta = {
-        'project_id': project_id,
-        'project_name': project_name,
-        'script_summary': script_summary,
-        'style': style,
-        'shot_types': shot_types,
-        'created_at': created_at,
-        'frame_count': frame_count,
-        'image_resolution': image_resolution,
-        'video_bitrate': video_bitrate,
-        'character_image_path': character_path,
-    }
-    tags = ['manga', f'project:{project_id}']
-
-    saved_frames = []
-    material_ids = []
-    frames = result.get('frames') or []
-    for idx, frame in enumerate(frames, start=1):
-        url = ''
-        data_b64 = ''
-        if isinstance(frame, dict):
-            url = frame.get('url') or ''
-            data_b64 = frame.get('data') or frame.get('base64') or ''
-        elif isinstance(frame, str):
-            url = frame
-        ext = '.png'
-        if url:
-            resp = requests.get(url, timeout=120)
-            resp.raise_for_status()
-            ext = _guess_extension(url, resp.headers.get('Content-Type', ''), '.png')
-            path = os.path.join(save_dir, f"frame_{idx:03d}{ext}")
-            with open(path, 'wb') as f:
-                f.write(resp.content)
-        elif data_b64:
-            path = os.path.join(save_dir, f"frame_{idx:03d}{ext}")
-            with open(path, 'wb') as f:
-                f.write(_decode_data_uri(data_b64))
-        else:
-            continue
-        meta = dict(base_meta)
-        meta['frame_index'] = idx
-        mid = add_user_material(user.id, path, 'image', tags=tags, source='openclaw', metadata_json=meta)
-        material_ids.append(mid)
-        saved_frames.append({
-            'id': mid,
-            'path': path,
-            'preview_url': f"/api/user/materials/file/{mid}",
-        })
-
-    video_info = result.get('video') or result.get('preview') or None
-    video_payload = None
-    video_path = None
-    if isinstance(video_info, str):
-        video_info = {'url': video_info}
-    if isinstance(video_info, dict):
-        v_url = video_info.get('url') or ''
-        v_b64 = video_info.get('data') or video_info.get('base64') or ''
-        if v_url:
-            resp = requests.get(v_url, timeout=180)
-            resp.raise_for_status()
-            ext = _guess_extension(v_url, resp.headers.get('Content-Type', ''), '.mp4')
-            video_path = os.path.join(save_dir, f"preview{ext}")
-            with open(video_path, 'wb') as f:
-                f.write(resp.content)
-        elif v_b64:
-            video_path = os.path.join(save_dir, 'preview.mp4')
-            with open(video_path, 'wb') as f:
-                f.write(_decode_data_uri(v_b64))
-
-    if video_path:
-        meta = dict(base_meta)
-        meta['type'] = 'video'
-        mid = add_user_material(user.id, video_path, 'video', tags=tags, source='openclaw', metadata_json=meta)
-        material_ids.append(mid)
-        video_payload = {
-            'id': mid,
-            'path': video_path,
-            'preview_url': f"/api/user/materials/file/{mid}",
-        }
-
-    params_for_log = {
-        'script': script,
-        'style': style,
-        'shot_types': shot_types,
-        'frame_count': frame_count,
-        'image_resolution': image_resolution,
-        'video_bitrate': video_bitrate,
-        'character_image_path': character_path,
-    }
-    first_material_id = saved_frames[0]['id'] if saved_frames else None
-    log = MangaGenerationLog(
-        user_id=user.id,
-        project_id=project_id,
-        project_name=project_name,
-        params_json=json.dumps(params_for_log, ensure_ascii=False),
-        first_material_id=first_material_id,
-        status='success',
-        created_at=datetime.utcnow(),
-    )
-    db.session.add(log)
-
-    # deduct quota after success
-    quota.remaining = max(0, (quota.remaining or 0) - cost)
-    quota.total_generated = (quota.total_generated or 0) + cost
-    db.session.add(quota)
-    db.session.add(UserQuotaLog(
-        user_id=user.id,
-        change=-cost,
-        reason='manga_generate',
-        project_id=project_id,
-        remaining_after=quota.remaining,
-    ))
-    db.session.commit()
+    if remote_task_token:
+        _remote_desktop_task_complete(remote_task_id, remote_task_token, True, "")
 
     return jsonify({
         'ok': True,
@@ -5047,7 +5759,7 @@ def ai_manga_generate():
         'material_ids': material_ids,
         'frames': saved_frames,
         'video': video_payload,
-        'quota': quota_to_dict(quota),
+        'quota': quota_to_dict(quota) if quota is not None else None,
         'message': f"Generated {len(saved_frames)} frames" + (" and 1 preview video" if video_payload else '')
     })
 
@@ -5511,11 +6223,15 @@ def open_folder():
 @api_bp.route('/auth/register', methods=['POST'])
 def api_register():
     data = request.get_json(silent=True) or {}
+    online_err = _require_remote_online('register')
+    if online_err:
+        return online_err
     username = (data.get('username') or '').strip()
     password = data.get('password') or ''
     email = (data.get('email') or '').strip() or None
     auto_login = data.get('auto_login', True)
     ref_code = (data.get('ref_code') or '').strip().upper()
+    device_fingerprint = (data.get('device_fingerprint') or '').strip()
 
     if not username or not password:
         return jsonify({'ok': False, 'error': 'username and password are required'}), 400
@@ -5538,12 +6254,26 @@ def api_register():
     db.session.commit()
 
     _apply_invite_registration_rewards(user)
-    quota = get_or_create_quota(user.id)
+    trial_claim = _claim_trial_device_quota(device_fingerprint, user.id)
+    initial_trial_quota = _get_default_user_quota_value() if trial_claim.get('granted') else 0
+    quota = UserQuota(user_id=user.id, total_generated=0, remaining=initial_trial_quota)
+    db.session.add(quota)
+    if initial_trial_quota > 0:
+        db.session.add(UserQuotaLog(
+            user_id=user.id,
+            change=initial_trial_quota,
+            reason='register_trial',
+            project_id=trial_claim.get('log_key'),
+            remaining_after=initial_trial_quota,
+        ))
+    db.session.commit()
     token_obj = issue_token(user.id) if auto_login else None
     return jsonify({
         'ok': True,
-        'message': 'register success',
+        'message': 'register success' if initial_trial_quota > 0 else 'register success, no extra trial quota granted for this device',
         'token': token_obj.token if token_obj else None,
+        'trial_granted': bool(initial_trial_quota > 0),
+        'trial_quota': int(initial_trial_quota),
         'user': _build_user_profile_payload(user, quota)
     })
 
@@ -5551,6 +6281,9 @@ def api_register():
 @api_bp.route('/auth/login', methods=['POST'])
 def api_login():
     data = request.get_json(silent=True) or {}
+    online_err = _require_remote_online('login')
+    if online_err:
+        return online_err
     account = (data.get('username') or data.get('email') or data.get('account') or '').strip()
     password = data.get('password') or ''
     if not account or not password:
@@ -5599,6 +6332,9 @@ def api_user_checkin():
     user, err = get_auth_user()
     if err:
         return err
+    online_err = _require_remote_online('daily_checkin')
+    if online_err:
+        return online_err
 
     quota = get_or_create_quota(user.id)
     _, _, local_day = _china_day_bounds()
@@ -5654,9 +6390,23 @@ def api_user_deduct():
     user, err = get_auth_user()
     if err:
         return err
-    ok, msg, quota = deduct_quota(user.id, amount=1)
-    if not ok:
-        return jsonify({'ok': False, 'error': msg, **quota_to_dict(quota)}), 400
+    online_err = _require_remote_online('user_deduct')
+    if online_err:
+        return online_err
+    quota = get_or_create_quota(user.id)
+    if quota.remaining < 1:
+        return jsonify({'ok': False, 'error': '次数不足', **quota_to_dict(quota)}), 400
+    quota.remaining = max(0, (quota.remaining or 0) - 1)
+    quota.total_generated = (quota.total_generated or 0) + 1
+    db.session.add(quota)
+    db.session.add(UserQuotaLog(
+        user_id=user.id,
+        change=-1,
+        reason='manual_deduct',
+        project_id='legacy_user_deduct',
+        remaining_after=quota.remaining,
+    ))
+    db.session.commit()
     return jsonify({'ok': True, **quota_to_dict(quota)})
 
 
@@ -5809,10 +6559,15 @@ def generate_batch_api():
     user, err = get_auth_user()
     if err:
         return err
+    online_err = _require_remote_online('generate_batch')
+    if online_err:
+        return online_err
 
-    quota = get_or_create_quota(user.id)
-    if quota.remaining <= 0:
-        return jsonify({'error': 'quota exhausted'}), 403
+    remote_task_token = None
+    if not _should_use_remote_auth():
+        quota = get_or_create_quota(user.id)
+        if quota.remaining <= 0:
+            return jsonify({'error': 'quota exhausted'}), 403
 
     data = request.get_json() or {}
     draft_path = data.get('draft_path')
@@ -5889,6 +6644,10 @@ def generate_batch_api():
         export_path = get_drafts_folder() or draft_path
 
     job_id = uuid.uuid4().hex
+    if _should_use_remote_auth():
+        remote_task_token, remote_claim_error = _remote_desktop_task_claim(job_id, 'generate_batch', 1)
+        if remote_claim_error:
+            return remote_claim_error
 
     task = Task(
         id=job_id,
@@ -5896,8 +6655,14 @@ def generate_batch_api():
         template_id=None,
         status='pending'
     )
-    db.session.add(task)
-    db.session.commit()
+    try:
+        db.session.add(task)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        if remote_task_token:
+            _remote_desktop_task_complete(job_id, remote_task_token, False, str(exc))
+        return jsonify({'error': f'task create failed: {exc}'}), 500
     app = current_app._get_current_object()
     _run_background(
         app,
@@ -5925,6 +6690,7 @@ def generate_batch_api():
         user.id,
         template_path,
         job_id,
+        remote_task_token,
     )
 
     return jsonify({'job_id': job_id})
@@ -5935,6 +6701,8 @@ def refund_task_usage(task_id):
     user, err = get_auth_user()
     if err:
         return err
+    if _should_use_remote_auth():
+        return jsonify({'ok': False, 'error': 'remote-auth desktop tasks auto release quota on failure'}), 400
     task = Task.query.get(task_id)
     if not task:
         return jsonify({'ok': False, 'error': 'task not found'}), 404
@@ -5950,6 +6718,13 @@ def refund_task_usage(task_id):
         setattr(task, "refunded", True)
         db.session.add(quota)
         db.session.add(task)
+        db.session.add(UserQuotaLog(
+            user_id=user.id,
+            change=1,
+            reason='refund',
+            project_id=str(task.id),
+            remaining_after=quota.remaining,
+        ))
         db.session.commit()
         return jsonify({'ok': True, **quota_to_dict(quota)})
     except Exception as e:

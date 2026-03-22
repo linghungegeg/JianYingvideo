@@ -11,6 +11,7 @@ from app.models.user_quota import UserQuota
 from app.services.user_quota_service import adjust_quota, quota_to_dict
 from app.utils.auth_token import extract_bearer_token, validate_token
 from app.utils.helpers import get_site_settings, read_generate_logs
+from app.utils.remote_service import remote_auth_mode_enabled
 
 try:
     from app.utils.JianYingApi.Drafts import Draft as JYDraft
@@ -21,6 +22,16 @@ except ImportError:
 
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
+
+
+@admin_bp.before_request
+def _block_local_admin_in_remote_auth_mode():
+    if not remote_auth_mode_enabled():
+        return None
+    return jsonify({
+        "ok": False,
+        "error": "桌面端远程鉴权模式下不开放本地后台管理入口，请使用线上服务端后台。",
+    }), 403
 
 
 @admin_bp.route("")
