@@ -22,6 +22,7 @@ LOCAL_DRAFTS_DIR = os.getenv(
     "VF_SMOKE_DRAFTS_DIR",
     str(Path.cwd() / "user_data" / "dev_drafts"),
 )
+TEMPLATE_PATH_OVERRIDE = os.getenv("VF_SMOKE_TEMPLATE_PATH", "").strip()
 
 
 def ensure_user():
@@ -47,10 +48,12 @@ def ensure_drafts_folder():
 
 
 def pick_template():
+    if TEMPLATE_PATH_OVERRIDE and os.path.exists(TEMPLATE_PATH_OVERRIDE):
+        return None, TEMPLATE_PATH_OVERRIDE
     for template in TemplateModel.query.order_by(TemplateModel.id).all():
         if template.template_path and os.path.exists(template.template_path):
-            return template
-    return None
+            return template, template.template_path
+    return None, None
 
 
 def main():
@@ -59,11 +62,13 @@ def main():
         user = ensure_user()
         user_id = user.id
         ensure_drafts_folder()
-        template = pick_template()
-        if not template:
-            raise SystemExit("No valid template_path found in template_models")
-        template_id = template.id
-        template_path = template.template_path
+        template, template_path = pick_template()
+        if not template_path:
+            raise SystemExit(
+                "No valid template_path found in template_models. "
+                "Set VF_SMOKE_TEMPLATE_PATH to a real draft path and rerun."
+            )
+        template_id = template.id if template else "override"
 
         quota_before = get_or_create_quota(user_id)
         if quota_before.remaining < 1:

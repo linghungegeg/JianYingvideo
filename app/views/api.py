@@ -134,7 +134,6 @@ _QUOTA_REASON_LABELS = {
     "manga_generate": "AI 漫剧消耗",
     "generate_batch": "批量生成消耗",
     "license_activate": "激活授权",
-    "manual_deduct": "手动扣减",
     "refund": "失败返还",
     "invite_referrer_reward": "邀请激活奖励",
     "invite_invitee_reward": "受邀激活加赠",
@@ -172,7 +171,6 @@ _REMOTE_PROXY_EXACTS = {
     "/api/user/info",
     "/api/user/points/overview",
     "/api/user/checkin",
-    "/api/user/deduct",
 }
 _LOCAL_ONLY_PREFIXES = (
     "/api/runtime/",
