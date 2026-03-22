@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(os.getenv("VF_PROJECT_ROOT") or os.getcwd()).resolve()
 BUILD_CONSOLE = os.getenv("VF_BUILD_CONSOLE", "0") == "1"
 ICON_PATH = os.getenv("VF_EXE_ICON", "").strip()
 APP_NAME = os.getenv("VF_BUILD_APP_NAME", "VideoFactory")
+EXE_NAME = os.getenv("VF_BUILD_EXE_NAME", APP_NAME)
 ENABLE_UPX = os.getenv("VF_ENABLE_UPX", "0") == "1"
 
 datas = [
@@ -65,7 +66,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name=APP_NAME,
+    name=EXE_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

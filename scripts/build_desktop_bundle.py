@@ -114,9 +114,16 @@ def copy_tree_or_file(source_root: Path, target_root: Path, relative_path: str) 
     shutil.copy2(source, target)
 
 
-def render_installer_script(template_path: Path, output_path: Path, dist_root: Path, app_name: str) -> None:
+def render_installer_script(
+    template_path: Path,
+    output_path: Path,
+    dist_root: Path,
+    app_name: str,
+    exe_name: str,
+) -> None:
     content = template_path.read_text(encoding="utf-8")
     content = content.replace("__APP_NAME__", app_name)
+    content = content.replace("__APP_EXE_NAME__", f"{exe_name}.exe")
     content = content.replace("__DIST_ROOT__", str(dist_root).replace("/", "\\"))
     output_path.write_text(content, encoding="utf-8")
 
@@ -179,6 +186,7 @@ def stage_runtime_files(
     env_values: dict,
     logo_path: str,
     installer_script: Path,
+    exe_name: str,
 ) -> None:
     for dir_name in RUNTIME_DIR_NAMES:
         (dist_root / dir_name).mkdir(parents=True, exist_ok=True)
@@ -194,6 +202,7 @@ def stage_runtime_files(
 
     manifest = {
         "app_name": dist_root.name,
+        "exe_name": f"{exe_name}.exe",
         "official_site_url": env_values.get("VF_OFFICIAL_SITE_URL", "https://www.zysj.site"),
         "start_path": env_values.get("VF_START_PATH", "/user"),
         "preset": str(preset_path),
@@ -241,6 +250,7 @@ def build_pyinstaller(
     dist_parent: Path,
     work_root: Path,
     app_name: str,
+    exe_name: str,
     console: bool,
     icon_path: str,
     env_values: dict,
@@ -249,6 +259,7 @@ def build_pyinstaller(
     env = os.environ.copy()
     env.update(env_values)
     env["VF_BUILD_APP_NAME"] = app_name
+    env["VF_BUILD_EXE_NAME"] = exe_name
     env["VF_BUILD_CONSOLE"] = "1" if console else "0"
     env["VF_PROJECT_ROOT"] = str(project_root)
     pyinstaller_cache_root = work_root / "pyinstaller-cache"
@@ -294,6 +305,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build VideoFactory desktop onedir bundle")
     parser.add_argument("--preset", default=str(DEFAULT_PRESET), help="env preset file to stage as .env")
     parser.add_argument("--name", default="VideoFactory", help="desktop app name")
+    parser.add_argument("--exe-name", default="VideoFactory", help="internal Windows exe file name")
     parser.add_argument("--icon", default="", help="optional .ico path for Windows exe")
     parser.add_argument("--logo", default="", help="optional logo asset path to copy into branding/")
     parser.add_argument("--console", action="store_true", help="show console window when launching the desktop app")
@@ -322,6 +334,7 @@ def main() -> None:
             "preset": str(preset_path),
             "name": args.name,
             "dist_root": str(dist_root),
+            "exe_name": args.exe_name,
             "work_root": str(work_root),
             "obf_root": str(obf_root),
             "icon": args.icon,
@@ -366,6 +379,7 @@ def main() -> None:
             dist_parent=dist_parent,
             work_root=work_root,
             app_name=args.name,
+            exe_name=args.exe_name,
             console=args.console,
             icon_path=resolved_icon,
             env_values=env_values,
@@ -377,6 +391,7 @@ def main() -> None:
         output_path=installer_script,
         dist_root=dist_root,
         app_name=args.name,
+        exe_name=args.exe_name,
     )
     stage_runtime_files(
         dist_root=dist_root,
@@ -384,6 +399,7 @@ def main() -> None:
         env_values=env_values,
         logo_path=args.logo,
         installer_script=installer_script,
+        exe_name=args.exe_name,
     )
 
     print("")

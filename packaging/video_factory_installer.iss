@@ -2,7 +2,7 @@
 #define AppVersion "1.0.0"
 #define AppPublisher "__APP_NAME__"
 #define AppURL "https://www.zysj.site"
-#define AppExeName "__APP_NAME__.exe"
+#define AppExeName "__APP_EXE_NAME__"
 #define DistRoot "__DIST_ROOT__"
 #define InstallSubdir "__APP_NAME__"
 
@@ -33,7 +33,7 @@ UninstallDisplayIcon={app}\{#AppExeName}
 SetupLogging=yes
 CloseApplications=yes
 RestartApplications=no
-CloseApplicationsFilter={#AppExeName}
+CloseApplicationsFilter=*.exe,*.dll,*.pyd,*.zip
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
