@@ -43,6 +43,11 @@ _SITE_SETTING_ENV_KEYS = {
     "official_site_url": "VF_OFFICIAL_SITE_URL",
     "download_url": "VF_DOWNLOAD_URL",
     "official_logo_url": "VF_OFFICIAL_LOGO_URL",
+    "user_agreement_title": "VF_USER_AGREEMENT_TITLE",
+    "user_agreement_content": "VF_USER_AGREEMENT_CONTENT",
+    "privacy_agreement_title": "VF_PRIVACY_AGREEMENT_TITLE",
+    "privacy_agreement_content": "VF_PRIVACY_AGREEMENT_CONTENT",
+    "contact_entries": "VF_CONTACT_ENTRIES",
 }
 
 
@@ -285,6 +290,23 @@ def get_site_settings():
     official_site_url = get_config('official_site_url', '') or ''
     download_url = get_config('download_url', '') or ''
     official_logo_url = get_config('official_logo_url', '') or ''
+    user_agreement_title = get_config('user_agreement_title', '用户协议') or '用户协议'
+    user_agreement_content = get_config(
+        'user_agreement_content',
+        '欢迎使用本服务。继续登录或注册即表示你已阅读并同意平台的服务规则、会员机制、次数结算与内容规范。'
+    ) or '欢迎使用本服务。继续登录或注册即表示你已阅读并同意平台的服务规则、会员机制、次数结算与内容规范。'
+    privacy_agreement_title = get_config('privacy_agreement_title', '隐私协议') or '隐私协议'
+    privacy_agreement_content = get_config(
+        'privacy_agreement_content',
+        '我们仅在提供账号登录、授权验证、次数结算、客服联系与必要安全审计时处理你的必要信息，并采取合理措施保护数据安全。'
+    ) or '我们仅在提供账号登录、授权验证、次数结算、客服联系与必要安全审计时处理你的必要信息，并采取合理措施保护数据安全。'
+    try:
+        contact_entries = json.loads(get_config('contact_entries', '[]') or '[]')
+        if not isinstance(contact_entries, list):
+            contact_entries = []
+    except Exception:
+        contact_entries = []
+    contact_entries = [str(item or '').strip() for item in contact_entries if str(item or '').strip()]
     return {
         'site_name': site_name,
         'title': title,
@@ -303,6 +325,11 @@ def get_site_settings():
         'locked_title': locked_title,
         'locked_subtitle': locked_subtitle,
         'admin_title': admin_title,
+        'user_agreement_title': user_agreement_title,
+        'user_agreement_content': user_agreement_content,
+        'privacy_agreement_title': privacy_agreement_title,
+        'privacy_agreement_content': privacy_agreement_content,
+        'contact_entries': contact_entries,
         'meta': {
             'site_name': site_name,
             'title': title,
@@ -329,6 +356,17 @@ def get_site_settings():
         'admin': {
             'title': admin_title,
         },
+        'agreements': {
+            'user': {
+                'title': user_agreement_title,
+                'content': user_agreement_content,
+            },
+            'privacy': {
+                'title': privacy_agreement_title,
+                'content': privacy_agreement_content,
+            },
+        },
+        'contacts': contact_entries,
     }
 
 

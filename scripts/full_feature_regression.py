@@ -13,6 +13,7 @@ from app.extensions import db
 from app.models.config import Config
 from app.models.template_model import TemplateModel
 from app.models.user import User
+from app.services.user_quota_service import adjust_quota, get_or_create_quota
 from app.views.api import _ensure_user_ref_code
 
 ADMIN_USER = os.getenv("VF_FULL_REG_ADMIN_USER", "codex_full_admin")
@@ -38,6 +39,13 @@ def pick_template():
     for template in TemplateModel.query.order_by(TemplateModel.id.asc()).all():
         if template.template_path and os.path.exists(template.template_path):
             return template
+    draft_root = PROJECT_ROOT / "user_data" / "dev_drafts"
+    for marker in draft_root.rglob("draft_content.json"):
+        if marker.is_file():
+            class LocalTemplate:
+                id = "local-dev-draft"
+                template_path = str(marker.parent)
+            return LocalTemplate()
     return None
 
 
@@ -47,7 +55,14 @@ def expect(condition: bool, message: str):
 
 
 def auth_headers(client, username: str, password: str):
-    resp = client.post("/api/auth/login", json={"account": username, "password": password})
+    resp = client.post(
+        "/api/auth/login",
+        json={
+            "account": username,
+            "password": password,
+            "accepted_agreements": True,
+        },
+    )
     expect(resp.status_code == 200, f"login failed for {username}: {resp.status_code} {resp.get_data(as_text=True)}")
     data = resp.get_json() or {}
     expect(data.get("ok") and data.get("token"), f"invalid login payload for {username}: {data}")
@@ -70,7 +85,10 @@ def main():
     app = create_app()
     with app.app_context():
         ensure_user(ADMIN_USER, ADMIN_PASS, "admin")
-        ensure_user(NORMAL_USER, NORMAL_PASS, "user")
+        normal_user = ensure_user(NORMAL_USER, NORMAL_PASS, "user")
+        quota = get_or_create_quota(normal_user.id)
+        if (quota.remaining or 0) < 3:
+            adjust_quota(normal_user.id, remaining=3)
         template = pick_template()
         item = Config.query.filter_by(key="drafts_folder").first()
         drafts_folder = item.value if item and item.value else ""

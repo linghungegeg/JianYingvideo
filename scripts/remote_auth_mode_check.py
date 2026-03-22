@@ -10,7 +10,9 @@ if PROJECT_ROOT not in sys.path:
 
 from app import create_app
 from app.extensions import db
+from app.models import User
 import app.views.api as api_mod
+from app.services.user_quota_service import adjust_quota
 
 
 class DummyResponse:
@@ -70,6 +72,12 @@ def main():
         app = create_app()
         with app.app_context():
             db.create_all()
+            user = User.query.get(7)
+            if not user:
+                user = User(id=7, username="remote_user", password_hash="remote-check")
+                db.session.add(user)
+                db.session.commit()
+            adjust_quota(7, remaining=5)
         client = app.test_client()
         auth = {"Authorization": "Bearer remote-token"}
         task_id = f"remote_auth_check_{uuid.uuid4().hex}"

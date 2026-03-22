@@ -570,11 +570,50 @@
             font-weight: normal;
             color: #334155;
             cursor: pointer;
+            line-height: 1.5;
         }
         .workspace-shell .checkbox-group input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
+            position: relative;
+            width: 14px;
+            height: 14px;
+            margin: 0;
+            appearance: none;
+            -webkit-appearance: none;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            background: linear-gradient(180deg, #ffffff, #f8fafc);
+            box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.04);
+            transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
             cursor: pointer;
+            flex: 0 0 14px;
+        }
+        .workspace-shell .checkbox-group input[type="checkbox"]::after {
+            content: "";
+            position: absolute;
+            left: 3px;
+            top: 0px;
+            width: 3px;
+            height: 7px;
+            border: solid #ffffff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg) scale(0);
+            transform-origin: center;
+            transition: transform 0.16s ease;
+        }
+        .workspace-shell .checkbox-group input[type="checkbox"]:hover {
+            border-color: #94a3b8;
+        }
+        .workspace-shell .checkbox-group input[type="checkbox"]:checked {
+            border-color: var(--vf-primary);
+            background: linear-gradient(135deg, var(--vf-primary), var(--vf-primary-strong));
+            box-shadow: 0 0 0 3px rgba(31, 111, 255, 0.12);
+        }
+        .workspace-shell .checkbox-group input[type="checkbox"]:checked::after {
+            transform: rotate(45deg) scale(1);
+        }
+        .workspace-shell .checkbox-group input[type="checkbox"]:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(31, 111, 255, 0.16);
         }
         .workspace-shell .batch-count {
             width: 120px;
@@ -1016,26 +1055,96 @@
             background: #eef2f7;
             margin-bottom: 16px;
         }
-        .auth-tab {
-            flex: 1;
-            border: none;
-            background: transparent;
-            padding: 10px 12px;
-            border-radius: 10px;
-            cursor: pointer;
-            font-weight: 600;
-            color: #1f2937;
-            transition: all 0.2s ease;
-        }
-        .auth-tab.active {
-            background: var(--primary);
-            color: #fff;
-            box-shadow: 0 6px 14px rgba(37, 99, 235, 0.25);
-        }
         .auth-form {
             display: flex;
             flex-direction: column;
             gap: 12px;
+        }
+        .auth-inline-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-top: -2px;
+        }
+        .auth-check {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: #64748b;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .auth-check input {
+            position: relative;
+            width: 14px;
+            height: 14px;
+            margin: 0;
+            appearance: none;
+            -webkit-appearance: none;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            background: linear-gradient(180deg, #ffffff, #f8fafc);
+            box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.04);
+            transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+            cursor: pointer;
+            flex: 0 0 14px;
+        }
+        .auth-check input::after {
+            content: "";
+            position: absolute;
+            left: 3px;
+            top: 0px;
+            width: 3px;
+            height: 7px;
+            border: solid #ffffff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg) scale(0);
+            transform-origin: center;
+            transition: transform 0.16s ease;
+        }
+        .auth-check input:hover {
+            border-color: #94a3b8;
+        }
+        .auth-check input:checked {
+            border-color: var(--vf-primary);
+            background: linear-gradient(135deg, var(--vf-primary), var(--vf-primary-strong));
+            box-shadow: 0 0 0 3px rgba(31, 111, 255, 0.12);
+        }
+        .auth-check input:checked::after {
+            transform: rotate(45deg) scale(1);
+        }
+        .auth-check input:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(31, 111, 255, 0.16);
+        }
+        .auth-check-inline {
+            flex-wrap: wrap;
+        }
+        .auth-check-right {
+            justify-content: flex-end;
+            white-space: nowrap;
+            margin-left: auto;
+        }
+        .auth-link-inline {
+            padding: 0;
+            color: var(--vf-primary-strong);
+            font-size: 13px;
+            font-weight: 700;
+            line-height: inherit;
+        }
+        .auth-switch-row {
+            margin-top: -2px;
+            text-align: center;
+            color: #64748b;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .auth-switch-link {
+            padding: 0;
+            color: var(--vf-primary-strong);
+            font-size: 13px;
+            font-weight: 700;
         }
         .auth-form input {
             width: 100%;
@@ -1049,6 +1158,11 @@
             width: 100%;
             min-height: 44px;
             margin-top: 4px;
+        }
+        .link-button {
+            border: none;
+            background: transparent;
+            cursor: pointer;
         }
         .auth-form input:focus {
             border-color: var(--primary);
@@ -1998,6 +2112,20 @@
             padding: 0;
             border: none;
         }
+        .agreement-modal-dialog {
+            width: min(860px, calc(100vw - 32px));
+            max-height: min(78vh, 820px);
+            display: flex;
+            flex-direction: column;
+        }
+        .agreement-modal-content {
+            flex: 1 1 auto;
+            min-height: 320px;
+            max-height: calc(78vh - 120px);
+            margin: 0;
+            overflow: auto;
+            white-space: pre-wrap;
+        }
         .sidebar-group {
             border-radius: 14px;
             overflow: hidden;
@@ -2017,6 +2145,13 @@
             font-size: 13px;
             font-weight: 700;
             cursor: pointer;
+        }
+        .sidebar-label-mixed {
+            display: inline-flex;
+            align-items: center;
+            white-space: pre;
+            letter-spacing: 0.02em;
+            transform: translateX(1px);
         }
         .sidebar-group.active .sidebar-parent {
             color: #0f172a;
@@ -2449,6 +2584,21 @@
             }
             .auth-modal-dialog {
                 margin-top: 4vh;
+            }
+            .agreement-modal-dialog {
+                width: min(100vw - 20px, 720px);
+                max-height: min(82vh, 760px);
+            }
+            .agreement-modal-content {
+                min-height: 260px;
+                max-height: calc(82vh - 112px);
+            }
+            .auth-inline-row {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .auth-check-right {
+                margin-left: 0;
             }
             .draft-selected-bar {
                 flex-direction: column;
@@ -2979,4 +3129,60 @@
             #duo_results {
                 grid-template-columns: 1fr;
             }
+        }
+        #authModal .auth-check,
+        .workspace-shell .checkbox-group label {
+            position: relative !important;
+            min-height: 18px !important;
+            padding-left: 22px !important;
+        }
+        #authModal .auth-check::before,
+        .workspace-shell .checkbox-group label::before {
+            content: "" !important;
+            position: absolute !important;
+            left: 0 !important;
+            top: 50% !important;
+            width: 14px !important;
+            height: 14px !important;
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 4px !important;
+            background: linear-gradient(180deg, #ffffff, #f8fafc) !important;
+            box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.04) !important;
+            transform: translateY(-50%) !important;
+        }
+        #authModal .auth-check::after,
+        .workspace-shell .checkbox-group label::after {
+            content: "" !important;
+            position: absolute !important;
+            left: 4px !important;
+            top: 50% !important;
+            width: 3px !important;
+            height: 7px !important;
+            border: solid #ffffff !important;
+            border-width: 0 2px 2px 0 !important;
+            transform: translateY(-58%) rotate(45deg) scale(0) !important;
+            transform-origin: center !important;
+            transition: transform 0.16s ease !important;
+        }
+        #authModal .auth-check:has(input:checked)::before,
+        .workspace-shell .checkbox-group label:has(input[type="checkbox"]:checked)::before {
+            border-color: var(--vf-primary) !important;
+            background: linear-gradient(135deg, var(--vf-primary), var(--vf-primary-strong)) !important;
+            box-shadow: 0 0 0 3px rgba(31, 111, 255, 0.12) !important;
+        }
+        #authModal .auth-check:has(input:checked)::after,
+        .workspace-shell .checkbox-group label:has(input[type="checkbox"]:checked)::after {
+            transform: translateY(-58%) rotate(45deg) scale(1) !important;
+        }
+        #authModal .auth-check input,
+        .workspace-shell .checkbox-group input[type="checkbox"] {
+            position: absolute !important;
+            left: 0 !important;
+            top: 50% !important;
+            width: 14px !important;
+            height: 14px !important;
+            margin: 0 !important;
+            opacity: 0 !important;
+            cursor: pointer !important;
+            transform: translateY(-50%) !important;
         }

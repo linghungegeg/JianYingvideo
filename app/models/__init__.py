@@ -8,6 +8,7 @@ from .ai_generation_log import AIGenerationLog
 from .ai_task import AITask
 from .user_material import UserMaterial
 from .cdk_code import CdkCode
+from .cdk_template import CdkTemplate
 from .license_binding import LicenseBinding
 from .manga_template import MangaTemplate
 from .manga_generation_log import MangaGenerationLog
@@ -25,6 +26,7 @@ __all__ = [
     'AITask',
     'UserMaterial',
     'CdkCode',
+    'CdkTemplate',
     'LicenseBinding',
     'MangaTemplate',
     'MangaGenerationLog',

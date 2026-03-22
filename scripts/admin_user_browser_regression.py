@@ -39,6 +39,9 @@ def page_overflow(page):
 def login_via_modal(page, username, password, modal_id):
     page.locator("#loginAccount").fill(username)
     page.locator("#loginPassword").fill(password)
+    agreement = page.locator("#loginAgreementCheck")
+    if agreement.count() and not agreement.is_checked():
+        agreement.check()
     page.locator("#loginForm button[type='submit']").click()
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(600)

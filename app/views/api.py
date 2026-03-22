@@ -48,6 +48,7 @@ from app.tasks import generate_video_task, handle_generate_success, generate_ai_
 from app.extensions import db
 from app.models.user import User
 from app.models.cdk_code import CdkCode
+from app.models.cdk_template import CdkTemplate
 from app.models.license_binding import LicenseBinding
 from app.models.ai_provider import AIProvider
 from app.models.user_api_key import UserApiKey
@@ -133,6 +134,7 @@ _QUOTA_REASON_LABELS = {
     "daily_checkin": "每日签到",
     "manga_generate": "AI 漫剧消耗",
     "generate_batch": "批量生成消耗",
+    "export_drafts": "批量导出消耗",
     "license_activate": "激活授权",
     "refund": "失败返还",
     "invite_referrer_reward": "邀请激活奖励",
@@ -599,13 +601,20 @@ def _enforce_rate_limit(action_key: str, *, limit: int, window_seconds: int, ide
 
 def _build_usage_policy() -> dict:
     manga_cost = int(get_config("manga_generate_cost", "1") or 1)
+    export_cost = 1
     online_status = _remote_online_status()
     return {
         "count_consuming_actions": [
             {
                 "key": "generate_batch",
-                "label": "批量混剪 / 批量生成",
+                "label": "批量混剪",
                 "cost_display": "每次成功生成任务扣 1 次",
+                "online_required": True,
+            },
+            {
+                "key": "export_drafts",
+                "label": "批量导出",
+                "cost_display": f"每次成功导出任务扣 {export_cost} 次",
                 "online_required": True,
             },
             {
@@ -619,17 +628,17 @@ def _build_usage_policy() -> dict:
             {
                 "key": "register_trial",
                 "label": "新用户试用",
-                "description": f"后台设置多少就发多少，但同一设备只发放一次，当前默认值为 {_get_default_user_quota_value()} 次",
+                "description": f"新用户首次注册可获得 {_get_default_user_quota_value()} 次体验次数，同一设备只发放一次",
             },
             {
                 "key": "daily_checkin",
                 "label": "每日签到",
-                "description": f"每天签到可增加 {_get_daily_checkin_reward()} 次",
+                "description": f"每天签到可领取 {_get_daily_checkin_reward()} 次",
             },
             {
                 "key": "license_activate_bonus",
-                "label": "授权激活附赠次数",
-                "description": "只有卡密本身带 bonus_points 时才会增加次数，按后台倍率直接发放",
+                "label": "会员卡附赠次数",
+                "description": "部分会员卡会附带额外次数，激活成功后自动到账",
             },
             {
                 "key": "failed_task_refund",
@@ -652,7 +661,7 @@ def _build_usage_policy() -> dict:
         "free_actions": [
             {"key": "resource_exchange", "label": "资源互换", "description": "免费功能，不扣次数"},
             {"key": "effects_and_duo", "label": "效果配置 / Duo 资源浏览", "description": "只浏览、搜索和配置时不扣次数"},
-            {"key": "draft_tools", "label": "草稿读取 / 批量分割 / 批量导出 / 片段微调", "description": "当前不扣次数"},
+            {"key": "draft_tools", "label": "草稿读取 / 批量分割 / 片段微调", "description": "当前不扣次数"},
             {"key": "account_center", "label": "账户中心 / 邀请中心 / 使用教程", "description": "查看信息不扣次数"},
             {"key": "byok_ai_tools", "label": "AI 成片 / 文本 / 音频 / 视频生成", "description": "当前走 BYOK，不走平台次数"},
             {"key": "assistant", "label": "智能助手", "description": "当前只允许导航、创建素材目录、生成文字模板这类免费动作，不直接代执行扣次功能"},
@@ -663,7 +672,8 @@ def _build_usage_policy() -> dict:
             {"key": "daily_checkin", "label": "每日签到"},
             {"key": "license_activate", "label": "授权激活"},
             {"key": "license_deactivate", "label": "授权解绑"},
-            {"key": "generate_batch", "label": "批量混剪 / 批量生成"},
+            {"key": "generate_batch", "label": "批量混剪（按组精准替换 / 混剪裂变替换 / 分区混剪裂变 / 槽位拼接混剪）"},
+            {"key": "export_drafts", "label": "批量导出"},
             {"key": "ai_manga", "label": "AI 漫剧"},
         ],
         "offline_policy": {
@@ -2845,6 +2855,11 @@ def site_settings():
         'locked_title': ('locked_title',),
         'locked_subtitle': ('locked_subtitle',),
         'admin_title': ('admin_title',),
+        'user_agreement_title': ('user_agreement_title',),
+        'user_agreement_content': ('user_agreement_content',),
+        'privacy_agreement_title': ('privacy_agreement_title',),
+        'privacy_agreement_content': ('privacy_agreement_content',),
+        'contact_entries': ('contact_entries',),
     }
     if request.method == 'POST':
         user, err = get_auth_user(require_admin=True)
@@ -2865,6 +2880,18 @@ def site_settings():
                     break
             if value is None:
                 continue
+            if target_key == 'contact_entries':
+                if isinstance(value, str):
+                    try:
+                        parsed = json.loads(value)
+                        value = parsed if isinstance(parsed, list) else [value]
+                    except Exception:
+                        value = [item.strip() for item in value.splitlines() if item.strip()]
+                elif isinstance(value, list):
+                    value = [str(item or '').strip() for item in value if str(item or '').strip()]
+                else:
+                    value = []
+                value = json.dumps(value, ensure_ascii=False)
             updates[target_key] = value
 
         if updates:
@@ -3819,6 +3846,22 @@ def admin_cdk_batch():
     device_limit = int(data.get("device_limit") or 1)
     transfer_times = int(data.get("transfer_times") or 0)
     redeem_days = int(data.get("redeem_days") or 0)
+    template = CdkTemplate.query.filter_by(name=card_type).first()
+    if template:
+        template.duration_days = duration_days
+        template.bonus_points = bonus_points
+        template.device_limit = device_limit
+        template.transfer_times = transfer_times
+        template.redeem_days = redeem_days
+    else:
+        db.session.add(CdkTemplate(
+            name=card_type,
+            duration_days=duration_days,
+            bonus_points=bonus_points,
+            device_limit=device_limit,
+            transfer_times=transfer_times,
+            redeem_days=redeem_days,
+        ))
     settings = get_license_settings()
     length = settings["code_length"]
     batch_id = uuid.uuid4().hex
@@ -3844,6 +3887,25 @@ def admin_cdk_batch():
         codes.append(code)
     db.session.commit()
     return jsonify({"ok": True, "batch_id": batch_id, "codes": codes})
+
+
+@api_bp.route('/admin/cdk/templates', methods=['GET'])
+def admin_cdk_templates():
+    user, err = get_auth_user(require_admin=True)
+    if err:
+        return err
+    items = []
+    for item in CdkTemplate.query.order_by(CdkTemplate.updated_at.desc(), CdkTemplate.id.desc()).all():
+        items.append({
+            "id": item.id,
+            "name": item.name,
+            "duration_days": item.duration_days,
+            "bonus_points": item.bonus_points,
+            "device_limit": item.device_limit,
+            "transfer_times": item.transfer_times,
+            "redeem_days": item.redeem_days,
+        })
+    return jsonify({"ok": True, "items": items})
 
 
 @api_bp.route('/admin/cdk/list', methods=['GET'])
@@ -3881,6 +3943,33 @@ def admin_cdk_list():
             "batch_id": c.batch_id
         })
     return jsonify({"ok": True, "items": items})
+
+
+@api_bp.route('/admin/cdk/extract', methods=['POST'])
+def admin_cdk_extract():
+    user, err = get_auth_user(require_admin=True)
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    card_type = (data.get("card_type") or "").strip()
+    quantity = _clamp_int(data.get("quantity") or 0, 0, 1, 500)
+    if not card_type or quantity <= 0:
+        return jsonify({"ok": False, "error": "请选择卡类型并填写提取数量"}), 400
+
+    items = (
+        CdkCode.query
+        .filter(CdkCode.card_type == card_type, CdkCode.status == 0)
+        .order_by(CdkCode.id.asc())
+        .limit(quantity)
+        .all()
+    )
+    return jsonify({
+        "ok": True,
+        "card_type": card_type,
+        "requested": quantity,
+        "count": len(items),
+        "codes": [item.code for item in items],
+    })
 
 
 @api_bp.route('/admin/cdk/export', methods=['GET'])
@@ -4784,6 +4873,9 @@ def export_drafts_api():
     user, err = get_auth_user()
     if err:
         return err
+    quota = get_or_create_quota(user.id)
+    if (quota.remaining or 0) < 1:
+        return jsonify({'ok': False, 'error': '额度不足，无法继续批量导出。', **quota_to_dict(quota)}), 403
     data = request.get_json(silent=True) or {}
     draft_paths = data.get('draft_paths') or []
     output_dir = (data.get('output_dir') or '').strip() or get_drafts_folder()
@@ -4868,11 +4960,23 @@ def export_drafts_api():
             item['error'] = str(exc)
         results.append(item)
 
+    if success_count > 0:
+        quota.remaining = max(0, int(quota.remaining or 0) - 1)
+        db.session.add(quota)
+        db.session.add(UserQuotaLog(
+            user_id=user.id,
+            change=-1,
+            reason='export_drafts',
+            remaining_after=quota.remaining,
+        ))
+        db.session.commit()
+
     return jsonify({
         'ok': True,
         'output_dir': output_dir,
         'total': len(results),
         'success_count': success_count,
+        'quota': quota_to_dict(quota),
         'results': results,
     })
 
@@ -6562,10 +6666,13 @@ def api_register():
     auto_login = data.get('auto_login', True)
     ref_code = (data.get('ref_code') or '').strip().upper()
     device_fingerprint = (data.get('device_fingerprint') or '').strip()
+    accepted_agreements = bool(data.get('accepted_agreements'))
 
     if not username or not password:
         audit_security_event("register_invalid_payload", level="warning", request_obj=request, details={"username": username, "email": email})
         return jsonify({'ok': False, 'error': 'username and password are required'}), 400
+    if not accepted_agreements:
+        return jsonify({'ok': False, 'error': '请先同意用户协议和隐私协议'}), 400
     if User.query.filter_by(username=username).first():
         audit_security_event("register_duplicate_username", level="warning", request_obj=request, details={"username": username})
         return jsonify({'ok': False, 'error': 'username already exists'}), 400
@@ -6629,6 +6736,7 @@ def api_login():
         return online_err
     account = (data.get('username') or data.get('email') or data.get('account') or '').strip()
     password = data.get('password') or ''
+    accepted_agreements = bool(data.get('accepted_agreements'))
     limit_err = _enforce_rate_limit(
         "login",
         limit=12,
@@ -6641,6 +6749,9 @@ def api_login():
     if not account or not password:
         audit_security_event("login_invalid_payload", level="warning", request_obj=request, details={"account": account})
         return jsonify({'ok': False, 'error': '请输入账号和密码'}), 400
+
+    if not accepted_agreements:
+        return jsonify({'ok': False, 'error': '请先同意用户协议和隐私协议'}), 400
 
     user = User.query.filter(or_(User.username == account, User.email == account)).first()
     if not user or not check_password_hash(user.password_hash, password):

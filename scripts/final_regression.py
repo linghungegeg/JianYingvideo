@@ -51,7 +51,7 @@ def ensure_groups(text: str, pattern: str, expected, label: str):
 def auth_headers(client, username: str, password: str):
     resp = client.post(
         "/api/auth/login",
-        json={"account": username, "password": password},
+        json={"account": username, "password": password, "accepted_agreements": True},
     )
     expect(resp.status_code == 200, f"login failed for {username}: {resp.status_code} {resp.get_data(as_text=True)}")
     data = resp.get_json() or {}

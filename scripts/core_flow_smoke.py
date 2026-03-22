@@ -53,6 +53,12 @@ def pick_template():
     for template in TemplateModel.query.order_by(TemplateModel.id).all():
         if template.template_path and os.path.exists(template.template_path):
             return template, template.template_path
+    draft_root = Path(LOCAL_DRAFTS_DIR)
+    for name in ("draft_content.json", "draft_meta_info.json"):
+        for marker in draft_root.rglob(name):
+            candidate = marker.parent
+            if (candidate / "draft_content.json").exists():
+                return None, str(candidate)
     return None, None
 
 
@@ -77,7 +83,10 @@ def main():
         before_total = quota_before.total_generated
 
         client = app.test_client()
-        login_resp = client.post("/api/auth/login", json={"account": USERNAME, "password": PASSWORD})
+        login_resp = client.post(
+            "/api/auth/login",
+            json={"account": USERNAME, "password": PASSWORD, "accepted_agreements": True},
+        )
         if login_resp.status_code != 200:
             raise SystemExit(f"Login failed: {login_resp.status_code} {login_resp.get_data(as_text=True)}")
 

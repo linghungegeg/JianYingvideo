@@ -69,6 +69,7 @@
         const themeKey = 'vf_theme';
         const workspaceSettingsKey = 'vf_workspace_settings';
         const recentMaterialFoldersKey = 'vf_recent_material_folders';
+        const rememberedLoginKey = 'vf_remembered_login';
         const runtimeUserTokenStateKey = 'user_session_token';
         const workspaceSensitiveSettingKeys = ['net_provider', 'net_base_url', 'net_token'];
         let workspaceSettingsConfigCache = null;
@@ -84,6 +85,28 @@
             }
         }
 
+        function loadRememberedLogin() {
+            try {
+                const raw = window.localStorage.getItem(rememberedLoginKey);
+                const parsed = raw ? JSON.parse(raw) : {};
+                return parsed && typeof parsed === 'object' ? parsed : {};
+            } catch (error) {
+                return {};
+            }
+        }
+
+        function saveRememberedLogin(enabled, account, password) {
+            if (!enabled) {
+                window.localStorage.removeItem(rememberedLoginKey);
+                return;
+            }
+            window.localStorage.setItem(rememberedLoginKey, JSON.stringify({
+                enabled: true,
+                account: account || '',
+                password: password || ''
+            }));
+        }
+
         function normalizeSiteSettings(raw = {}) {
             const data = raw && typeof raw === 'object' ? raw : {};
             const meta = data.meta && typeof data.meta === 'object' ? data.meta : {};
@@ -91,6 +114,12 @@
             const login = data.login && typeof data.login === 'object' ? data.login : {};
             const locked = data.locked && typeof data.locked === 'object' ? data.locked : {};
             const admin = data.admin && typeof data.admin === 'object' ? data.admin : {};
+            const agreements = data.agreements && typeof data.agreements === 'object' ? data.agreements : {};
+            const agreementUser = agreements.user && typeof agreements.user === 'object' ? agreements.user : {};
+            const agreementPrivacy = agreements.privacy && typeof agreements.privacy === 'object' ? agreements.privacy : {};
+            const contactEntries = Array.isArray(data.contact_entries)
+                ? data.contact_entries
+                : (Array.isArray(data.contacts) ? data.contacts : []);
             const siteName = String(data.site_name || meta.site_name || 'VideoFactory');
             return {
                 site_name: siteName,
@@ -107,7 +136,12 @@
                 login_subtitle: String(data.login_subtitle || login.subtitle || '登录后继续使用当前工作台。'),
                 locked_title: String(data.locked_title || locked.title || '登录后进入工作台'),
                 locked_subtitle: String(data.locked_subtitle || locked.subtitle || '登录后继续当前工作台。'),
-                admin_title: String(data.admin_title || admin.title || `${siteName} 管理后台`)
+                admin_title: String(data.admin_title || admin.title || `${siteName} 管理后台`),
+                user_agreement_title: String(data.user_agreement_title || agreementUser.title || '用户协议'),
+                user_agreement_content: String(data.user_agreement_content || agreementUser.content || ''),
+                privacy_agreement_title: String(data.privacy_agreement_title || agreementPrivacy.title || '隐私协议'),
+                privacy_agreement_content: String(data.privacy_agreement_content || agreementPrivacy.content || ''),
+                contact_entries: contactEntries.map((item) => String(item || '').trim()).filter(Boolean),
             };
         }
 
@@ -126,6 +160,7 @@
                 const node = document.getElementById(id);
                 if (node) node.textContent = text;
             });
+            renderContactEntries();
             return siteSettingsCache;
         }
 
@@ -602,6 +637,40 @@
             el.textContent = msg || '';
         }
 
+        function openAgreementModal(kind = 'user') {
+            const modal = document.getElementById('agreementModal');
+            const title = document.getElementById('agreementModalTitle');
+            const content = document.getElementById('agreementModalContent');
+            if (!modal || !title || !content) return;
+            const isPrivacy = kind === 'privacy';
+            title.textContent = isPrivacy
+                ? (siteSettingsCache.privacy_agreement_title || '隐私协议')
+                : (siteSettingsCache.user_agreement_title || '用户协议');
+            content.textContent = isPrivacy
+                ? (siteSettingsCache.privacy_agreement_content || '暂未配置隐私协议内容。')
+                : (siteSettingsCache.user_agreement_content || '暂未配置用户协议内容。');
+            modal.classList.add('open');
+            modal.style.display = 'flex';
+            modal.setAttribute('aria-hidden', 'false');
+        }
+
+        function closeAgreementModal() {
+            const modal = document.getElementById('agreementModal');
+            if (!modal) return;
+            modal.classList.remove('open');
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+        }
+
+        function renderContactEntries() {
+            const box = document.getElementById('accountContactList');
+            if (!box) return;
+            const items = Array.isArray(siteSettingsCache.contact_entries) ? siteSettingsCache.contact_entries : [];
+            box.innerHTML = items.length
+                ? items.map((item) => `<article class="resource-post-card is-owned"><div class="resource-post-head"><span class="resource-level-badge">官方渠道</span></div><div class="resource-detail-grid resource-detail-grid-wide"><div class="resource-detail-field"><span>联系方式 / 群号</span><strong>${escapeHtml(item)}</strong></div></div></article>`).join('')
+                : '<div class="tool-result">管理员暂未配置联系渠道。</div>';
+        }
+
         async function loadRuntimeFeatures() {
             try {
                 const res = await fetch('/api/runtime-features');
@@ -685,10 +754,10 @@
             if (mangaCostEl) mangaCostEl.textContent = `${mangaCost} 次`;
             if (rulesText) {
                 rulesText.textContent = [
-                    `新用户默认试用：${defaultQuota} 次`,
-                    `每日签到奖励：${checkinReward} 次`,
-                    `邀请奖励：被邀请人首次激活会员后，按开卡时长比例给邀请人 ${inviteReferrer}% / 给被邀请人 ${inviteeReward}%`,
-                    `AI 漫剧消耗：每次 ${mangaCost} 次`
+                    `新用户首次注册可获得 ${defaultQuota} 次体验次数`,
+                    `每日签到可领取 ${checkinReward} 次`,
+                    `邀请奖励会在好友首次开通会员后生效，邀请人加赠 ${inviteReferrer}% ，好友加赠 ${inviteeReward}%`,
+                    `AI 漫剧每次生成消耗 ${mangaCost} 次`
                 ].join('\n');
             }
             if (usagePolicyEl) {
@@ -760,7 +829,7 @@
                                 <span>${escapeHtml(`${item.duration_days || 0} 天`)}</span>
                                 <span>${escapeHtml(`${item.device_limit || 1} 台`)}</span>
                                 <span>${escapeHtml(`${item.transfer_times || 0} 次`)}</span>
-                                <span>${escapeHtml(`${item.bonus_points || 0} 次`)}</span>
+                                <span>${escapeHtml(`${item.bonus_points || 0} 次附赠`)}</span>
                             </div>
                         `).join('')}
                     </div>
@@ -3282,7 +3351,6 @@
         }
 
         function initAuthUI() {
-            const tabs = document.querySelectorAll('.auth-tab');
             const loginForm = document.getElementById('loginForm');
             const registerForm = document.getElementById('registerForm');
             const logoutBtn = document.getElementById('logoutBtn');
@@ -3291,21 +3359,32 @@
             const dailyCheckinBtn = document.getElementById('dailyCheckinBtn');
             const refreshPointsBtn = document.getElementById('refreshPointsBtn');
             const openBtns = [document.getElementById('openAuthModalBtnHero')].filter(Boolean);
+            const loginAgreementCheck = document.getElementById('loginAgreementCheck');
+            const registerAgreementCheck = document.getElementById('registerAgreementCheck');
+            const loginRememberMe = document.getElementById('loginRememberMe');
+            const rememberedLogin = loadRememberedLogin();
+
+            if (rememberedLogin.enabled) {
+                if (document.getElementById('loginAccount')) document.getElementById('loginAccount').value = rememberedLogin.account || '';
+                if (document.getElementById('loginPassword')) document.getElementById('loginPassword').value = rememberedLogin.password || '';
+                if (loginRememberMe) loginRememberMe.checked = true;
+            }
 
             openBtns.forEach((btn) => btn.addEventListener('click', openAuthModal));
             document.querySelectorAll('[data-close-auth="true"]').forEach((el) => el.addEventListener('click', closeAuthModal));
-
-            tabs.forEach(tab => {
-                tab.addEventListener('click', () => {
-                    tabs.forEach(t => t.classList.remove('active'));
-                    tab.classList.add('active');
-                    const target = tab.dataset.tab;
-                    if (target === 'login') {
-                        loginForm.style.display = 'flex';
-                        registerForm.style.display = 'none';
-                    } else {
+            document.querySelectorAll('[data-close-agreement="true"]').forEach((el) => el.addEventListener('click', closeAgreementModal));
+            document.querySelectorAll('[data-agreement-open]').forEach((el) => {
+                el.addEventListener('click', () => openAgreementModal(el.getAttribute('data-agreement-open') || 'user'));
+            });
+            document.querySelectorAll('[data-auth-switch]').forEach((el) => {
+                el.addEventListener('click', () => {
+                    const target = el.getAttribute('data-auth-switch');
+                    if (target === 'register') {
                         loginForm.style.display = 'none';
                         registerForm.style.display = 'flex';
+                    } else {
+                        loginForm.style.display = 'flex';
+                        registerForm.style.display = 'none';
                     }
                     setAuthMessage('');
                 });
@@ -3319,13 +3398,18 @@
                     setAuthMessage('请输入账号和密码');
                     return;
                 }
+                if (!loginAgreementCheck?.checked) {
+                    setAuthMessage('请先勾选同意用户协议和隐私协议');
+                    return;
+                }
                 const res = await fetch('/api/auth/login', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({username: account, password})
+                    body: JSON.stringify({username: account, password, accepted_agreements: true})
                 });
                 const data = await res.json();
                 if (data.ok) {
+                    saveRememberedLogin(Boolean(loginRememberMe?.checked), account, password);
                     setToken(data.token);
                     setAuthMessage('登录成功', false);
                     updateUserPanel(data.user);
@@ -3347,6 +3431,10 @@
                     setAuthMessage('请输入用户名和密码');
                     return;
                 }
+                if (!registerAgreementCheck?.checked) {
+                    setAuthMessage('请先勾选同意用户协议和隐私协议');
+                    return;
+                }
                 const deviceIdentity = await getDeviceFingerprintPayload();
                 const res = await fetch('/api/auth/register', {
                     method: 'POST',
@@ -3356,7 +3444,8 @@
                         password,
                         ref_code: refCode,
                         auto_login: true,
-                        device_fingerprint: deviceIdentity.fingerprint
+                        device_fingerprint: deviceIdentity.fingerprint,
+                        accepted_agreements: true
                     })
                 });
                 const data = await res.json();
@@ -3883,6 +3972,9 @@ async function renameUserMaterialProject() {
                     `导出目录：${data.output_dir || exportDir}`,
                     `执行结果：成功 ${data.success_count || 0} / 共 ${data.total || exportDraftQueue.length} 个`
                 ];
+                if (data.success_count > 0) {
+                    lines.push(`本次批量导出已扣除 1 次，剩余 ${data.quota?.remaining ?? '-'} 次`);
+                }
                 (data.results || []).forEach((item) => {
                     if (item.ok) {
                         lines.push(`已导出：${item.draft_name} -> ${item.exported_draft_name || '新草稿'}`);
@@ -4234,7 +4326,8 @@ async function renameUserMaterialProject() {
                     'account-vip-section': {kind: 'section', sectionId: 'account-vip-section'},
                     'account-invite-section': {kind: 'section', sectionId: 'account-invite-section'},
                     'account-license-section': {kind: 'section', sectionId: 'account-license-section'},
-                    'account-tutorial-section': {kind: 'section', sectionId: 'account-tutorial-section'}
+                    'account-tutorial-section': {kind: 'section', sectionId: 'account-tutorial-section'},
+                    'account-contact-section': {kind: 'section', sectionId: 'account-contact-section'}
                 }
             },
             resource: {
@@ -4520,6 +4613,10 @@ async function renameUserMaterialProject() {
                     const key = toggle.getAttribute('data-group-toggle');
                     const group = document.querySelector(`.sidebar-group[data-group="${key}"]`);
                     if (!group) return;
+                    if (group.classList.contains('active') && group.classList.contains('open')) {
+                        group.classList.remove('open');
+                        return;
+                    }
                     const config = getWorkspaceNavGroup(key);
                     if (config?.defaultItem) {
                         applyWorkspaceNavigation(key, config.defaultItem, {openActiveGroup: true});
