@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 
 PROJECT_ROOT = Path(os.getenv("VF_PROJECT_ROOT") or os.getcwd()).resolve()
@@ -24,6 +24,9 @@ datas = [
 runtime_tools_dir = PROJECT_ROOT / "runtime_tools"
 if runtime_tools_dir.exists():
     datas.append((str(runtime_tools_dir), "runtime_tools"))
+
+datas += collect_data_files("webview")
+binaries = collect_dynamic_libs("webview")
 
 hiddenimports = []
 for package_name in (
@@ -49,7 +52,7 @@ hiddenimports.extend(collect_submodules("webview"))
 a = Analysis(
     [str(PROJECT_ROOT / "desktop_app.py")],
     pathex=[str(PROJECT_ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
