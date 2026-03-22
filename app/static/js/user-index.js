@@ -777,8 +777,11 @@
             const inviteSummary = document.getElementById('inviteSummaryText');
             const inviteRecent = document.getElementById('inviteRecentList');
             const referrerName = document.getElementById('userReferrerName');
+            const referrerRewardTotal = Number(invite.referrer_reward_total ?? 0);
+            const inviteeRewardTotal = Number(invite.invitee_reward_total ?? 0);
+            const totalRewardDays = referrerRewardTotal + inviteeRewardTotal;
             if (inviteCountEl) inviteCountEl.textContent = invite.invited_count ?? 0;
-            if (inviteRewardEl) inviteRewardEl.textContent = invite.referrer_reward_total ?? 0;
+            if (inviteRewardEl) inviteRewardEl.textContent = totalRewardDays;
             if (referrerName) {
                 const name = currentUserInfo?.referrer_username || '-';
                 referrerName.textContent = name === '-' || !name ? '未绑定邀请人' : `邀请人：${name}`;
@@ -787,8 +790,9 @@
                 inviteSummary.textContent = [
                     `邀请激活奖励：被邀请人首次激活会员后，邀请人按开卡时长的 ${invite.referrer_reward ?? 0}% 加赠 VIP`,
                     `受邀加赠：被邀请人首次激活会员后，自己按开卡时长的 ${invite.invitee_reward ?? 0}% 加赠 VIP`,
-                    `我的累计邀请奖励：${invite.referrer_reward_total ?? 0} 天`,
-                    `我的受邀加赠奖励：${invite.invitee_reward_total ?? 0} 天`
+                    `我的累计邀请奖励：${referrerRewardTotal} 天`,
+                    `我的受邀加赠奖励：${inviteeRewardTotal} 天`,
+                    `奖励累计到账：${totalRewardDays} 天`
                 ].join('\n');
             }
             if (inviteRecent) {
@@ -4824,11 +4828,13 @@ async function renameUserMaterialProject() {
                                     document.getElementById('progress-text').innerHTML += `<br>📂 草稿已保存至：${folderData.folder}`;
                                 }
                             });
+                        await loadUserInfo();
                     } else if (data.status === 'failed') {
                         clearInterval(pollInterval);
                         pollInterval = null;
                         document.getElementById('progress-text').innerText = `❌ 生成失败: ${data.error_msg || '未知错误'}`;
                         document.getElementById('submitBtn').disabled = false;
+                        await loadUserInfo();
                     }
                 } catch (error) {
                     document.getElementById('progress-text').innerText = `⚠️ 轮询出错: ${error.message}`;
@@ -5626,6 +5632,12 @@ async function startMangaGenerate() {
         const data = await res.json();
         if (!res.ok || data.ok === false) throw new Error(data.error || '生成失败');
         renderMangaDraftResult(data);
+        if (data.quota && currentUserInfo) {
+            currentUserInfo = Object.assign({}, currentUserInfo, data.quota);
+            updateUserPanel(currentUserInfo);
+        } else {
+            await loadUserInfo();
+        }
         setMangaStatus(data.message || '生成完成');
         await loadMangaHistory();
     } catch (e) {
