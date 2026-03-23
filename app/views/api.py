@@ -99,7 +99,15 @@ api_bp = Blueprint('api', __name__, url_prefix='/api')
 draft_logger = logging.getLogger("draft_inspect")
 draft_logger.setLevel(logging.INFO)
 
-_DRAFT_CONTENT_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "gbk")
+_DRAFT_CONTENT_ENCODINGS = (
+    "utf-8",
+    "utf-8-sig",
+    "utf-16",
+    "utf-16-le",
+    "utf-16-be",
+    "gb18030",
+    "gbk",
+)
 _IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')
 _VIDEO_EXTS = ('.mp4', '.mov', '.m4v', '.avi', '.mkv', '.flv', '.wmv')
 _AUDIO_EXTS = ('.mp3', '.wav', '.aac', '.m4a', '.ogg', '.flac')
@@ -146,11 +154,13 @@ _RESOURCE_EXCHANGE_PAGE_SIZE = 20
 _MAX_INVITE_REWARD_PERCENT = 100
 _TRIAL_DEVICE_CLAIM_PREFIX = "trial_device_claim:"
 _REMOTE_ONLINE_CACHE_TTL_SECONDS = 8
+_REMOTE_AUTH_USER_CACHE_TTL_SECONDS = 900
 _DESKTOP_TASK_CLAIM_TTL_MINUTES = 30
 _remote_online_guard_cache = {
     "checked_at": 0.0,
     "status": None,
 }
+_remote_auth_user_cache = {}
 _native_device_fingerprint_cache = None
 _ASSISTANT_FREE_ACTIONS = {
     "navigate",
@@ -410,6 +420,46 @@ def _fetch_remote_user_by_token(token: str):
             return None, error or "remote auth failed", 403
         return None, error or f"remote auth failed: {response.status_code}", response.status_code or 502
     return _build_remote_user(data.get("user") or {}), None, None
+
+
+def _remote_auth_cache_key(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _get_cached_remote_user(token: str):
+    if not token:
+        return None
+    cache_key = _remote_auth_cache_key(token)
+    cached = _remote_auth_user_cache.get(cache_key)
+    if not isinstance(cached, dict):
+        return None
+    expires_at = float(cached.get("expires_at") or 0.0)
+    if expires_at <= time.time():
+        _remote_auth_user_cache.pop(cache_key, None)
+        return None
+    raw_user = cached.get("user")
+    if not isinstance(raw_user, dict):
+        _remote_auth_user_cache.pop(cache_key, None)
+        return None
+    return _build_remote_user(raw_user)
+
+
+def _store_cached_remote_user(token: str, user) -> None:
+    if not token or not user:
+        return
+    _remote_auth_user_cache[_remote_auth_cache_key(token)] = {
+        "expires_at": time.time() + _REMOTE_AUTH_USER_CACHE_TTL_SECONDS,
+        "user": {
+            "id": getattr(user, "id", 0),
+            "username": getattr(user, "username", ""),
+            "email": getattr(user, "email", None),
+            "role": getattr(user, "role", "user"),
+            "ref_code": getattr(user, "ref_code", ""),
+            "referrer_id": getattr(user, "referrer_id", None),
+            "membership_label": getattr(user, "membership_label", ""),
+            "is_vip": bool(getattr(user, "is_vip", False)),
+        },
+    }
 
 
 def _should_proxy_remote_request() -> bool:
@@ -1422,11 +1472,16 @@ def _find_draft_content_files(template_path: str):
 def _load_json_with_encodings(path: str):
     last_err = None
     raw_bytes = None
-    try:
-        with open(path, "rb") as f:
-            raw_bytes = f.read()
-    except Exception as e:
-        return None, e
+    for attempt in range(3):
+        try:
+            with open(path, "rb") as f:
+                raw_bytes = f.read()
+            break
+        except Exception as e:
+            last_err = e
+            if attempt >= 2:
+                return None, e
+            time.sleep(0.15)
     if not raw_bytes:
         return None, ValueError("empty file")
 
@@ -2320,9 +2375,15 @@ def get_auth_user(require_admin=False):
         try:
             user, error_msg, error_code = _fetch_remote_user_by_token(token)
         except Exception as exc:
+            cached_user = _get_cached_remote_user(token)
+            if cached_user:
+                if require_admin and cached_user.role != 'admin':
+                    return None, _auth_error('admin permission required', 403)
+                return cached_user, None
             return None, _auth_error(f'remote auth unavailable: {exc}', 503)
         if error_msg:
             return None, _auth_error(error_msg, error_code or 401)
+        _store_cached_remote_user(token, user)
         if require_admin and user.role != 'admin':
             return None, _auth_error('admin permission required', 403)
         return user, None
@@ -2729,6 +2790,8 @@ def draft_split_main_track_api():
     os.makedirs(save_path, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
     svc = JianYingService(save_path=save_path, output_path=output_dir)
+    ffmpeg, _ffmpeg_source = find_ffmpeg_with_source()
+    image_clip_cache = {}
     draft_basename = os.path.basename(draft_path.rstrip('/\\')) or uuid.uuid4().hex[:8]
     draft_name = f"split_main_{draft_basename}"
     create_resp = svc.create_draft(draft_name=draft_name, width=width, height=height, fps=fps)
@@ -2771,6 +2834,53 @@ def draft_split_main_track_api():
         if total_duration <= 0:
             total_duration = segment_seconds
 
+        ext = os.path.splitext(src)[1].lower()
+        is_image = ext in _IMAGE_EXTS
+        prepared_src = src
+        if is_image:
+            if not ffmpeg:
+                results.append({
+                    'segment_index': segment_index,
+                    'ok': False,
+                    'error': '未找到 ffmpeg，无法处理图片片段',
+                    'source': src,
+                })
+                continue
+            cache_key = (src, round(total_duration, 3))
+            prepared_src = image_clip_cache.get(cache_key) or ''
+            if not prepared_src or not os.path.exists(prepared_src):
+                prepared_src = os.path.join(
+                    save_path,
+                    "material",
+                    f"{os.path.splitext(os.path.basename(src))[0]}_{uuid.uuid4().hex[:8]}.mp4",
+                )
+                os.makedirs(os.path.dirname(prepared_src), exist_ok=True)
+                try:
+                    import subprocess
+                    subprocess.run(
+                        [
+                            ffmpeg, '-y',
+                            '-loop', '1',
+                            '-t', f'{total_duration:.3f}',
+                            '-i', src,
+                            '-c:v', 'libx264',
+                            '-pix_fmt', 'yuv420p',
+                            prepared_src,
+                        ],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    image_clip_cache[cache_key] = prepared_src
+                except Exception as exc:
+                    results.append({
+                        'segment_index': segment_index,
+                        'ok': False,
+                        'error': f'图片片段转视频失败: {exc}',
+                        'source': src,
+                    })
+                    continue
+
         speed = segment.get('speed')
         volume = segment.get('volume', 1.0)
         change_pitch = bool(segment.get('change_pitch', False))
@@ -2787,10 +2897,12 @@ def draft_split_main_track_api():
             source_range = None
             if source_duration > 0:
                 source_range = f"{source_start + piece_offset:.3f}s-{piece_duration:.3f}s"
+            elif is_image:
+                source_range = f"{piece_offset:.3f}s-{piece_duration:.3f}s"
 
             add_resp = svc.add_video_segment(
                 draft_id,
-                src,
+                prepared_src,
                 target_range,
                 source_timerange=source_range,
                 speed=speed,
