@@ -1599,7 +1599,7 @@
             statusEl.textContent = '正在查看授权状态...';
             try {
                 const res = await authFetch('/api/license/status');
-                const data = await res.json();
+                const data = await parseJsonResponse(res, '读取授权状态失败');
                 if (!res.ok || !data.ok) {
                     throw new Error(data.error || '读取失败');
                 }
@@ -1655,7 +1655,7 @@
                         device_label: deviceIdentity.label
                     })
                 });
-                const data = await res.json();
+                const data = await parseJsonResponse(res, '激活失败');
                 if (!res.ok || !data.ok) {
                     throw new Error(data.error || '激活失败');
                 }
@@ -1779,8 +1779,36 @@
         }
 
         function setToolResult(id, message) {
+            if (id === 'export_result' || id === 'export_shared_result') {
+                const shared = ensureExportSharedResultBox();
+                if (shared) shared.textContent = message || '';
+                const legacy = document.getElementById('export_result');
+                if (legacy) legacy.textContent = message || '';
+                return;
+            }
             const el = document.getElementById(id);
             if (el) el.textContent = message || '';
+        }
+
+        function ensureExportSharedResultBox() {
+            let box = document.getElementById('export_shared_result');
+            if (box) return box;
+            const panel = document.getElementById('panel-export');
+            if (!panel) return document.getElementById('export_result');
+            const shell = document.createElement('section');
+            shell.className = 'tool-card';
+            shell.id = 'export_shared_result_shell';
+            shell.innerHTML = `
+                <div class="tool-head"><div><h3>导出结果</h3></div></div>
+                <div id="export_shared_result" class="tool-result">导出结果会显示在这里。</div>
+            `;
+            const anchor = panel.querySelector('.module-head');
+            if (anchor && anchor.nextSibling) {
+                panel.insertBefore(shell, anchor.nextSibling);
+            } else {
+                panel.appendChild(shell);
+            }
+            return document.getElementById('export_shared_result');
         }
 
         function renderAiPromptKeyOptions(items = []) {
@@ -4010,7 +4038,7 @@ async function renameUserMaterialProject() {
                         export_fps: exportFps
                     })
                 });
-                const data = await res.json();
+                const data = await parseJsonResponse(res, '批量导出失败');
                 if (!res.ok || !data.ok) {
                     throw new Error(data.error || '多草稿导出失败');
                 }
@@ -4059,7 +4087,7 @@ async function renameUserMaterialProject() {
                         output_dir: exportDir
                     })
                 });
-                const data = await res.json();
+                const data = await parseJsonResponse(res, '主视频片段导出失败');
                 if (!res.ok || !data.ok) {
                     throw new Error(data.error || '主视频片段导出失败');
                 }

@@ -577,6 +577,23 @@ def _proxy_remote_response():
         data=request.get_data() if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None,
         timeout=30,
     )
+    content_type = str(response.headers.get("content-type") or "").lower()
+    if request.path.startswith("/api/"):
+        if 300 <= int(response.status_code or 0) < 400:
+            return jsonify({
+                "ok": False,
+                "error": "remote api redirect blocked",
+                "status_code": int(response.status_code or 0),
+                "location": response.headers.get("location") or "",
+            }), 502
+        if "text/html" in content_type or "application/xhtml+xml" in content_type:
+            snippet = re.sub(r"<[^>]+>", " ", response.text or "")
+            snippet = re.sub(r"\s+", " ", snippet).strip()[:160]
+            return jsonify({
+                "ok": False,
+                "error": snippet or f"remote api returned html ({response.status_code})",
+                "status_code": int(response.status_code or 0),
+            }), (response.status_code if int(response.status_code or 0) >= 400 else 502)
     flask_response = Response(response.content, status=response.status_code)
     for key, value in response.headers.items():
         lower_key = key.lower()
