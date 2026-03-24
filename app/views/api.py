@@ -570,14 +570,22 @@ def _should_proxy_remote_request() -> bool:
 
 
 def _proxy_remote_response():
-    response = call_remote_api(
-        path=request.full_path if request.query_string else request.path,
-        method=request.method,
-        headers=dict(request.headers),
-        data=request.get_data() if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None,
-        timeout=30,
-    )
+    try:
+        response = call_remote_api(
+            path=request.full_path if request.query_string else request.path,
+            method=request.method,
+            headers=dict(request.headers),
+            data=request.get_data() if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None,
+            timeout=30,
+        )
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": f"remote api request failed: {exc}",
+        }), 502
     content_type = str(response.headers.get("content-type") or "").lower()
+    response_text = response.text or ""
+    response_preview = response_text.lstrip()[:32].lower()
     if request.path.startswith("/api/"):
         if 300 <= int(response.status_code or 0) < 400:
             return jsonify({
@@ -586,8 +594,8 @@ def _proxy_remote_response():
                 "status_code": int(response.status_code or 0),
                 "location": response.headers.get("location") or "",
             }), 502
-        if "text/html" in content_type or "application/xhtml+xml" in content_type:
-            snippet = re.sub(r"<[^>]+>", " ", response.text or "")
+        if "text/html" in content_type or "application/xhtml+xml" in content_type or response_preview.startswith("<!doctype") or response_preview.startswith("<html") or response_preview.startswith("<"):
+            snippet = re.sub(r"<[^>]+>", " ", response_text)
             snippet = re.sub(r"\s+", " ", snippet).strip()[:160]
             return jsonify({
                 "ok": False,
@@ -6913,7 +6921,11 @@ def apply_effect():
 @api_bp.route('/duo/resources/categories', methods=['GET'])
 def duo_categories():
     svc = DuoVideoService()
-    return jsonify({'categories': svc.list_categories()})
+    return jsonify({
+        'categories': svc.list_categories(),
+        'resource_count': svc.resource_count(),
+        'resource_path': str(svc.resource_path or ''),
+    })
 
 @api_bp.route('/duo/cache/status', methods=['GET'])
 def duo_cache_status():
@@ -7288,28 +7300,29 @@ def submit_task():
     _run_background(
         app,
         generate_video_task,
-        resolved_template_id,
-        materials_root,
-        texts_input,
-        1,
-        True,
-        True,
-        False,
-        'both',
-        'order',
-        'group',
-        False,
-        None,
-        False,
-        None,
-        None,
-        None,
-        None,
-        effects_config,
-        duo_config,
-        session.get('user_id', 1),
-        resolved_path,
-        task_id,
+        template_id=resolved_template_id,
+        materials_root=materials_root,
+        texts_input=texts_input,
+        batch_count=1,
+        replace_materials=True,
+        replace_texts=True,
+        replace_audios=False,
+        replace_type='both',
+        replace_mode='order',
+        replace_strategy='group',
+        sequence_clip_count=3,
+        audio_enabled=False,
+        audio_root=None,
+        export_enabled=False,
+        export_path=None,
+        export_format=None,
+        export_resolution=None,
+        export_fps=None,
+        effects_config=effects_config,
+        duo_config=duo_config,
+        user_id=session.get('user_id', 1),
+        template_path=resolved_path,
+        task_id_override=task_id,
     )
 
     return jsonify({
@@ -7512,30 +7525,30 @@ def generate_batch_api():
     _run_background(
         app,
         generate_video_task,
-        None,
-        materials_root,
-        texts_input,
-        batch_count,
-        replace_materials,
-        replace_texts,
-        replace_audios,
-        replace_type,
-        replace_mode,
-        replace_strategy,
-        sequence_clip_count,
-        audio_enabled,
-        audio_root,
-        export_enabled,
-        export_path,
-        export_format,
-        export_resolution,
-        export_fps,
-        effects_config,
-        duo_config,
-        user.id,
-        template_path,
-        job_id,
-        remote_task_token,
+        template_id=None,
+        materials_root=materials_root,
+        texts_input=texts_input,
+        batch_count=batch_count,
+        replace_materials=replace_materials,
+        replace_texts=replace_texts,
+        replace_audios=replace_audios,
+        replace_type=replace_type,
+        replace_mode=replace_mode,
+        replace_strategy=replace_strategy,
+        sequence_clip_count=sequence_clip_count,
+        audio_enabled=audio_enabled,
+        audio_root=audio_root,
+        export_enabled=export_enabled,
+        export_path=export_path,
+        export_format=export_format,
+        export_resolution=export_resolution,
+        export_fps=export_fps,
+        effects_config=effects_config,
+        duo_config=duo_config,
+        user_id=user.id,
+        template_path=template_path,
+        task_id_override=job_id,
+        auth_token=remote_task_token,
     )
 
     return jsonify({'job_id': job_id})

@@ -16,6 +16,7 @@ ENABLE_UPX = os.getenv("VF_ENABLE_UPX", "0") == "1"
 datas = [
     (str(PROJECT_ROOT / "app" / "templates"), "app/templates"),
     (str(PROJECT_ROOT / "app" / "static"), "app/static"),
+    (str(PROJECT_ROOT / "app" / "utils" / "duo_resources"), "app/utils/duo_resources"),
     (str(PROJECT_ROOT / "migrations"), "migrations"),
     (str(PROJECT_ROOT / "env.presets"), "env.presets"),
     (str(PROJECT_ROOT / ".env.example"), "."),

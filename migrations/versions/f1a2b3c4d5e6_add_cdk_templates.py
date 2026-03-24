@@ -16,6 +16,10 @@ depends_on = None
 
 
 def upgrade():
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if inspector.has_table('cdk_templates'):
+        return
     op.create_table(
         'cdk_templates',
         sa.Column('id', sa.Integer(), primary_key=True),
@@ -32,4 +36,8 @@ def upgrade():
 
 
 def downgrade():
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table('cdk_templates'):
+        return
     op.drop_table('cdk_templates')

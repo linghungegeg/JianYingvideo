@@ -877,6 +877,7 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                     or (find_draft_content_files(new_draft_path) or [os.path.join(new_draft_path, 'draft_content.json')])[0]
                 )
                 draft_json_editable = not draft_load_err and isinstance(draft_data, dict)
+                mcp_text_rebuild_required = bool(replace_texts and texts_input and not draft_json_editable)
                 if not draft_json_editable:
                     print(f"[DEBUG] draft content unreadable, fallback to internal-id replacement: {draft_load_err}")
                     update_task_meta({'progress': 'official draft fallback: replace by internal id'})
@@ -989,23 +990,24 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
 
                 # ---------- 文字替换：结构化更新，保留样式 ----------
                 if replace_texts and texts_input:
-                    if not draft_json_editable:
-                        raise Exception("official encrypted draft does not support text replacement in desktop mode")
-                    with open(draft_content_path, 'r', encoding='utf-8') as f:
-                        draft_data = json.load(f)
-                    replaced_count = _replace_texts_with_style(
-                        draft_data,
-                        texts_input,
-                        texts_info or []
-                    )
-                    subtitle_updated = _update_subtitle_taskinfo(draft_data)
-                    track_updated = _update_track_text_segments(draft_data)
-                    _clear_temp_text_marks(draft_data)
-                    if replaced_count:
-                        with open(draft_content_path, 'w', encoding='utf-8') as f:
-                            json.dump(draft_data, f, ensure_ascii=False)
-                        print(f"[DEBUG] 文字替换完成，共替换 {replaced_count} 段，字幕更新 {subtitle_updated}，轨道更新 {track_updated}")
-                        update_task_meta({'progress': f'文字替换完成，共替换 {replaced_count} 段'})
+                    if draft_json_editable:
+                        with open(draft_content_path, 'r', encoding='utf-8') as f:
+                            draft_data = json.load(f)
+                        replaced_count = _replace_texts_with_style(
+                            draft_data,
+                            texts_input,
+                            texts_info or []
+                        )
+                        subtitle_updated = _update_subtitle_taskinfo(draft_data)
+                        track_updated = _update_track_text_segments(draft_data)
+                        _clear_temp_text_marks(draft_data)
+                        if replaced_count:
+                            with open(draft_content_path, 'w', encoding='utf-8') as f:
+                                json.dump(draft_data, f, ensure_ascii=False)
+                            print(f"[DEBUG] 文字替换完成，共替换 {replaced_count} 段，字幕更新 {subtitle_updated}，轨道更新 {track_updated}")
+                            update_task_meta({'progress': f'文字替换完成，共替换 {replaced_count} 段'})
+                    else:
+                        update_task_meta({'progress': 'official draft text replacement fallback to MCP'})
 
                 # 附加音频
                 if audio_enabled:
@@ -1021,10 +1023,12 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                                 update_task_meta({'progress': f'复制音频: {fname}'})
 
                 # 高级效果（MCP）导出
-                if export_enabled and export_path:
-                    os.environ["OUTPUT_PATH"] = export_path
+                mcp_output_path = export_path if (export_enabled and export_path) else (drafts_folder if mcp_text_rebuild_required else None)
+                previous_output_path = os.environ.get("OUTPUT_PATH")
+                if mcp_output_path:
+                    os.environ["OUTPUT_PATH"] = mcp_output_path
                 # MCP effects apply
-                if effects_config or duo_config or export_enabled:
+                if effects_config or duo_config or export_enabled or mcp_text_rebuild_required:
                     try:
                         from app.services.jianying_service import JianYingService
                         from app.utils.jianying_mcp.utils.media_parser import MediaParser
@@ -1039,7 +1043,15 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                             export_format=export_format,
                             export_resolution=export_resolution,
                             export_fps=export_fps,
+                            texts_input=texts_input if (replace_texts and texts_input) else None,
                         )
+                        if mcp_text_rebuild_required and not export_enabled:
+                            exported_draft_name = str((summary or {}).get('draft_name') or '').strip()
+                            exported_draft_path = os.path.join(mcp_output_path or '', exported_draft_name)
+                            if exported_draft_name and os.path.isdir(exported_draft_path):
+                                if os.path.exists(new_draft_path):
+                                    shutil.rmtree(new_draft_path)
+                                shutil.move(exported_draft_path, new_draft_path)
                         if summary:
                             update_task_meta({'progress': 'MCP effects applied', 'effects_summary': summary})
                             try:
@@ -1050,6 +1062,12 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                                 print(f"[DEBUG] MCP effects log failed: {e}")
                     except Exception as e:
                         print(f"[DEBUG] MCP effects apply failed: {e}")
+                    finally:
+                        if mcp_output_path:
+                            if previous_output_path is None:
+                                os.environ.pop("OUTPUT_PATH", None)
+                            else:
+                                os.environ["OUTPUT_PATH"] = previous_output_path
 
                 generated += 1
                 update_task_meta({'progress': f'completed {generated}/{batch_count} drafts'})
@@ -1083,7 +1101,8 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
 
 
 def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
-                       export_format=None, export_resolution=None, export_fps=None):
+                       export_format=None, export_resolution=None, export_fps=None,
+                       texts_input=None):
     """
     基于 MCP 导出流程生成带效果的新草稿（实验性）。
     注意：该流程会重建轨道与素材，可能丢失部分模板样式。
@@ -1109,6 +1128,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
         if diagnostics.get("matched_candidate"):
             draft_content = diagnostics["matched_candidate"]
         return summary
+    data = _resolve_active_draft_payload(data)
     draft_content = diagnostics.get("matched_candidate") or draft_content
 
     effects_config = effects_config or {}
@@ -1188,6 +1208,20 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
     video_segment_track = {}
     audio_segment_track = {}
     text_segment_track = {}
+    text_replacements = {}
+
+    if isinstance(texts_input, list):
+        for item in texts_input:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("index")
+            contents = item.get("contents") or []
+            if not isinstance(idx, int) or not contents:
+                continue
+            replacement = contents[0]
+            if replacement is None:
+                continue
+            text_replacements[idx] = str(replacement)
 
     micro_cfg = (effects_config.get("video") or {}).get("micro_adjust") or {}
     if micro_cfg.get("enabled") is False:
@@ -1215,6 +1249,127 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
             return float(tr.get("duration", 0)) / 1_000_000
         except Exception:
             return None
+
+    def _to_color_triplet(value):
+        if isinstance(value, str):
+            raw = value.strip()
+            if raw.startswith("#"):
+                hex_value = raw[1:]
+                if len(hex_value) == 3:
+                    hex_value = "".join(ch * 2 for ch in hex_value)
+                if len(hex_value) >= 6:
+                    try:
+                        return [
+                            int(hex_value[0:2], 16) / 255.0,
+                            int(hex_value[2:4], 16) / 255.0,
+                            int(hex_value[4:6], 16) / 255.0,
+                        ]
+                    except Exception:
+                        return None
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            try:
+                parts = [float(value[0]), float(value[1]), float(value[2])]
+            except Exception:
+                return None
+            if any(part > 1 for part in parts):
+                return [min(max(part / 255.0, 0.0), 1.0) for part in parts]
+            return [min(max(part, 0.0), 1.0) for part in parts]
+        return None
+
+    def _extract_text_segment_params(mat, seg, replacement_text=None):
+        content = replacement_text if replacement_text is not None else (mat.get("recognize_text") or "")
+        style = {}
+        size = mat.get("text_size")
+        if size is None:
+            size = mat.get("font_size")
+        try:
+            if size is not None:
+                style["size"] = float(size)
+        except Exception:
+            pass
+        color = _to_color_triplet(mat.get("text_color"))
+        if color:
+            style["color"] = color
+        try:
+            style["alpha"] = float(mat.get("text_alpha", mat.get("global_alpha", 1.0)) or 1.0)
+        except Exception:
+            pass
+        try:
+            style["align"] = int(mat.get("alignment", 0) or 0)
+        except Exception:
+            pass
+        style["bold"] = bool(mat.get("bold_width"))
+        style["italic"] = bool(mat.get("italic_degree"))
+        style["underline"] = bool(mat.get("underline"))
+        try:
+            style["letter_spacing"] = float(mat.get("letter_spacing", 0) or 0)
+        except Exception:
+            pass
+        try:
+            style["line_spacing"] = float(mat.get("line_spacing", 0) or 0)
+        except Exception:
+            pass
+        try:
+            style["max_line_width"] = float(mat.get("line_max_width", 0.82) or 0.82)
+        except Exception:
+            pass
+
+        border = None
+        border_width = mat.get("border_width")
+        border_color = _to_color_triplet(mat.get("border_color"))
+        if border_width or border_color:
+            border = {
+                "alpha": float(mat.get("border_alpha", 1.0) or 1.0),
+                "width": float(border_width or 0.0),
+            }
+            if border_color:
+                border["color"] = border_color
+
+        background = None
+        background_color = mat.get("background_color") or mat.get("background_fill")
+        if background_color:
+            background = {
+                "color": background_color,
+                "style": int(mat.get("background_style", 1) or 1),
+                "alpha": float(mat.get("background_alpha", 1.0) or 1.0),
+                "round_radius": float(mat.get("background_round_radius", 0.0) or 0.0),
+                "height": float(mat.get("background_height", 0.14) or 0.14),
+                "width": float(mat.get("background_width", 0.14) or 0.14),
+                "horizontal_offset": float(mat.get("background_horizontal_offset", 0.0) or 0.0),
+                "vertical_offset": float(mat.get("background_vertical_offset", 0.0) or 0.0),
+            }
+
+        clip_settings = None
+        clip = seg.get("clip") if isinstance(seg, dict) else None
+        if isinstance(clip, dict):
+            transform = clip.get("transform") if isinstance(clip.get("transform"), dict) else {}
+            scale = clip.get("scale") if isinstance(clip.get("scale"), dict) else {}
+            flip = clip.get("flip") if isinstance(clip.get("flip"), dict) else {}
+            clip_settings = {
+                "alpha": float(clip.get("alpha", 1.0) or 1.0),
+                "rotation": float(clip.get("rotation", 0.0) or 0.0),
+                "transform_x": float(transform.get("x", 0.0) or 0.0),
+                "transform_y": float(transform.get("y", 0.0) or 0.0),
+                "scale_x": float(scale.get("x", 1.0) or 1.0),
+                "scale_y": float(scale.get("y", 1.0) or 1.0),
+                "flip_horizontal": bool(flip.get("horizontal")),
+                "flip_vertical": bool(flip.get("vertical")),
+            }
+
+        font = (mat.get("font_name") or "").strip()
+        if not font:
+            font = (mat.get("font_title") or "").strip()
+        if font.lower() == "none":
+            font = None
+
+        return {
+            "content": content,
+            "font": font,
+            "style": style or None,
+            "border": border,
+            "background": background,
+            "clip_settings": clip_settings,
+        }
 
     # segments (preserve track order and basic clip settings)
     def _trange_str(tr):
@@ -1362,7 +1517,10 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
                 mat = text_mats.get(mid)
                 if not mat:
                     continue
-                content = mat.get("recognize_text") or ""
+                text_index = len(text_segment_ids)
+                replacement_text = text_replacements.get(text_index)
+                text_params = _extract_text_segment_params(mat, seg, replacement_text=replacement_text)
+                content = text_params.get("content") or ""
                 target_timerange = _trange_str(seg.get("target_timerange", {}))
                 if not target_timerange:
                     continue
@@ -1370,6 +1528,11 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
                     draft_id,
                     content,
                     target_timerange,
+                    font=text_params.get("font"),
+                    style=text_params.get("style"),
+                    clip_settings=text_params.get("clip_settings"),
+                    border=text_params.get("border"),
+                    background=text_params.get("background"),
                     track_name=track_name,
                 )
                 resp_data = _resp_data(resp)

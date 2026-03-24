@@ -1065,7 +1065,7 @@
             const activeTarget = activeBtn?.dataset?.target
                 || (activeWorkspaceNav?.group === 'effects' ? WORKSPACE_NAV_CONFIG.effects?.items?.[activeWorkspaceNav.item]?.target : '')
                 || 'effects-core';
-            activateSecondaryTab('effects_section', activeTarget);
+            activateSecondaryTab('effects_section', activeTarget, {syncNav: false});
         }
 
         function toggleProtectedUI(isLoggedIn) {
@@ -1689,10 +1689,11 @@
         }
 
         async function parseJsonResponse(res, fallbackMessage = '请求失败') {
+            const backup = typeof res?.clone === 'function' ? res.clone() : null;
             try {
                 return await res.json();
             } catch (error) {
-                const text = await res.text().catch(() => '');
+                const text = await (backup ? backup.text() : res.text()).catch(() => '');
                 const normalized = String(text || '').replace(/\s+/g, ' ').trim();
                 const snippet = normalized
                     ? normalized.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
@@ -1902,7 +1903,6 @@
             syncDraftShellValues();
             await loadDraftInfo();
             closeDraftPicker();
-            discoverDrafts(shell, false);
         }
 
         function applyManualDraftPath() {
@@ -2123,26 +2123,16 @@
 
         function buildExportPlan() {
             const exportDir = document.getElementById('export_dir')?.value?.trim();
-            const pattern = document.getElementById('export_pattern')?.value?.trim() || '{draft}_{index}';
             const format = document.getElementById('export_format')?.value || 'mp4';
             const resolution = document.getElementById('export_resolution')?.value || '1080p';
             const fps = parseInt(document.getElementById('export_fps')?.value || '30', 10);
             const exportEnabled = !!document.getElementById('export_enable')?.checked;
-            const withCover = !!document.getElementById('export_cover')?.checked;
-            const withLog = !!document.getElementById('export_log')?.checked;
             const batchCount = parseInt(document.getElementById('batch_count')?.value || '1', 10);
-            const draftName = currentDraftPath ? currentDraftPath.split(/[\\/]/).filter(Boolean).pop() : 'draft';
-            const samples = [];
-            for (let i = 1; i <= Math.min(batchCount, 5); i += 1) {
-                samples.push(pattern.replace('{draft}', draftName).replace('{index}', String(i).padStart(2, '0')) + `.${format}`);
-            }
             const lines = [
                 `导出目录：${exportDir || '尚未填写，建议先设置固定输出目录'}`,
-                `命名模板：${pattern}`,
-                `样例文件：${samples.join(' / ')}`,
                 `导出执行：${exportEnabled ? '生成后自动导出' : '仅生成草稿，不直接导出'}`,
                 `格式设置：${format.toUpperCase()} / ${resolution} / ${fps} FPS`,
-                `附加动作：${withCover ? '生成封面' : '不生成封面'}，${withLog ? '保留导出清单' : '不保留导出清单'}`,
+                '执行说明：当前只按导出目录、格式、分辨率和帧率执行导出',
                 `执行建议：先导出 1 条做抽检，再批量导出剩余 ${batchCount} 条。`
             ];
             setToolResult('export_result', lines.join('\n'));
@@ -3089,6 +3079,16 @@
             return chips;
         }
 
+        function getDuoPreviewUrl(item = {}) {
+            const meta = item?.meta && typeof item.meta === 'object' ? item.meta : {};
+            return item?.preview_url
+                || item?.preview
+                || item?.url
+                || meta?.preview_url
+                || meta?.url
+                || '';
+        }
+
         function renderResourceResults(items) {
             const results = document.getElementById('resource_results');
             if (!results) return;
@@ -3096,20 +3096,35 @@
                 results.innerHTML = '<div class="tool-result">没有找到匹配资源，换个关键词再试试。</div>';
                 return;
             }
-            results.innerHTML = items.map((item, idx) => {
-                const chips = buildResourceMetaChips(item).map((chip) => `<span class="resource-browser-chip">${escapeHtml(chip)}</span>`).join('');
-                return `
-                    <article class="resource-browser-card">
-                        <div class="resource-browser-head">
-                            <div>
-                                <h4>${escapeHtml(item.name || '未命名资源')}</h4>
-                                <div class="resource-browser-meta">${chips || '<span class="resource-browser-chip">资源库</span>'}</div>
-                            </div>
-                            <button class="effect-add" type="button" onclick="useResource(${idx})">加入当前效果</button>
-                        </div>
-                    </article>
-                `;
-            }).join('');
+            results.innerHTML = `
+                <div class="resource-table-shell resource-search-table">
+                    <div class="resource-table-head">
+                        <span>资源名称</span>
+                        <span>资源标识</span>
+                        <span>资源分类</span>
+                        <span>附加信息</span>
+                        <span>操作</span>
+                    </div>
+                    ${items.map((item, idx) => {
+                        const name = item.name || item.title || '未命名资源';
+                        const identifier = item.resource_id || item.effect_id || item.id || '-';
+                        const category = item.effect_type || item.type || '-';
+                        const chips = buildResourceMetaChips(item)
+                            .filter((chip) => chip !== category && chip !== `资源ID ${identifier}` && chip !== `效果ID ${identifier}` && chip !== `编号 ${identifier}`);
+                        return `
+                            <article class="resource-table-row resource-search-row">
+                                <div class="resource-table-cell resource-search-name"><strong>${escapeHtml(name)}</strong></div>
+                                <div class="resource-table-cell"><span>${escapeHtml(identifier)}</span></div>
+                                <div class="resource-table-cell"><span>${escapeHtml(category)}</span></div>
+                                <div class="resource-table-cell resource-search-meta">${chips.length
+                                    ? chips.map((chip) => `<span class="resource-browser-chip">${escapeHtml(chip)}</span>`).join('')
+                                    : '<span class="resource-browser-chip">资源库</span>'}</div>
+                                <div class="resource-table-cell resource-search-action"><button class="effect-add" type="button" onclick="useResource(${idx})">加入当前效果</button></div>
+                            </article>
+                        `;
+                    }).join('')}
+                </div>
+            `;
         }
 
         function useResource(idx) {
@@ -3139,12 +3154,22 @@
         async function loadDuoCategories() {
             try {
                 const res = await fetch('/api/duo/resources/categories');
-                const data = await res.json();
+                const data = await parseJsonResponse(res, 'Duo 分类读取失败');
                 const sel = document.getElementById('duo_category');
-                if (sel && data.categories) {
-                    sel.innerHTML = data.categories.map(c => `<option value="${c}">${c}</option>`).join('');
+                if (sel) {
+                    const categories = Array.isArray(data.categories) ? data.categories.filter(Boolean) : [];
+                    const total = Number(data.resource_count || 0);
+                    const previousValue = sel.value || '';
+                    const allLabel = total > 0 ? `全部分类（${total}）` : '全部分类';
+                    sel.innerHTML = [`<option value="">${escapeHtml(allLabel)}</option>`]
+                        .concat(categories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`))
+                        .join('');
+                    sel.value = previousValue && categories.includes(previousValue) ? previousValue : '';
                 }
-            } catch (e) {}
+            } catch (e) {
+                const sel = document.getElementById('duo_category');
+                if (sel) sel.innerHTML = '<option value="">分类读取失败</option>';
+            }
         }
 
         function renderDuoLists() {
@@ -3156,17 +3181,13 @@
         }
 
         async function searchDuoResources() {
-            const category = document.getElementById('duo_category').value;
-            const keyword = document.getElementById('duo_keyword').value.trim();
-            const limit = parseInt(document.getElementById('duo_limit').value || '50', 10);
+            const category = document.getElementById('duo_category')?.value?.trim() || '';
+            const keyword = document.getElementById('duo_keyword')?.value?.trim() || '';
+            const limit = parseInt(document.getElementById('duo_limit')?.value || '50', 10);
             const page = parseInt(document.getElementById('duo_page')?.value || '1', 10);
             const offset = (page - 1) * limit;
             const pager = document.getElementById('duo_pager_info');
-            if (!category) {
-                notify('请先选择资源分类。', 'warn');
-                return;
-            }
-            const cacheKey = `${category}_${keyword}_${limit}_${page}`;
+            const cacheKey = `${category || 'all'}_${keyword}_${limit}_${page}`;
             if (duoPageCache[cacheKey]) {
                 const cached = duoPageCache[cacheKey];
                 duoCache = cached.items;
@@ -3177,9 +3198,9 @@
             const res = await fetch('/api/duo/resources/search', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({category, keyword, limit, offset})
+                body: JSON.stringify({category: category || null, keyword, limit, offset})
             });
-            const data = await res.json();
+            const data = await parseJsonResponse(res, 'Duo 素材搜索失败');
             const items = data.items || [];
             duoCache = items;
             duoPageCache[cacheKey] = {items, total: data.total || 0};
@@ -3194,28 +3215,40 @@
                 results.innerHTML = '<div class="tool-result">没有找到匹配素材，试试更换分类或关键词。</div>';
                 return;
             }
-            results.innerHTML = items.map((item, idx) => {
-                const preview = item.preview
-                    ? `<img class="resource-browser-thumb" src="${item.preview}" alt="${escapeHtml(item.name || 'Duo 素材')}">`
-                    : '<div class="resource-browser-thumb resource-browser-thumb-empty">Duo</div>';
-                const chips = buildResourceMetaChips(item, [document.getElementById('duo_category')?.value || 'Duo 素材'])
-                    .map((chip) => `<span class="resource-browser-chip">${escapeHtml(chip)}</span>`)
-                    .join('');
-                return `
-                    <article class="resource-browser-card resource-browser-card-media">
-                        <div class="resource-browser-media">${preview}</div>
-                        <div class="resource-browser-body">
-                            <div class="resource-browser-head">
-                                <div>
-                                    <h4>${escapeHtml(item.name || '未命名素材')}</h4>
-                                    <div class="resource-browser-meta">${chips}</div>
-                                </div>
-                                <button class="effect-add" type="button" onclick="useDuoResource(${idx})">加入当前方案</button>
-                            </div>
-                        </div>
-                    </article>
-                `;
-            }).join('');
+            results.innerHTML = `
+                <div class="resource-table-shell duo-search-table">
+                    <div class="resource-table-head">
+                        <span>预览</span>
+                        <span>素材名称</span>
+                        <span>素材标识</span>
+                        <span>素材分类</span>
+                        <span>附加信息</span>
+                        <span>操作</span>
+                    </div>
+                    ${items.map((item, idx) => {
+                        const previewUrl = getDuoPreviewUrl(item);
+                        const preview = previewUrl
+                            ? `<img class="resource-browser-thumb" src="${previewUrl}" alt="${escapeHtml(item.name || 'Duo 素材')}">`
+                            : '<div class="resource-browser-thumb resource-browser-thumb-empty">Duo</div>';
+                        const category = document.getElementById('duo_category')?.value || item.category || 'Duo 素材';
+                        const identifier = item.id || item.resource_id || item.effect_id || '-';
+                        const chips = buildResourceMetaChips(item, [category])
+                            .filter((chip) => chip !== category && chip !== `编号 ${identifier}` && chip !== `资源ID ${identifier}` && chip !== `效果ID ${identifier}`);
+                        return `
+                            <article class="resource-table-row duo-search-row">
+                                <div class="resource-table-cell duo-preview-cell">${preview}</div>
+                                <div class="resource-table-cell"><strong>${escapeHtml(item.name || '未命名素材')}</strong></div>
+                                <div class="resource-table-cell"><span>${escapeHtml(identifier)}</span></div>
+                                <div class="resource-table-cell"><span>${escapeHtml(category)}</span></div>
+                                <div class="resource-table-cell duo-search-meta">${chips.length
+                                    ? chips.map((chip) => `<span class="resource-browser-chip">${escapeHtml(chip)}</span>`).join('')
+                                    : '<span class="resource-browser-chip">Duo 素材</span>'}</div>
+                                <div class="resource-table-cell resource-search-action"><button class="effect-add" type="button" onclick="useDuoResource(${idx})">加入当前方案</button></div>
+                            </article>
+                        `;
+                    }).join('')}
+                </div>
+            `;
         }
 
         function duoPrevPage() {
@@ -3280,8 +3313,10 @@
             try {
                 const res = await fetch('/api/duo/ffmpeg/status');
                 const data = await res.json();
-                if (info) info.innerText = data.ok ? `视频处理环境已就绪：${data.path}` : (data.error || '暂未检测到视频处理环境');
-            } catch (e) {}
+                if (info) info.innerText = data.ok ? '' : (data.error || '暂未检测到视频处理环境');
+            } catch (e) {
+                if (info) info.innerText = '';
+            }
         }
 
         function syncDuoParamUI() {
@@ -4333,8 +4368,9 @@ async function renameUserMaterialProject() {
                 panelId: 'panel-ai-make',
                 defaultItem: 'make',
                 items: {
-                    make: {kind: 'panel', panelId: 'panel-ai-make'},
-                    manga: {kind: 'panel', panelId: 'panel-ai-manga'}
+                    make: {kind: 'panel', panelId: 'panel-ai-make', focusId: 'ai-make-anchor'},
+                    inspiration: {kind: 'panel', panelId: 'panel-ai-make', focusId: 'ai-inspiration-anchor'},
+                    manga: {kind: 'panel', panelId: 'panel-ai-manga', focusId: 'ai-manga-anchor'}
                 }
             },
             effects: {
@@ -4357,9 +4393,8 @@ async function renameUserMaterialProject() {
             },
             clip: {
                 panelId: 'panel-clip',
-                defaultItem: 'clip-ai',
+                defaultItem: 'clip-rhythm',
                 items: {
-                    'clip-ai': {kind: 'subtab', containerId: 'clipToolsGrid', target: 'clip-ai'},
                     'clip-rhythm': {kind: 'subtab', containerId: 'clipToolsGrid', target: 'clip-rhythm'},
                     'clip-transform': {kind: 'subtab', containerId: 'clipToolsGrid', target: 'clip-transform'},
                     'clip-shake': {kind: 'subtab', containerId: 'clipToolsGrid', target: 'clip-shake'}
@@ -4438,7 +4473,11 @@ async function renameUserMaterialProject() {
             document.querySelectorAll('.sidebar-group').forEach((group) => {
                 const isActiveGroup = group.dataset.group === groupKey;
                 group.classList.toggle('active', isActiveGroup);
-                group.classList.toggle('open', keepOpen && isActiveGroup);
+                if (isActiveGroup) {
+                    group.classList.toggle('open', keepOpen);
+                } else {
+                    group.classList.remove('open');
+                }
             });
             document.querySelectorAll('.sidebar-link[href^="#"]').forEach((link) => {
                 const linkGroup = link.dataset.navGroup || link.closest('.sidebar-group')?.dataset.group || '';
@@ -4496,11 +4535,64 @@ async function renameUserMaterialProject() {
                 if (item.kind === 'mix') return item.mixTarget === mixTarget;
                 if (item.kind === 'subtab') return item.target === subtabTarget;
                 if (item.kind === 'section') return item.sectionId === hardSection;
-                if (item.kind === 'panel') return href === `#${item.panelId || group.panelId}`;
+                if (item.kind === 'panel') {
+                    return href === `#${item.panelId || group.panelId}`
+                        || (item.focusId && href === `#${item.focusId}`);
+                }
                 return false;
             });
             if (!matched) return null;
             return {groupKey, itemKey: matched[0]};
+        }
+
+        function relocateAiInspirationWorkspace() {
+            const aiMenu = document.querySelector('.sidebar-group[data-group="ai"] .sidebar-submenu');
+            const clipMenu = document.querySelector('.sidebar-group[data-group="clip"] .sidebar-submenu');
+            const clipAiLink = clipMenu?.querySelector('[data-subtab-target="clip-ai"]');
+            const mangaLink = document.getElementById('aiMangaSidebarLink');
+            if (clipAiLink && aiMenu && !document.getElementById('aiInspirationSidebarLink')) {
+                const aiLink = clipAiLink.cloneNode(true);
+                aiLink.id = 'aiInspirationSidebarLink';
+                aiLink.textContent = 'AI 灵感';
+                aiLink.href = '#ai-inspiration-anchor';
+                aiLink.removeAttribute('data-subtab-container');
+                aiLink.removeAttribute('data-subtab-target');
+                if (mangaLink) {
+                    aiMenu.insertBefore(aiLink, mangaLink);
+                } else {
+                    aiMenu.appendChild(aiLink);
+                }
+                clipAiLink.remove();
+            }
+
+            const clipGrid = document.getElementById('clipToolsGrid');
+            const aiPanel = document.getElementById('panel-ai-make');
+            const aiCard = clipGrid?.querySelector('[data-subtab-group="clip-ai"]');
+            if (!aiCard || !aiPanel || document.getElementById('aiInspirationCard')) return;
+            const anchor = document.createElement('div');
+            anchor.id = 'ai-inspiration-anchor';
+            anchor.className = 'anchor-offset';
+            aiCard.id = 'aiInspirationCard';
+            aiCard.removeAttribute('data-subtab-group');
+            aiCard.classList.add('ai-inspiration-card');
+            aiCard.style.display = '';
+            aiCard.classList.remove('active', 'subtab-panel');
+            aiCard.removeAttribute('data-subtab');
+            aiCard.removeAttribute('data-subtab-display');
+            aiPanel.appendChild(anchor);
+            aiPanel.appendChild(aiCard);
+        }
+
+        function simplifyExportPanel() {
+            ['export_pattern', 'export_cover', 'export_log'].forEach((id) => {
+                const group = document.getElementById(id)?.closest('.form-group');
+                if (group) group.remove();
+            });
+        }
+
+        function prepareWorkspaceLayout() {
+            relocateAiInspirationWorkspace();
+            simplifyExportPanel();
         }
 
         function annotateWorkspaceSidebarLinks() {
@@ -4905,6 +4997,7 @@ async function renameUserMaterialProject() {
             await loadRuntimeFeatures();
             await restoreRuntimeToken();
             await loadUserInfo();
+            prepareWorkspaceLayout();
             initWorkspaceSidebar();
             initDraftWorkspace();
             initEffectWorkspace();
@@ -4936,10 +5029,9 @@ async function renameUserMaterialProject() {
                 }
             });
             initSecondaryTabs('clipToolsGrid', [
-                {id: 'clip-ai', label: 'AI 灵感', indexes: [0]},
-                {id: 'clip-rhythm', label: '节奏变速', indexes: [1]},
-                {id: 'clip-transform', label: '画面校正', indexes: [2]},
-                {id: 'clip-shake', label: '摇晃关键帧', indexes: [3]}
+                {id: 'clip-rhythm', label: '节奏变速', indexes: [0]},
+                {id: 'clip-transform', label: '画面校正', indexes: [1]},
+                {id: 'clip-shake', label: '摇晃关键帧', indexes: [2]}
             ], {rootId: 'clipToolsGrid', hideNav: true});
             initSecondaryTabs('panel-export', [
                 {id: 'export-settings', label: '导出设置', indexes: [0, 1]},
