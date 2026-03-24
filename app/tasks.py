@@ -374,6 +374,42 @@ def _safe_update_style_ranges(styles, total_len):
                     end = start
                 fixed.append([start, end])
             style['ranges'] = fixed
+
+
+def _replace_word_timing_payload(words_payload, new_text):
+    if not isinstance(words_payload, dict):
+        return False
+
+    texts = words_payload.get('text')
+    starts = words_payload.get('start_time')
+    ends = words_payload.get('end_time')
+
+    if not isinstance(texts, list):
+        return False
+
+    first_start = 0
+    last_end = 0
+    if isinstance(starts, list) and starts:
+        try:
+            first_start = int(starts[0] or 0)
+        except Exception:
+            first_start = 0
+    if isinstance(ends, list) and ends:
+        try:
+            last_end = int(ends[-1] or 0)
+        except Exception:
+            last_end = first_start
+    if last_end < first_start:
+        last_end = first_start
+
+    words_payload['text'] = [new_text]
+    if isinstance(starts, list):
+        words_payload['start_time'] = [first_start]
+    if isinstance(ends, list):
+        words_payload['end_time'] = [last_end]
+    return True
+
+
 def _extract_template_runtime_info_from_meta(template_path):
     materials = []
     material_map = {}
@@ -559,6 +595,8 @@ def _replace_texts_with_style(draft_data, texts_input, texts_info):
                 pass
 
         target_item['recognize_text'] = new_text
+        _replace_word_timing_payload(target_item.get('words'), new_text)
+        _replace_word_timing_payload(target_item.get('current_words'), new_text)
         target_item['_vf_new_text'] = new_text
         replaced += 1
 
@@ -594,6 +632,18 @@ def _update_subtitle_taskinfo(draft_data):
                 if utterances:
                     for u in utterances:
                         u['text'] = text_by_task[task_id]
+                        words = u.get('words')
+                        if isinstance(words, list) and words:
+                            first_word = words[0] if isinstance(words[0], dict) else {}
+                            last_word = words[-1] if isinstance(words[-1], dict) else {}
+                            start_time = first_word.get('start_time', u.get('start_time', 0))
+                            end_time = last_word.get('end_time', u.get('end_time', start_time))
+                            u['words'] = [{
+                                'start_time': start_time,
+                                'end_time': end_time,
+                                'text': text_by_task[task_id],
+                                'attribute': first_word.get('attribute') if isinstance(first_word, dict) else {},
+                            }]
                 content_json['utterances'] = utterances
                 item['content'] = json.dumps(content_json, ensure_ascii=False)
                 updated += 1
