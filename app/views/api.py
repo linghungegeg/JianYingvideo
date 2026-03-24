@@ -1600,6 +1600,53 @@ def _resolve_draft_output_root(draft_path: str, output_dir: str | None = None) -
     return parent or normalized_draft_path
 
 
+def _resolve_draft_media_source_path(draft_path: str, raw_path: str) -> str:
+    source = str(raw_path or "").strip()
+    if not source:
+        return ""
+    if os.path.exists(source):
+        return source
+
+    draft_root = _normalize_draft_project_path(draft_path)
+    if not draft_root:
+        return source
+
+    candidates = []
+    candidates.append(os.path.normpath(os.path.join(draft_root, source)))
+
+    parent_root = os.path.dirname(draft_root.rstrip("\\/"))
+    if parent_root:
+        candidates.append(os.path.normpath(os.path.join(parent_root, source)))
+
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return source
+
+
+def _build_draft_placeholder_cover_map(draft_data: dict) -> tuple[dict, dict]:
+    by_material_id = {}
+    by_basename = {}
+    if not isinstance(draft_data, dict):
+        return by_material_id, by_basename
+
+    mutable_config = draft_data.get("mutable_config") or {}
+    mutable_materials = mutable_config.get("mutable_materials") or []
+    for item in mutable_materials:
+        if not isinstance(item, dict):
+            continue
+        cover_path = str(item.get("cover_path") or "").strip()
+        if not cover_path or not os.path.exists(cover_path):
+            continue
+        material_id = str(item.get("id") or "").strip()
+        if material_id:
+            by_material_id[material_id] = cover_path
+        basename = os.path.basename(cover_path)
+        if basename:
+            by_basename[basename] = cover_path
+    return by_material_id, by_basename
+
+
 def _resolve_active_draft_payload(data):
     return _service_resolve_active_draft_payload(data)
 
@@ -3025,6 +3072,7 @@ def draft_split_main_track_api():
     for item in (draft_data.get('materials', {}) or {}).get('videos', []) or []:
         if isinstance(item, dict) and item.get('id'):
             video_materials[item['id']] = item
+    placeholder_cover_by_id, placeholder_cover_by_name = _build_draft_placeholder_cover_map(draft_data)
 
     def _us_to_seconds(value, default=0.0):
         try:
@@ -3088,7 +3136,14 @@ def draft_split_main_track_api():
         if not isinstance(segment, dict):
             continue
         material = video_materials.get(segment.get('material_id')) or {}
-        src = (material.get('path') or material.get('file_path') or '').strip()
+        src = _resolve_draft_media_source_path(
+            draft_path,
+            (material.get('path') or material.get('file_path') or '').strip(),
+        )
+        if (not src or not os.path.exists(src)) and segment.get('material_id') in placeholder_cover_by_id:
+            src = placeholder_cover_by_id.get(segment.get('material_id')) or src
+        if (not src or not os.path.exists(src)) and src:
+            src = placeholder_cover_by_name.get(os.path.basename(src)) or src
         if not src or not os.path.exists(src):
             results.append({
                 'segment_index': segment_index,
@@ -5260,13 +5315,158 @@ def manga_batch_export():
     return jsonify({'ok': True, 'added': added})
 
 
+def _run_export_drafts(user):
+    remote_task_id = uuid.uuid4().hex
+    remote_task_token = None
+    quota = None
+    if _should_use_remote_auth():
+        remote_task_token, remote_claim_error = _remote_desktop_task_claim(remote_task_id, 'export_drafts', 1)
+        if remote_claim_error:
+            return remote_claim_error
+    else:
+        quota = get_or_create_quota(user.id)
+        if (quota.remaining or 0) < 1:
+            return jsonify({'ok': False, 'error': 'quota exhausted', **quota_to_dict(quota)}), 403
+
+    data = request.get_json(silent=True) or {}
+    draft_paths = data.get('draft_paths') or []
+    output_dir = (data.get('output_dir') or '').strip() or get_drafts_folder()
+    export_format = (data.get('export_format') or '').strip().lower() or None
+    export_resolution = (data.get('export_resolution') or '').strip().lower() or None
+    export_fps = data.get('export_fps')
+
+    if not isinstance(draft_paths, list) or not draft_paths:
+        return jsonify({'ok': False, 'error': 'missing draft_paths'}), 400
+    if export_format not in (None, 'mp4', 'mov'):
+        return jsonify({'ok': False, 'error': 'unsupported export format'}), 400
+    if export_resolution not in (None, '720p', '1080p', '4k'):
+        return jsonify({'ok': False, 'error': 'unsupported export resolution'}), 400
+    if export_fps not in (None, ''):
+        try:
+            export_fps = int(export_fps)
+        except Exception:
+            return jsonify({'ok': False, 'error': 'invalid export fps'}), 400
+        if export_fps <= 0 or export_fps > 240:
+            return jsonify({'ok': False, 'error': 'export fps out of range'}), 400
+    else:
+        export_fps = None
+
+    if not output_dir:
+        return jsonify({'ok': False, 'error': 'missing output_dir'}), 400
+    os.makedirs(output_dir, exist_ok=True)
+
+    from app.services.jianying_service import JianYingService
+    from app.tasks import _apply_mcp_effects
+
+    svc = JianYingService(output_path=output_dir)
+    os.environ["OUTPUT_PATH"] = output_dir
+    results = []
+    success_count = 0
+
+    try:
+        for raw_path in draft_paths:
+            draft_path = (raw_path or '').strip()
+            if not draft_path:
+                continue
+            item = {
+                'draft_path': draft_path,
+                'draft_name': os.path.basename(draft_path.rstrip("\\/")) or draft_path,
+            }
+            if not os.path.exists(draft_path):
+                item['ok'] = False
+                item['error'] = 'draft path does not exist'
+                results.append(item)
+                continue
+            try:
+                summary = None
+                warnings = []
+                exported_name = None
+                try:
+                    summary = _apply_mcp_effects(
+                        draft_path,
+                        {},
+                        svc,
+                        None,
+                        export_format=export_format,
+                        export_resolution=export_resolution,
+                        export_fps=export_fps,
+                    )
+                    exported_name = summary.get('draft_name')
+                    warnings = summary.get('warnings') or []
+                except Exception as inner_exc:
+                    warnings.append(f'MCP export fallback failed: {inner_exc}')
+
+                if not exported_name:
+                    safe_name = item['draft_name'] or f'draft_{uuid.uuid4().hex[:8]}'
+                    exported_name = f"{safe_name}_export_{uuid.uuid4().hex[:6]}"
+                    target_path = os.path.join(output_dir, exported_name)
+                    if os.path.exists(target_path):
+                        shutil.rmtree(target_path)
+                    shutil.copytree(draft_path, target_path)
+
+                item['ok'] = True
+                item['exported_draft_name'] = exported_name
+                item['warnings'] = warnings
+                success_count += 1
+            except Exception as exc:
+                item['ok'] = False
+                item['error'] = str(exc)
+            results.append(item)
+    finally:
+        if remote_task_token:
+            _remote_desktop_task_complete(
+                remote_task_id,
+                remote_task_token,
+                success_count > 0,
+                "" if success_count > 0 else "no drafts exported successfully",
+            )
+
+    quota_payload = {}
+    if success_count > 0 and quota is not None:
+        quota.remaining = max(0, int(quota.remaining or 0) - 1)
+        db.session.add(quota)
+        db.session.add(UserQuotaLog(
+            user_id=user.id,
+            change=-1,
+            reason='export_drafts',
+            remaining_after=quota.remaining,
+        ))
+        db.session.commit()
+        quota_payload = quota_to_dict(quota)
+    elif quota is not None:
+        quota_payload = quota_to_dict(quota)
+
+    return jsonify({
+        'ok': True,
+        'output_dir': output_dir,
+        'total': len(results),
+        'success_count': success_count,
+        'quota': quota_payload,
+        'results': results,
+    })
+
+
 @api_bp.route('/export/drafts', methods=['POST'])
 def export_drafts_api():
     user, err = get_auth_user()
     if err:
         return err
-    quota = get_or_create_quota(user.id)
-    if (quota.remaining or 0) < 1:
+    return _run_export_drafts(user)
+    remote_task_id = uuid.uuid4().hex
+    remote_task_token = None
+    quota = None
+    if _should_use_remote_auth():
+        remote_task_token, remote_claim_error = _remote_desktop_task_claim(remote_task_id, 'export_drafts', 1)
+        if remote_claim_error:
+            return remote_claim_error
+    else:
+        quota = get_or_create_quota(user.id)
+        if (quota.remaining or 0) < 1:
+            """
+            """
+            return jsonify({'ok': False, 'error': 'quota exhausted', **quota_to_dict(quota)}), 403
+        """
+        """
         return jsonify({'ok': False, 'error': '额度不足，无法继续批量导出。', **quota_to_dict(quota)}), 403
     data = request.get_json(silent=True) or {}
     draft_paths = data.get('draft_paths') or []
@@ -5416,6 +5616,7 @@ def export_main_track_api():
     for item in (draft_data.get('materials', {}) or {}).get('videos', []) or []:
         if isinstance(item, dict) and item.get('id'):
             video_materials[item['id']] = item
+    placeholder_cover_by_id, placeholder_cover_by_name = _build_draft_placeholder_cover_map(draft_data)
 
     def _us_to_seconds(value, default=0.0):
         try:
@@ -5432,11 +5633,16 @@ def export_main_track_api():
         if not isinstance(segment, dict):
             continue
         material = video_materials.get(segment.get('material_id'))
-        src = (
+        src = _resolve_draft_media_source_path(
+            draft_path,
             (material or {}).get('path')
             or (material or {}).get('file_path')
-            or ''
+            or '',
         )
+        if (not src or not os.path.exists(src)) and segment.get('material_id') in placeholder_cover_by_id:
+            src = placeholder_cover_by_id.get(segment.get('material_id')) or src
+        if (not src or not os.path.exists(src)) and src:
+            src = placeholder_cover_by_name.get(os.path.basename(src)) or src
         if not src or not os.path.exists(src):
             results.append({'index': idx, 'ok': False, 'error': '素材文件不存在', 'source': src})
             continue
