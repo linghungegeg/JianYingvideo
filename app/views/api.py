@@ -1558,6 +1558,23 @@ def _normalize_draft_project_path(template_path: str) -> str:
     return _service_normalize_draft_project_path(template_path)
 
 
+def _resolve_draft_output_root(draft_path: str, output_dir: str | None = None) -> str:
+    explicit = str(output_dir or "").strip()
+    if explicit:
+        return explicit
+
+    configured = str(get_drafts_folder() or "").strip()
+    if configured:
+        return configured
+
+    normalized_draft_path = _normalize_draft_project_path(draft_path)
+    if not normalized_draft_path:
+        return ""
+
+    parent = os.path.dirname(normalized_draft_path.rstrip("\\/"))
+    return parent or normalized_draft_path
+
+
 def _resolve_active_draft_payload(data):
     return _service_resolve_active_draft_payload(data)
 
@@ -2939,7 +2956,10 @@ def draft_split_main_track_api():
         return err
     data = request.get_json(silent=True) or {}
     draft_path = _normalize_draft_project_path((data.get('draft_path') or '').strip())
-    output_dir = (data.get('output_dir') or '').strip() or (get_drafts_folder() or '').strip()
+    output_dir = _resolve_draft_output_root(
+        draft_path,
+        (data.get('output_dir') or '').strip(),
+    )
     track_name = (data.get('track_name') or '').strip()
     save_path = output_dir or 'skip'
     if False and not save_path:

@@ -193,6 +193,23 @@ def _build_partition_folder_map(root_path):
             mapping[key] = folder
     return mapping
 
+
+def _resolve_generated_drafts_root(template_path, export_path=None):
+    explicit = str(export_path or "").strip()
+    if explicit:
+        return explicit
+
+    configured = str(get_drafts_folder() or "").strip()
+    if configured:
+        return configured
+
+    normalized_template_path = normalize_draft_project_path(template_path)
+    if not normalized_template_path:
+        return ""
+
+    parent = os.path.dirname(normalized_template_path.rstrip("\\/"))
+    return parent or normalized_template_path
+
 def _pick_from_list(files, mode, seed_index):
     if not files:
         return None
@@ -759,9 +776,10 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                 else:
                     original_texts = raw_texts
             update_task_meta({'progress': 'reading material files...'})
-            drafts_folder = get_drafts_folder()
+            drafts_folder = _resolve_generated_drafts_root(template_path, export_path)
             if not drafts_folder:
                 raise Exception("drafts folder is not configured")
+            os.makedirs(drafts_folder, exist_ok=True)
 
 
             folder_cache = {}
