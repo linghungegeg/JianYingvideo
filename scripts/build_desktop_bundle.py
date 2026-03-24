@@ -212,6 +212,9 @@ def stage_runtime_files(
         (dist_root / dir_name).mkdir(parents=True, exist_ok=True)
 
     shutil.copy2(preset_path, dist_root / ".env")
+    internal_root = dist_root / "_internal"
+    if internal_root.exists():
+        shutil.copy2(preset_path, internal_root / ".env")
 
     branding_dir = dist_root / "branding"
     branding_dir.mkdir(parents=True, exist_ok=True)

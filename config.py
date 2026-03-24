@@ -1,12 +1,31 @@
 import os
+import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 from runtime_paths_shared import app_install_root, runtime_file_path, runtime_path
 
 
-_APP_ENV_PATH = app_install_root() / ".env"
-if _APP_ENV_PATH.exists():
-    load_dotenv(dotenv_path=_APP_ENV_PATH)
+def _load_runtime_env() -> None:
+    candidates = []
+    install_root = app_install_root()
+    candidates.append(install_root / ".env")
+
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / ".env")
+        candidates.append(exe_dir / "_internal" / ".env")
+
+    seen = set()
+    for candidate in candidates:
+        norm = os.path.normcase(str(candidate))
+        if norm in seen or not candidate.exists():
+            continue
+        seen.add(norm)
+        load_dotenv(dotenv_path=candidate, override=False)
+
+
+_load_runtime_env()
 
 
 def _default_sqlite_uri() -> str:
