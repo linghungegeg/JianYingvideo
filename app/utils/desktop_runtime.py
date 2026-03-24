@@ -1,3 +1,4 @@
+import logging
 import os
 import socket
 import threading
@@ -7,7 +8,10 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
+import sqlalchemy as sa
 
+from app.utils.helpers import cleanup_legacy_runtime_session_state
 from app.utils.runtime_paths import app_install_root, runtime_path
 
 
@@ -62,6 +66,7 @@ def ensure_runtime_dirs(app) -> None:
     }
     for path in targets:
         path.mkdir(parents=True, exist_ok=True)
+    cleanup_legacy_runtime_session_state()
 
 
 def validate_installer_config(app) -> None:
@@ -91,6 +96,244 @@ def validate_installer_config(app) -> None:
         raise RuntimeError(f"installer startup blocked: {joined}")
 
 
+def _load_runtime_models() -> None:
+    from app.models import (
+        ai_generation_log,
+        ai_provider,
+        ai_task,
+        api_audit,
+        api_key,
+        api_quota,
+        api_quota_template,
+        api_quota_usage,
+        api_usage,
+        cdk_code,
+        cdk_template,
+        config,
+        license_binding,
+        manga_generation_log,
+        manga_template,
+        resource_exchange_post,
+        task,
+        task_effect_log,
+        template,
+        template_model,
+        user,
+        user_api_key,
+        user_material,
+        user_quota,
+        user_quota_log,
+        user_token,
+    )
+
+
+def _should_stamp_existing_sqlite(app) -> bool:
+    from app.extensions import db
+
+    _load_runtime_models()
+    engine = db.engine
+    inspector = sa.inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    if not existing_tables:
+        return False
+
+    managed_tables = set(db.metadata.tables.keys())
+    present_runtime_tables = existing_tables & managed_tables
+    # create_app() may pre-create only the config table on a fresh desktop DB.
+    # That should not force a stamp-to-head decision.
+    if not (present_runtime_tables - {"config"}):
+        return False
+
+    current_version = ""
+    if "alembic_version" in existing_tables:
+        try:
+            with engine.connect() as connection:
+                version = connection.execute(sa.text("SELECT version_num FROM alembic_version LIMIT 1")).scalar()
+            current_version = str(version or "").strip()
+        except Exception:
+            current_version = ""
+
+    base_dir = app_install_root()
+    alembic_ini = base_dir / "migrations" / "alembic.ini"
+    script_location = base_dir / "migrations"
+    cfg = AlembicConfig(str(alembic_ini))
+    cfg.set_main_option("script_location", str(script_location))
+    script_dir = ScriptDirectory.from_config(cfg)
+    head_revision = str(script_dir.get_current_head() or "").strip()
+
+    if current_version and head_revision and current_version == head_revision:
+        return False
+    # Desktop local SQLite may contain tables created by earlier packaged builds
+    # while alembic_version is missing or lagging behind. In that case rerunning
+    # intermediate migrations causes duplicate-table crashes on startup.
+    return True
+
+
+def _sqlite_server_default(column: sa.Column):
+    if column.server_default is not None:
+        return column.server_default.arg
+
+    default = getattr(column, "default", None)
+    if default is None or not getattr(default, "is_scalar", False):
+        return None
+
+    value = default.arg
+    if callable(value) or value is None:
+        return None
+    if isinstance(value, bool):
+        return sa.text("1" if value else "0")
+    if isinstance(value, (int, float)):
+        return sa.text(str(value))
+    if isinstance(value, str):
+        escaped = value.replace("'", "''")
+        return sa.text(f"'{escaped}'")
+    return None
+
+
+def _clone_sqlite_add_column(column: sa.Column) -> sa.Column:
+    try:
+        column_type = column.type.copy()
+    except Exception:
+        column_type = column.type
+
+    server_default = _sqlite_server_default(column)
+    nullable = column.nullable if (column.nullable or server_default is not None) else True
+    return sa.Column(
+        column.name,
+        column_type,
+        nullable=nullable,
+        server_default=server_default,
+    )
+
+
+def _ensure_sqlite_runtime_columns(app) -> None:
+    from app.extensions import db
+
+    _load_runtime_models()
+    engine = db.engine
+    inspector = sa.inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    if not existing_tables:
+        return
+
+    preparer = engine.dialect.identifier_preparer
+    with engine.begin() as connection:
+        for table in db.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            try:
+                existing_columns = {
+                    column["name"]
+                    for column in inspector.get_columns(table.name)
+                }
+            except Exception as exc:
+                logging.warning("inspect sqlite columns failed for %s: %s", table.name, exc)
+                continue
+
+            for column in table.columns:
+                if column.primary_key or column.name in existing_columns:
+                    continue
+                try:
+                    add_column = _clone_sqlite_add_column(column)
+                    column_sql = str(
+                        sa.schema.CreateColumn(add_column).compile(dialect=engine.dialect)
+                    )
+                    table_sql = preparer.quote(table.name)
+                    connection.execute(sa.text(f"ALTER TABLE {table_sql} ADD COLUMN {column_sql}"))
+                    existing_columns.add(column.name)
+                except Exception as exc:
+                    logging.warning(
+                        "add sqlite column failed for %s.%s: %s",
+                        table.name,
+                        column.name,
+                        exc,
+                    )
+
+
+def _ensure_sqlite_runtime_indexes(app) -> None:
+    from app.extensions import db
+
+    _load_runtime_models()
+    engine = db.engine
+    inspector = sa.inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    if not existing_tables:
+        return
+
+    with engine.begin() as connection:
+        for table in db.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+
+            try:
+                existing_indexes = {
+                    index["name"]
+                    for index in inspector.get_indexes(table.name)
+                    if index.get("name")
+                }
+                unique_sets = {
+                    tuple(constraint.get("column_names") or [])
+                    for constraint in inspector.get_unique_constraints(table.name)
+                    if constraint.get("column_names")
+                }
+                existing_index_sets = {
+                    tuple(index.get("column_names") or [])
+                    for index in inspector.get_indexes(table.name)
+                    if index.get("column_names")
+                }
+            except Exception as exc:
+                logging.warning("inspect sqlite indexes failed for %s: %s", table.name, exc)
+                continue
+
+            for index in table.indexes:
+                if index.name in existing_indexes:
+                    continue
+                try:
+                    connection.execute(sa.schema.CreateIndex(index))
+                    existing_indexes.add(index.name)
+                    existing_index_sets.add(tuple(column.name for column in index.columns))
+                except Exception as exc:
+                    logging.warning("create sqlite index failed for %s: %s", index.name, exc)
+
+            for column in table.columns:
+                if not column.unique:
+                    continue
+                column_key = (column.name,)
+                if column_key in unique_sets or column_key in existing_index_sets:
+                    continue
+                index_name = f"uq_{table.name}_{column.name}"
+                unique_index = sa.Index(index_name, column, unique=True)
+                try:
+                    connection.execute(sa.schema.CreateIndex(unique_index))
+                    existing_indexes.add(index_name)
+                    existing_index_sets.add(column_key)
+                    unique_sets.add(column_key)
+                except Exception as exc:
+                    logging.warning(
+                        "create sqlite unique index failed for %s.%s: %s",
+                        table.name,
+                        column.name,
+                        exc,
+                    )
+
+
+def _ensure_sqlite_runtime_schema(app) -> None:
+    db_uri = str(app.config.get("SQLALCHEMY_DATABASE_URI") or "").strip().lower()
+    if not db_uri.startswith("sqlite:///"):
+        return
+
+    with app.app_context():
+        from app.extensions import db
+        _load_runtime_models()
+
+        # Desktop local SQLite can lag behind migrations or carry stamped
+        # databases from older packaged builds. create_all(checkfirst) only
+        # fills missing tables and leaves existing ones intact.
+        db.create_all()
+        _ensure_sqlite_runtime_columns(app)
+        _ensure_sqlite_runtime_indexes(app)
+
+
 def run_startup_migrations(app) -> None:
     if not _env_flag("VF_AUTO_MIGRATE", True):
         return
@@ -103,7 +346,10 @@ def run_startup_migrations(app) -> None:
     cfg.set_main_option("script_location", str(script_location))
 
     with app.app_context():
+        if _should_stamp_existing_sqlite(app):
+            command.stamp(cfg, "head")
         command.upgrade(cfg, "head")
+    _ensure_sqlite_runtime_schema(app)
 
 
 def desktop_server_options() -> dict:

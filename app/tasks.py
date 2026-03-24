@@ -6,6 +6,9 @@ import random
 import logging
 import threading
 import subprocess
+import base64
+import time
+import re
 
 try:
     from rq import get_current_job
@@ -17,6 +20,12 @@ from app.extensions import db
 from app.models.task import Task
 from app.models.template_model import TemplateModel
 from app.models.task_effect_log import TaskEffectLog
+from app.services.jianying.local_draft_service import (
+    find_draft_content_files as _service_find_draft_content_files,
+    load_draft_content as _service_load_draft_content,
+    normalize_draft_project_path as _service_normalize_draft_project_path,
+    resolve_active_draft_payload as _service_resolve_active_draft_payload,
+)
 from app.utils.helpers import get_drafts_folder
 from app.utils.ffmpeg_utils import find_ffmpeg
 from app.utils.remote_service import call_remote_api
@@ -28,6 +37,78 @@ _IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')
 _VIDEO_EXTS = ('.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v')
 _AUDIO_EXTS = ('.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac')
 _ALL_MEDIA_EXTS = _IMAGE_EXTS + _VIDEO_EXTS + _AUDIO_EXTS
+_DRAFT_CONTENT_ENCODINGS = (
+    "utf-8",
+    "utf-8-sig",
+    "utf-16",
+    "utf-16-le",
+    "utf-16-be",
+    "gb18030",
+    "gbk",
+)
+
+
+def normalize_draft_project_path(template_path):
+    return _service_normalize_draft_project_path(template_path)
+
+
+def find_draft_content_files(template_path):
+    return _service_find_draft_content_files(template_path)
+
+
+def _resolve_active_draft_payload(data):
+    return _service_resolve_active_draft_payload(data)
+
+
+def _load_json_with_encodings(path):
+    last_err = None
+    raw_bytes = None
+    for attempt in range(3):
+        try:
+            with open(path, "rb") as handle:
+                raw_bytes = handle.read()
+            break
+        except Exception as exc:
+            last_err = exc
+            if attempt >= 2:
+                return None, exc
+            time.sleep(0.15)
+    if not raw_bytes:
+        return None, ValueError("empty file")
+
+    for encoding in _DRAFT_CONTENT_ENCODINGS:
+        try:
+            raw = raw_bytes.decode(encoding).lstrip()
+            if not raw or raw[0] not in "{[":
+                continue
+            decoder = json.JSONDecoder()
+            data, _end = decoder.raw_decode(raw)
+            return data, None
+        except Exception as exc:
+            last_err = exc
+
+    try:
+        b64_text = raw_bytes.decode("ascii", errors="ignore").strip()
+        if b64_text:
+            decoded = base64.b64decode(b64_text, validate=True)
+            for encoding in _DRAFT_CONTENT_ENCODINGS:
+                try:
+                    raw = decoded.decode(encoding).lstrip()
+                    if not raw or raw[0] not in "{[":
+                        continue
+                    decoder = json.JSONDecoder()
+                    data, _end = decoder.raw_decode(raw)
+                    return data, None
+                except Exception as exc:
+                    last_err = exc
+    except Exception as exc:
+        last_err = exc
+    return None, ValueError(str(last_err or "non-json or encrypted content"))
+
+
+def load_draft_content(template_path):
+    return _service_load_draft_content(template_path)
+
 
 def _build_file_index(root_path):
     index = {}
@@ -186,6 +267,7 @@ def _compose_slot_sequence(files, output_path):
     return output_path
 
 def _update_material_paths(draft_data, file_index):
+    draft_data = _resolve_active_draft_payload(draft_data)
     materials = draft_data.get('materials', {})
     for media_type in ('videos', 'images', 'audios'):
         items = materials.get(media_type, [])
@@ -209,6 +291,7 @@ def _update_material_paths(draft_data, file_index):
 def _update_material_paths_from_user_files(draft_data, user_files, material_map):
     if not user_files:
         return
+    draft_data = _resolve_active_draft_payload(draft_data)
     materials = draft_data.get('materials', {})
     for media_type in ('videos', 'images', 'audios'):
         items = materials.get(media_type, [])
@@ -274,6 +357,66 @@ def _safe_update_style_ranges(styles, total_len):
                     end = start
                 fixed.append([start, end])
             style['ranges'] = fixed
+def _extract_template_runtime_info_from_meta(template_path):
+    materials = []
+    material_map = {}
+    texts_info = []
+    material_sources = {}
+    meta_path = os.path.join(template_path, "draft_meta_info.json")
+    if not os.path.exists(meta_path):
+        return materials, material_map, texts_info, material_sources
+    data, err = _load_json_with_encodings(meta_path)
+    if err is not None or not isinstance(data, dict):
+        return materials, material_map, texts_info, material_sources
+
+    source_map = {
+        "photo": "videos",
+        "image": "images",
+        "video": "videos",
+        "music": "audios",
+        "audio": "audios",
+    }
+    prefix_map = {
+        "videos": "video_slot",
+        "images": "image_slot",
+        "audios": "audio_slot",
+    }
+    slot_counters = {"videos": 0, "images": 0, "audios": 0}
+    for group in data.get("draft_materials", []) or []:
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("value", []) or []:
+            if not isinstance(item, dict):
+                continue
+            raw_type = str(item.get("metetype") or item.get("type") or "").strip().lower()
+            if raw_type in {"text", "subtitle"}:
+                continue
+            source_kind = source_map.get(raw_type, "videos")
+            raw_path = item.get("file_Path") or item.get("file_path") or item.get("path") or ""
+            name = os.path.basename(raw_path) if raw_path else ""
+            if not name:
+                name = os.path.basename(
+                    item.get("extra_info") or item.get("name") or item.get("file_name") or ""
+                )
+            if not name:
+                slot_counters[source_kind] += 1
+                material_id = str(item.get("id") or "").strip()
+                suffix = re.sub(r"[^0-9A-Za-z._-]+", "_", material_id).strip("_")
+                if not suffix:
+                    suffix = f"{slot_counters[source_kind]:02d}"
+                name = f"{prefix_map.get(source_kind, 'material_slot')}_{suffix}"
+            if not name:
+                continue
+            if name not in materials:
+                materials.append(name)
+            material_sources[name] = source_kind
+            material_id = item.get("id")
+            if material_id:
+                material_map[name] = material_id
+
+    return materials, material_map, texts_info, material_sources
+
+
 def _extract_template_runtime_info(template_path):
     materials = []
     material_map = {}
@@ -281,15 +424,12 @@ def _extract_template_runtime_info(template_path):
     texts_info = []
     if not template_path:
         return materials, material_map, texts_info, material_sources
-    draft_content = os.path.join(template_path, 'draft_content.json')
-    if not os.path.exists(draft_content):
-        return materials, material_map, texts_info, material_sources
-    try:
-        with open(draft_content, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception:
-        return materials, material_map, texts_info, material_sources
+    normalized_path = normalize_draft_project_path(template_path)
+    data, err, _diagnostics = load_draft_content(normalized_path)
+    if err or not isinstance(data, dict):
+        return _extract_template_runtime_info_from_meta(normalized_path)
 
+    data = _resolve_active_draft_payload(data)
     mats = data.get('materials', {})
     for media_type in ('videos', 'images', 'audios'):
         for item in mats.get(media_type, []) or []:
@@ -339,6 +479,7 @@ def _extract_template_runtime_info(template_path):
             break
 
 def _replace_texts_with_style(draft_data, texts_input, texts_info):
+    draft_data = _resolve_active_draft_payload(draft_data)
     materials = draft_data.get('materials', {})
     text_materials = materials.get('texts', [])
     if not isinstance(text_materials, list) or not text_materials:
@@ -407,6 +548,7 @@ def _replace_texts_with_style(draft_data, texts_input, texts_info):
     return replaced
 
 def _update_subtitle_taskinfo(draft_data):
+    draft_data = _resolve_active_draft_payload(draft_data)
     updated = 0
     text_by_task = {}
     for txt in draft_data.get('materials', {}).get('texts', []):
@@ -448,6 +590,7 @@ def _clear_temp_text_marks(draft_data):
             del txt['_vf_new_text']
 
 def _update_track_text_segments(draft_data):
+    draft_data = _resolve_active_draft_payload(draft_data)
     updated = 0
     text_by_id = {}
     for txt in draft_data.get('materials', {}).get('texts', []):
@@ -581,6 +724,9 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                     raise Exception("legacy template not found")
 
                 template_path = template.template_path
+            template_path = normalize_draft_project_path(template_path)
+            if not template_path or not os.path.isdir(template_path):
+                raise Exception("template_path is invalid")
 
             materials, material_map, texts_info, material_sources = _extract_template_runtime_info(template_path)
 
@@ -640,7 +786,8 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                 update_task_meta({'progress': f'正在复制模板 ({i+1}/{batch_count})...'})
                 shutil.copytree(template_path, new_draft_path)
 
-                draft_content_path = os.path.join(new_draft_path, 'draft_content.json')
+                draft_content_candidates = find_draft_content_files(new_draft_path)
+                draft_content_path = draft_content_candidates[0] if draft_content_candidates else os.path.join(new_draft_path, 'draft_content.json')
                 if not os.path.exists(draft_content_path):
                     raise Exception(f"新草稿缺少 draft_content.json")
 
@@ -656,6 +803,27 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                     print(f"[DEBUG] 修正素材路径失败: {e}")
 
                 # ---------- 素材替换 ----------
+                draft_data, draft_load_err, draft_diagnostics = load_draft_content(new_draft_path)
+                draft_content_path = (
+                    (draft_diagnostics or {}).get("matched_candidate")
+                    or (find_draft_content_files(new_draft_path) or [os.path.join(new_draft_path, 'draft_content.json')])[0]
+                )
+                draft_json_editable = not draft_load_err and isinstance(draft_data, dict)
+                if not draft_json_editable:
+                    print(f"[DEBUG] draft content unreadable, fallback to internal-id replacement: {draft_load_err}")
+                    update_task_meta({'progress': 'official draft fallback: replace by internal id'})
+                if False and (draft_load_err or not isinstance(draft_data, dict)):
+                    raise Exception(draft_load_err or "新草稿读取失败")
+
+                if draft_json_editable:
+                    try:
+                        file_index = _build_file_index(new_draft_path)
+                        _update_material_paths(draft_data, file_index)
+                        with open(draft_content_path, 'w', encoding='utf-8') as f:
+                            json.dump(draft_data, f, ensure_ascii=False)
+                    except Exception as e:
+                        print(f"[DEBUG] matched draft json update failed: {e}")
+
                 user_files = {}
                 if replace_materials and material_names:
                     for idx, fname in enumerate(material_names):
@@ -737,7 +905,7 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                             else:
                                 print(f"[DEBUG] 未找到目标文件: {fname}")
 
-                if replace_materials and user_files:
+                if replace_materials and user_files and draft_json_editable:
                     try:
                         with open(draft_content_path, 'r', encoding='utf-8') as f:
                             draft_data = json.load(f)
@@ -753,6 +921,8 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
 
                 # ---------- 文字替换：结构化更新，保留样式 ----------
                 if replace_texts and texts_input:
+                    if not draft_json_editable:
+                        raise Exception("official encrypted draft does not support text replacement in desktop mode")
                     with open(draft_content_path, 'r', encoding='utf-8') as f:
                         draft_data = json.load(f)
                     replaced_count = _replace_texts_with_style(
@@ -858,13 +1028,20 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
 
     summary = {"applied": [], "warnings": []}
 
-    draft_content = os.path.join(draft_path, 'draft_content.json')
+    normalized_draft_path = normalize_draft_project_path(draft_path)
+    draft_content_candidates = find_draft_content_files(normalized_draft_path)
+    draft_content = draft_content_candidates[0] if draft_content_candidates else os.path.join(normalized_draft_path, 'draft_content.json')
     if not os.path.exists(draft_content):
         summary["warnings"].append("draft_content.json not found")
         return summary
 
-    with open(draft_content, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    data, load_err, diagnostics = load_draft_content(normalized_draft_path)
+    if load_err or not isinstance(data, dict):
+        summary["warnings"].append(load_err or "draft_content.json read failed")
+        if diagnostics.get("matched_candidate"):
+            draft_content = diagnostics["matched_candidate"]
+        return summary
+    draft_content = diagnostics.get("matched_candidate") or draft_content
 
     effects_config = effects_config or {}
 
@@ -1271,7 +1448,8 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
                 local_data = json.load(f)
         except Exception:
             return
-        text_mats_local = {m.get('id'): m for m in local_data.get('materials', {}).get('texts', []) if isinstance(m, dict)}
+        active_local_data = _resolve_active_draft_payload(local_data)
+        text_mats_local = {m.get('id'): m for m in active_local_data.get('materials', {}).get('texts', []) if isinstance(m, dict)}
         for item in text_styles:
             idx = item.get('index')
             styles = item.get('styles')
@@ -1280,7 +1458,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
             target = None
             if isinstance(idx, int):
                 track_ids = []
-                for tr in local_data.get('tracks', []):
+                for tr in active_local_data.get('tracks', []):
                     if tr.get('type') != 'text':
                         continue
                     for seg in tr.get('segments', []):
@@ -1308,6 +1486,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
     def _apply_duo_preprocess(duo_cfg, draft_data):
         if not duo_cfg:
             return
+        active_draft_data = _resolve_active_draft_payload(draft_data)
         ffmpeg = find_ffmpeg()
         if not ffmpeg:
             if duo_cfg.get('reverse'):
@@ -1320,7 +1499,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
 
         def _material_by_index(video_index):
             track_ids = []
-            for tr in draft_data.get('tracks', []):
+            for tr in active_draft_data.get('tracks', []):
                 if tr.get('type') != 'video':
                     continue
                 for seg in tr.get('segments', []):
@@ -1331,7 +1510,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
             return None
 
         def _replace_material_path(mat_id, new_path):
-            for m in draft_data.get('materials', {}).get('videos', []):
+            for m in active_draft_data.get('materials', {}).get('videos', []):
                 if m.get('id') == mat_id:
                     m['path'] = new_path
                     if 'file_path' in m:
@@ -1354,7 +1533,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
             if not mid:
                 summary['warnings'].append('reverse: target not found')
                 continue
-            m = next((x for x in draft_data.get('materials', {}).get('videos', []) if x.get('id') == mid), None)
+            m = next((x for x in active_draft_data.get('materials', {}).get('videos', []) if x.get('id') == mid), None)
             if not m:
                 continue
             src = m.get('path') or m.get('file_path')
@@ -1374,7 +1553,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
             if not mid or not lut_path:
                 summary['warnings'].append('lut: target or lut missing')
                 continue
-            m = next((x for x in draft_data.get('materials', {}).get('videos', []) if x.get('id') == mid), None)
+            m = next((x for x in active_draft_data.get('materials', {}).get('videos', []) if x.get('id') == mid), None)
             if not m:
                 continue
             src = m.get('path') or m.get('file_path')
@@ -1397,7 +1576,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
             if not mid or not bg_path:
                 summary['warnings'].append('green_screen: target or background missing')
                 continue
-            m = next((x for x in draft_data.get('materials', {}).get('videos', []) if x.get('id') == mid), None)
+            m = next((x for x in active_draft_data.get('materials', {}).get('videos', []) if x.get('id') == mid), None)
             if not m:
                 continue
             src = m.get('path') or m.get('file_path')

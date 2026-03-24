@@ -1,4 +1,5 @@
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -180,6 +181,25 @@ def run_command(command: list[str], env: dict, cwd: Path) -> None:
     subprocess.run(command, cwd=str(cwd), env=env, check=True)
 
 
+def ensure_build_dependencies(obfuscate: bool, source_root: Path) -> None:
+    missing = []
+    for module_name in ("PyInstaller", "webview", "PIL"):
+        if importlib.util.find_spec(module_name) is None:
+            missing.append(module_name)
+
+    if missing:
+        joined = ", ".join(missing)
+        raise SystemExit(
+            f"当前打包解释器缺少依赖: {joined}。"
+            f"请切换到已安装这些依赖的 Python 环境后再执行构建。"
+        )
+
+    if obfuscate:
+        pyarmor_exe = source_root / "venv" / "Scripts" / "pyarmor.exe"
+        if not pyarmor_exe.exists():
+            raise SystemExit(f"缺少 PyArmor: {pyarmor_exe}")
+
+
 def stage_runtime_files(
     dist_root: Path,
     preset_path: Path,
@@ -348,6 +368,7 @@ def main() -> None:
 
     env = os.environ.copy()
     env.update(env_values)
+    ensure_build_dependencies(args.obfuscate, ROOT_DIR)
 
     issues = validate_release_env_values(env_values)
     if issues:

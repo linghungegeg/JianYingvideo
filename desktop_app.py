@@ -6,21 +6,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
-
-from werkzeug.serving import make_server
-
-from app import create_app
-from app.utils.desktop_runtime import (
-    desktop_server_options,
-    desktop_target_url,
-    ensure_runtime_dirs,
-    run_startup_migrations,
-    validate_installer_config,
-)
-from app.utils.runtime_paths import runtime_path
+from pathlib import Path
 
 
 def _init_logging() -> str:
+    from app.utils.runtime_paths import runtime_path
+
     log_dir = runtime_path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "desktop-launch.log"
@@ -61,26 +52,64 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
-class ServerThread(threading.Thread):
-    def __init__(self, app, host: str, port: int):
-        super().__init__(daemon=True)
-        self._server = make_server(host, port, app, threaded=True)
-        self.port = int(self._server.server_port)
+def _ensure_fixed_runtime_base_dir() -> str:
+    existing = str(os.getenv("VF_RUNTIME_BASE_DIR") or "").strip()
+    if existing:
+        return existing
 
-    def run(self) -> None:
-        self._server.serve_forever()
+    candidates = [
+        os.getenv("LOCALAPPDATA"),
+        os.getenv("APPDATA"),
+        os.getenv("TEMP"),
+        os.getenv("TMP"),
+    ]
+    base_root = ""
+    for item in candidates:
+        value = str(item or "").strip()
+        if value:
+            base_root = value
+            break
+    if not base_root:
+        base_root = str(Path.home())
 
-    def stop(self) -> None:
-        try:
-            self._server.shutdown()
-        except Exception:
-            logging.exception("shutdown desktop server failed")
-
+    runtime_base = str(Path(base_root).expanduser().resolve() / "VideoFactoryDesktop")
+    os.environ["VF_RUNTIME_BASE_DIR"] = runtime_base
+    return runtime_base
 
 def main() -> int:
+    _ensure_fixed_runtime_base_dir()
+    from werkzeug.serving import make_server
+    from app import create_app
+    from app.utils.desktop_runtime import (
+        desktop_server_options,
+        desktop_target_url,
+        ensure_runtime_dirs,
+        run_startup_migrations,
+        validate_installer_config,
+    )
+    from app.utils.desktop_dialogs import set_active_window
+    from app.utils.runtime_paths import runtime_path
+
+    class ServerThread(threading.Thread):
+        def __init__(self, app, host: str, port: int):
+            super().__init__(daemon=True)
+            self._server = make_server(host, port, app, threaded=True)
+            self.port = int(self._server.server_port)
+
+        def run(self) -> None:
+            self._server.serve_forever()
+
+        def stop(self) -> None:
+            try:
+                self._server.shutdown()
+            except Exception:
+                logging.exception("shutdown desktop server failed")
+
     log_file = _init_logging()
     server_thread = None
     try:
+        runtime_base = str(os.getenv("VF_RUNTIME_BASE_DIR") or "").strip()
+        logging.info("desktop runtime base dir: %s", runtime_base)
         app = create_app()
         ensure_runtime_dirs(app)
         validate_installer_config(app)
@@ -103,6 +132,7 @@ def main() -> int:
             min_size=(1120, 760),
             text_select=True,
         )
+        set_active_window(window)
         logging.info("desktop window ready: %s", target_url)
         if _env_flag("VF_DESKTOP_TEST_MODE", False):
             close_after = max(float(os.getenv("VF_DESKTOP_TEST_SECONDS", "5")), 1.0)
@@ -115,7 +145,11 @@ def main() -> int:
                     logging.exception("auto close desktop test window failed")
 
             threading.Thread(target=_close_window, daemon=True).start()
-        webview.start(debug=False)
+        webview.start(
+            debug=False,
+            private_mode=False,
+            storage_path=str(runtime_path("webview")),
+        )
         logging.info("desktop window closed")
         return 0
     except Exception as exc:

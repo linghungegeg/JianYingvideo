@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 from flask import current_app
+import sqlalchemy as sa
 from app.extensions import db
 from app.models.config import Config
 from app.models.user_material import UserMaterial
@@ -15,6 +16,7 @@ from app.utils.runtime_paths import runtime_file_path, runtime_path
 
 
 _SECURE_VALUE_PREFIX = "enc::"
+_JSON_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "gbk")
 _SENSITIVE_CONFIG_KEYS = {
     "token",
     "api_key",
@@ -24,6 +26,7 @@ _SENSITIVE_CONFIG_KEYS = {
 }
 _RUNTIME_LOCAL_STATE_KEYS = {
     "user_session_token",
+    "user_session_persist",
     "admin_session_token",
     "license_offline_token",
     "license_offline_meta",
@@ -51,46 +54,105 @@ _SITE_SETTING_ENV_KEYS = {
 }
 
 
+def _ensure_config_table() -> bool:
+    try:
+        inspector = sa.inspect(db.engine)
+        if "config" in inspector.get_table_names():
+            return True
+        Config.__table__.create(bind=db.engine, checkfirst=True)
+        return True
+    except Exception as exc:
+        logging.warning("ensure config table failed: %s", exc)
+        return False
+
+
+def _runtime_config_fallback_file() -> Path:
+    return runtime_file_path("data", "runtime-config-fallback.json")
+
+
+def _read_runtime_config_fallback() -> dict:
+    path = _runtime_config_fallback_file()
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        logging.warning("read runtime config fallback failed: %s", exc)
+        return {}
+
+
+def _write_runtime_config_fallback(payload: dict) -> None:
+    path = _runtime_config_fallback_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload or {}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def get_config(key, default=''):
     env_key = _SITE_SETTING_ENV_KEYS.get(str(key or "").strip())
     if env_key:
         env_value = (os.getenv(env_key) or "").strip()
         if env_value:
             return env_value
+    fallback_payload = _read_runtime_config_fallback()
     try:
+        _ensure_config_table()
         config = Config.query.filter_by(key=key).first()
-        return config.value if config else default
+        if config and config.value is not None:
+            return config.value
     except Exception as exc:
         logging.warning("get_config fallback for %s: %s", key, exc)
-        return default
+    if key in fallback_payload:
+        return fallback_payload.get(key) or default
+    return default
 
 
 def set_config(key, value):
-    config = Config.query.filter_by(key=key).first()
-    if config:
-        config.value = value
-    else:
-        config = Config(key=key, value=value)
-        db.session.add(config)
-    db.session.commit()
+    normalized = '' if value is None else str(value)
+    try:
+        _ensure_config_table()
+        config = Config.query.filter_by(key=key).first()
+        if config:
+            config.value = normalized
+        else:
+            config = Config(key=key, value=normalized)
+            db.session.add(config)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        logging.warning("set_config fallback for %s: %s", key, exc)
+    payload = _read_runtime_config_fallback()
+    payload[key] = normalized
+    _write_runtime_config_fallback(payload)
 
 
 def set_configs(values: dict):
     items = values if isinstance(values, dict) else {}
     if not items:
         return
-    existing = {
-        config.key: config
-        for config in Config.query.filter(Config.key.in_(list(items.keys()))).all()
+    normalized_items = {
+        key: '' if value is None else str(value)
+        for key, value in items.items()
     }
-    for key, value in items.items():
-        normalized = '' if value is None else str(value)
-        config = existing.get(key)
-        if config:
-            config.value = normalized
-            continue
-        db.session.add(Config(key=key, value=normalized))
-    db.session.commit()
+    try:
+        _ensure_config_table()
+        existing = {
+            config.key: config
+            for config in Config.query.filter(Config.key.in_(list(normalized_items.keys()))).all()
+        }
+        for key, value in normalized_items.items():
+            config = existing.get(key)
+            if config:
+                config.value = value
+                continue
+            db.session.add(Config(key=key, value=value))
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        logging.warning("set_configs fallback: %s", exc)
+    payload = _read_runtime_config_fallback()
+    payload.update(normalized_items)
+    _write_runtime_config_fallback(payload)
 
 
 def get_material_folder():
@@ -105,7 +167,498 @@ def set_drafts_folder(path):
     set_config('drafts_folder', path)
 
 
+def _existing_drive_roots() -> list[Path]:
+    roots = []
+    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        drive = Path(f"{letter}:/")
+        try:
+            if drive.exists():
+                roots.append(drive)
+        except Exception:
+            continue
+    return roots
+
+
+def _discover_nested_draft_roots(max_depth: int = 3) -> list[str]:
+    roots: list[str] = []
+    seen: set[str] = set()
+    target_names = {
+        "com.lveditor.draft",
+        "jianyingpro drafts",
+        "capcut drafts",
+        "剪映草稿",
+        "草稿",
+    }
+    skip_names = {
+        "$recycle.bin",
+        "system volume information",
+        ".git",
+        "node_modules",
+        "__pycache__",
+    }
+
+    def _remember(path: Path) -> None:
+        norm = os.path.normpath(str(path))
+        if norm and norm not in seen:
+            seen.add(norm)
+            roots.append(norm)
+
+    for drive in _existing_drive_roots():
+        queue: list[tuple[Path, int]] = [(drive, 0)]
+        visited: set[str] = set()
+        while queue:
+            current, depth = queue.pop(0)
+            norm = os.path.normpath(str(current))
+            if norm in visited:
+                continue
+            visited.add(norm)
+
+            name = current.name.strip().lower()
+            if name in skip_names:
+                continue
+            if name in target_names:
+                _remember(current)
+                continue
+            if depth >= max_depth:
+                continue
+            try:
+                children = [child for child in current.iterdir() if child.is_dir()]
+            except Exception:
+                continue
+            for child in children:
+                child_name = child.name.strip().lower()
+                if child_name in skip_names:
+                    continue
+                if depth >= 2 and child_name not in target_names:
+                    looks_related = (
+                        "jianying" in child_name
+                        or "capcut" in child_name
+                        or "draft" in child_name
+                        or "剪映" in child.name
+                        or "草稿" in child.name
+                    )
+                    if not looks_related:
+                        continue
+                queue.append((child, depth + 1))
+    return roots
+
+
+def _scan_drive_for_draft_projects(max_depth: int = 6, max_hits: int = 200) -> list[dict]:
+    results: list[dict] = []
+    seen: set[str] = set()
+    skip_names = {
+        "$recycle.bin",
+        "system volume information",
+        ".git",
+        "node_modules",
+        "__pycache__",
+    }
+    skip_prefixes = (".cloud_cache", ".recycle_bin", ".trashed", "$recycle.bin")
+
+    def _contains_skipped_part(path: Path) -> bool:
+        for part in path.parts:
+            lowered = str(part or "").strip().lower()
+            if lowered.startswith(skip_prefixes):
+                return True
+        return False
+
+    def _should_descend(path: Path, depth: int) -> bool:
+        if _contains_skipped_part(path):
+            return False
+        if depth <= 1:
+            return True
+        name = path.name.strip().lower()
+        return (
+            "jianying" in name
+            or "capcut" in name
+            or "draft" in name
+            or "剪映" in path.name
+            or "草稿" in path.name
+        )
+
+    for drive in _existing_drive_roots():
+        queue: list[tuple[Path, int]] = [(drive, 0)]
+        visited: set[str] = set()
+        while queue and len(results) < max_hits:
+            current, depth = queue.pop(0)
+            norm = os.path.normpath(str(current))
+            if norm in visited:
+                continue
+            visited.add(norm)
+
+            lowered = current.name.strip().lower()
+            if lowered in skip_names or _contains_skipped_part(current):
+                continue
+            try:
+                draft_file = current / "draft_content.json"
+                if draft_file.exists():
+                    project_path = norm
+                    if project_path not in seen:
+                        seen.add(project_path)
+                        results.append(
+                            {
+                                "name": os.path.basename(project_path.rstrip("\\/")),
+                                "path": project_path,
+                                "root": os.path.normpath(str(current.parent)),
+                                "source": "全盘扫描",
+                                "updated_at": datetime.fromtimestamp(draft_file.stat().st_mtime).isoformat(),
+                            }
+                        )
+                    continue
+            except Exception:
+                continue
+            if depth >= max_depth:
+                continue
+            try:
+                children = [child for child in current.iterdir() if child.is_dir()]
+            except Exception:
+                continue
+            for child in children:
+                child_name = child.name.strip().lower()
+                if child_name in skip_names:
+                    continue
+                if not _should_descend(child, depth):
+                    continue
+                queue.append((child, depth + 1))
+    return results
+
+
+def _read_recorded_draft_roots() -> list[str]:
+    roots: list[str] = []
+    seen: set[str] = set()
+    config_candidates = []
+    home = Path.home()
+
+    for base in (
+        os.environ.get("LOCALAPPDATA"),
+        os.environ.get("APPDATA"),
+        str(home / "AppData" / "Local"),
+        str(home / "AppData" / "Roaming"),
+    ):
+        if not base:
+            continue
+        base_path = Path(base)
+        config_candidates.extend(
+            [
+                base_path / "JianyingPro" / "JianyingPro Drafts.json",
+                base_path / "CapCut" / "CapCut Drafts.json",
+                base_path / "CapCut International" / "CapCut Drafts.json",
+            ]
+        )
+
+    for path in config_candidates:
+        try:
+            if not path.exists():
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key in ("draft_root_path", "drafts_root_path", "root_path", "folder", "path"):
+            value = str(payload.get(key) or "").strip()
+            norm = os.path.normpath(value)
+            if norm and norm not in seen:
+                seen.add(norm)
+                roots.append(norm)
+    return roots
+
+
+def _load_json_file(path: Path):
+    for encoding in _JSON_ENCODINGS:
+        try:
+            return json.loads(path.read_text(encoding=encoding))
+        except Exception:
+            continue
+    return None
+
+
+def _draft_timestamp_to_epoch(value) -> float:
+    try:
+        number = float(value or 0)
+    except Exception:
+        return 0.0
+    if number <= 0:
+        return 0.0
+    if number > 1_000_000_000_000_000:
+        return number / 1_000_000.0
+    if number > 1_000_000_000_000:
+        return number / 1000.0
+    return number
+
+
+def _discover_root_meta_files(path: Path) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def _remember(candidate: Path) -> None:
+        norm = os.path.normpath(str(candidate))
+        if norm and norm not in seen and candidate.exists():
+            seen.add(norm)
+            candidates.append(candidate)
+
+    if path.is_file() and path.name.lower() == "root_meta_info.json":
+        _remember(path)
+        return candidates
+
+    direct_root_meta = path / "root_meta_info.json"
+    if direct_root_meta.exists():
+        _remember(direct_root_meta)
+
+    if not path.is_dir():
+        return candidates
+
+    try:
+        children = [child for child in path.iterdir() if child.is_dir()]
+    except Exception:
+        return candidates
+
+    for child in children:
+        lowered = child.name.strip().lower()
+        if "draft" not in lowered and "lveditor" not in lowered:
+            continue
+        root_meta = child / "root_meta_info.json"
+        if root_meta.exists():
+            _remember(root_meta)
+    return candidates
+
+
+def extract_root_meta_draft_projects(path: str, limit: int | None = None) -> list[dict]:
+    normalized = os.path.normpath(str(path or "").strip())
+    if not normalized:
+        return []
+
+    root_meta_files = _discover_root_meta_files(Path(normalized))
+    if not root_meta_files:
+        return []
+
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    for root_meta_path in root_meta_files:
+        payload = _load_json_file(root_meta_path)
+        if not isinstance(payload, dict):
+            continue
+        entries = payload.get("all_draft_store") or []
+        if not isinstance(entries, list):
+            continue
+
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            if bool(item.get("draft_is_invisible")):
+                continue
+            if str(item.get("tm_draft_removed") or "").strip() not in {"", "0", "0.0"}:
+                continue
+
+            path_candidates = []
+            for raw_value in (
+                item.get("draft_fold_path"),
+                os.path.dirname(str(item.get("draft_json_file") or "").strip()),
+            ):
+                value = str(raw_value or "").strip()
+                if value:
+                    path_candidates.append(value)
+
+            root_value = str(item.get("draft_root_path") or "").strip()
+            name_value = str(item.get("draft_name") or "").strip()
+            if root_value and name_value:
+                path_candidates.append(os.path.join(root_value, name_value))
+
+            draft_path = ""
+            for raw_candidate in path_candidates:
+                candidate = os.path.normpath(raw_candidate.replace("/", os.sep))
+                if not candidate:
+                    continue
+                if os.path.isfile(candidate):
+                    candidate = os.path.dirname(candidate)
+                if os.path.exists(os.path.join(candidate, "draft_content.json")):
+                    draft_path = candidate
+                    break
+            if not draft_path or draft_path in seen:
+                continue
+
+            seen.add(draft_path)
+            updated_epoch = max(
+                _draft_timestamp_to_epoch(item.get("tm_draft_modified")),
+                _draft_timestamp_to_epoch(item.get("tm_draft_create")),
+            )
+            if updated_epoch <= 0:
+                try:
+                    updated_epoch = os.path.getmtime(os.path.join(draft_path, "draft_content.json"))
+                except Exception:
+                    updated_epoch = 0.0
+            updated_at = datetime.fromtimestamp(updated_epoch).isoformat() if updated_epoch > 0 else ""
+            results.append(
+                {
+                    "name": name_value or os.path.basename(draft_path.rstrip("\\/")),
+                    "path": draft_path,
+                    "root": os.path.normpath(root_value) if root_value else os.path.normpath(os.path.dirname(draft_path)),
+                    "draft_id": str(item.get("draft_id") or "").strip(),
+                    "updated_at": updated_at,
+                }
+            )
+
+    results.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    if isinstance(limit, int) and limit > 0:
+        return results[:limit]
+    return results
+
+
 def _candidate_draft_roots() -> list[str]:
+    roots = []
+    configured = str(get_drafts_folder() or "").strip()
+    if configured:
+        roots.append(configured)
+
+    home = Path.home()
+    env_candidates = [
+        os.environ.get("LOCALAPPDATA"),
+        os.environ.get("APPDATA"),
+        str(home / "AppData" / "Local"),
+        str(home / "AppData" / "Roaming"),
+    ]
+    suffixes = [
+        ("JianyingPro", "User Data", "Projects", "com.lveditor.draft"),
+        ("JianyingPro", "User Data", "Projects"),
+        ("CapCut", "User Data", "Projects", "com.lveditor.draft"),
+        ("CapCut", "User Data", "Projects"),
+        ("CapCut International", "User Data", "Projects", "com.lveditor.draft"),
+        ("CapCut International", "User Data", "Projects"),
+    ]
+    for base in env_candidates:
+        if not base:
+            continue
+        for suffix in suffixes:
+            roots.append(str(Path(base, *suffix)))
+
+    # common manual folders on any local drive, not just C/D/E
+    drive_suffixes = [
+        ("JianyingPro Drafts",),
+        ("CapCut Drafts",),
+        ("jycaogao", "JianyingPro Drafts"),
+        ("Videos", "JianyingPro Drafts"),
+        ("Videos", "CapCut Drafts"),
+    ]
+    for drive in _existing_drive_roots():
+        for suffix in drive_suffixes:
+            roots.append(str(drive.joinpath(*suffix)))
+
+    roots.extend(
+        [
+            str(home / "Videos" / "JianyingPro Drafts"),
+            str(home / "Videos" / "CapCut Drafts"),
+        ]
+    )
+    roots.extend(_read_recorded_draft_roots())
+    roots.extend(_discover_nested_draft_roots(max_depth=4))
+
+    deduped = []
+    seen = set()
+    for item in roots:
+        norm = os.path.normpath(str(item).strip())
+        if not norm:
+            continue
+        if norm in seen:
+            continue
+        seen.add(norm)
+        deduped.append(norm)
+    return deduped
+
+
+def discover_draft_roots() -> list[dict]:
+    items = []
+    for root in _candidate_draft_roots():
+        exists = os.path.isdir(root)
+        label = "自定义目录" if os.path.normpath(root) == os.path.normpath(get_drafts_folder() or "") else (
+            "剪映国际版" if "capcut" in root.lower() else "剪映"
+        )
+        items.append({"path": root, "label": label, "exists": exists})
+    return items
+
+
+def list_local_drafts(limit: int = 30) -> list[dict]:
+    drafts = []
+    seen = set()
+    skip_prefixes = (".cloud_cache", ".recycle_bin", ".trashed", "$recycle.bin")
+
+    def _should_skip_dir(name: str) -> bool:
+        lowered = str(name or "").strip().lower()
+        return not lowered or lowered.startswith(skip_prefixes)
+
+    def _iter_draft_directories(root: str, max_depth: int = 6):
+        base = Path(root)
+        if not base.exists() or not base.is_dir():
+            return
+
+        walked = set()
+
+        def _visit(path: Path, depth: int):
+            if _should_skip_dir(path.name):
+                return
+            norm = os.path.normpath(str(path))
+            if norm in walked:
+                return
+            walked.add(norm)
+            if (path / "draft_content.json").exists():
+                yield norm
+                return
+            if depth >= max_depth:
+                return
+            try:
+                children = [child for child in path.iterdir() if child.is_dir()]
+            except Exception:
+                return
+            for child in children:
+                yield from _visit(child, depth + 1)
+
+        yield from _visit(base, 0)
+
+    for root_info in discover_draft_roots():
+        root = root_info["path"]
+        if not root_info["exists"]:
+            continue
+        try:
+            metadata_drafts = extract_root_meta_draft_projects(root, limit=max(limit * 3, 60))
+            for item in metadata_drafts:
+                norm = os.path.normpath(str(item.get("path") or "").strip())
+                if not norm or norm in seen:
+                    continue
+                seen.add(norm)
+                drafts.append(
+                    {
+                        "name": item.get("name") or os.path.basename(norm.rstrip("\\/")),
+                        "path": norm,
+                        "root": item.get("root") or root,
+                        "source": root_info["label"],
+                        "updated_at": item.get("updated_at") or "",
+                    }
+                )
+            if metadata_drafts:
+                continue
+            for norm in _iter_draft_directories(root, max_depth=6):
+                if norm in seen:
+                    continue
+                seen.add(norm)
+                stat = os.stat(norm)
+                drafts.append(
+                    {
+                        "name": os.path.basename(norm.rstrip("\\/")),
+                        "path": norm,
+                        "root": root,
+                        "source": root_info["label"],
+                        "updated_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    }
+                )
+        except Exception:
+            continue
+    if not drafts:
+        drafts.extend(_scan_drive_for_draft_projects(max_depth=6, max_hits=max(limit * 3, 60)))
+    drafts.sort(key=lambda item: item["updated_at"], reverse=True)
+    return drafts[:limit]
+
+
+def _legacy_candidate_draft_roots() -> list[str]:
     roots = []
     configured = get_drafts_folder()
     if configured:
@@ -132,7 +685,6 @@ def _candidate_draft_roots() -> list[str]:
         for suffix in suffixes:
             roots.append(str(Path(base, *suffix)))
 
-    # common manual folders
     roots.extend(
         [
             str(home / "Videos" / "JianyingPro Drafts"),
@@ -156,7 +708,7 @@ def _candidate_draft_roots() -> list[str]:
     return deduped
 
 
-def discover_draft_roots() -> list[dict]:
+def _legacy_discover_draft_roots() -> list[dict]:
     items = []
     for root in _candidate_draft_roots():
         exists = os.path.isdir(root)
@@ -167,7 +719,7 @@ def discover_draft_roots() -> list[dict]:
     return items
 
 
-def list_local_drafts(limit: int = 30) -> list[dict]:
+def _legacy_list_local_drafts(limit: int = 30) -> list[dict]:
     drafts = []
     seen = set()
     for root_info in discover_draft_roots():
@@ -501,6 +1053,23 @@ def remove_runtime_local_state_value(key: str) -> dict:
     if normalized in payload:
         payload.pop(normalized, None)
         return _write_runtime_local_state_file(payload)
+    return payload
+
+
+def cleanup_legacy_runtime_session_state() -> dict:
+    payload = _read_runtime_local_state_file()
+    changed = False
+
+    if payload.get("user_session_token") and not payload.get("user_session_persist"):
+        payload.pop("user_session_token", None)
+        changed = True
+
+    if payload.get("admin_session_token") == "":
+        payload.pop("admin_session_token", None)
+        changed = True
+
+    if changed:
+        _write_runtime_local_state_file(payload)
     return payload
 
 

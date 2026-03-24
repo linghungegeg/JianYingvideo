@@ -68,6 +68,14 @@ from app.utils.jianying_mcp.utils.index_manager import index_manager
 from app.services.duo_video_service import DuoVideoService
 from app.services.ai_service import generate_with_key
 from app.services.openclaw_client import OpenClawClient
+from app.services.jianying.local_draft_service import (
+    find_draft_content_files as _service_find_draft_content_files,
+    load_draft_content as _service_load_draft_content,
+    load_json_file_with_encodings as _service_load_json_file_with_encodings,
+    normalize_draft_project_path as _service_normalize_draft_project_path,
+    resolve_active_draft_payload as _service_resolve_active_draft_payload,
+)
+from app.utils.desktop_dialogs import get_active_window
 from app.utils.split_utils import (
     list_video_files,
     split_fixed_duration,
@@ -222,7 +230,86 @@ def _desktop_dialog_unavailable_response():
     ), 400
 
 
+def _run_desktop_window_dialog(dialog_kind: str) -> Optional[str]:
+    window = get_active_window()
+    if window is None:
+        return None
+
+    try:
+        import webview
+
+        dialog_type = webview.FileDialog.FOLDER if dialog_kind == "folder" else webview.FileDialog.OPEN
+        result = window.create_file_dialog(dialog_type=dialog_type)
+    except Exception:
+        logging.exception("desktop window dialog failed: %s", dialog_kind)
+        return None
+
+    if not result:
+        return ""
+    if isinstance(result, (list, tuple)):
+        return str(result[0] or "").strip()
+    return str(result or "").strip()
+
+
+def _run_windows_dialog(dialog_kind: str) -> Optional[str]:
+    if platform.system().lower() != "windows":
+        return None
+    scripts = {
+        "folder": """
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.ShowNewFolderButton = $true
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    Write-Output $dialog.SelectedPath
+}
+""".strip(),
+        "file": """
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Multiselect = $false
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    Write-Output $dialog.FileName
+}
+""".strip(),
+    }
+    script = scripts.get(dialog_kind)
+    if not script:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-STA",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            check=False,
+            timeout=120,
+        )
+    except Exception:
+        logging.exception("windows dialog failed: %s", dialog_kind)
+        return None
+    if completed.returncode != 0:
+        logging.warning("windows dialog exited with %s: %s", completed.returncode, completed.stderr)
+        return None
+    return (completed.stdout or "").strip() or ""
+
+
 def _select_local_directory():
+    if get_active_window() is not None:
+        return _run_desktop_window_dialog("folder")
+    selected = _run_windows_dialog("folder")
+    if selected is not None:
+        return selected
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -238,6 +325,11 @@ def _select_local_directory():
 
 
 def _select_local_file():
+    if get_active_window() is not None:
+        return _run_desktop_window_dialog("file")
+    selected = _run_windows_dialog("file")
+    if selected is not None:
+        return selected
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -1459,63 +1551,19 @@ def _assistant_route_preview(command: str, context: Optional[dict] = None) -> di
     }
 
 def _find_draft_content_files(template_path: str):
-    if not template_path:
-        return []
-    candidates = [os.path.join(template_path, "draft_content.json")]
-    timelines_root = os.path.join(template_path, "Timelines")
-    if os.path.isdir(timelines_root):
-        for root, _, files in os.walk(timelines_root):
-            if "draft_content.json" in files:
-                candidates.append(os.path.join(root, "draft_content.json"))
-    return _dedupe_keep_order(candidates)
+    return _service_find_draft_content_files(template_path)
+
+
+def _normalize_draft_project_path(template_path: str) -> str:
+    return _service_normalize_draft_project_path(template_path)
+
+
+def _resolve_active_draft_payload(data):
+    return _service_resolve_active_draft_payload(data)
+
 
 def _load_json_with_encodings(path: str):
-    last_err = None
-    raw_bytes = None
-    for attempt in range(3):
-        try:
-            with open(path, "rb") as f:
-                raw_bytes = f.read()
-            break
-        except Exception as e:
-            last_err = e
-            if attempt >= 2:
-                return None, e
-            time.sleep(0.15)
-    if not raw_bytes:
-        return None, ValueError("empty file")
-
-    for enc in _DRAFT_CONTENT_ENCODINGS:
-        try:
-            raw = raw_bytes.decode(enc).lstrip()
-            if not raw:
-                continue
-            if raw[0] in "{[":
-                decoder = json.JSONDecoder()
-                data, _end = decoder.raw_decode(raw)
-                return data, None
-        except Exception as e:
-            last_err = e
-
-    # try base64-wrapped JSON
-    try:
-        import base64
-        b64_text = raw_bytes.decode("ascii", errors="ignore").strip()
-        if b64_text:
-            decoded = base64.b64decode(b64_text, validate=True)
-            for enc in _DRAFT_CONTENT_ENCODINGS:
-                try:
-                    text = decoded.decode(enc).lstrip()
-                    if not text or text[0] not in "{[":
-                        continue
-                    decoder = json.JSONDecoder()
-                    data, _end = decoder.raw_decode(text)
-                    return data, None
-                except Exception as e:
-                    last_err = e
-    except Exception as e:
-        last_err = e
-    return None, ValueError("non-json or encrypted content")
+    return _service_load_json_file_with_encodings(path)
 
 def _guess_extension(url: str, content_type: str, fallback: str) -> str:
     if content_type:
@@ -1789,7 +1837,24 @@ def _encode_file_to_data_uri(path: str) -> str:
     except Exception:
         pass
 
-def _load_draft_content(template_path):
+def _load_draft_content_legacy_unused_0(template_path):
+    if not template_path:
+        return None, '缺少草稿路径'
+    candidates = _find_draft_content_files(template_path)
+    draft_logger.info("draft_inspect: candidates=%s", candidates)
+    for draft_content in candidates:
+        if not os.path.exists(draft_content):
+            continue
+        data, err = _load_json_with_encodings(draft_content)
+        if err is None:
+            draft_logger.info("draft_inspect: loaded=%s", draft_content)
+            return data, None
+        draft_logger.warning("draft_inspect: load_failed path=%s err=%s", draft_content, err)
+    if candidates and any(os.path.exists(p) for p in candidates):
+        return None, '解析失败: draft_content.json 读取失败'
+    return None, '未找到 draft_content.json'
+
+def _load_draft_content_legacy_unused_1(template_path):
     if not template_path:
         return None, '缺少草稿路径'
     candidates = _find_draft_content_files(template_path)
@@ -1807,6 +1872,10 @@ def _load_draft_content(template_path):
     return None, '未找到 draft_content.json'
 
 def _extract_materials_from_meta(template_path: str):
+    template_path = _normalize_draft_project_path(template_path)
+    meta_entries = _extract_meta_material_entries(template_path)
+    if meta_entries:
+        return [item.get("name") for item in meta_entries if item.get("name")], None
     meta_path = os.path.join(template_path, "draft_meta_info.json")
     if not os.path.exists(meta_path):
         return [], None
@@ -1840,6 +1909,162 @@ def _extract_materials_from_meta(template_path: str):
             if name and name not in materials:
                 materials.append(name)
     return materials, None
+
+
+def _load_draft_virtual_store(template_path: str):
+    template_path = _normalize_draft_project_path(template_path)
+    store_path = os.path.join(template_path, "draft_virtual_store.json")
+    if not os.path.exists(store_path):
+        return None, None
+    data, err = _load_json_with_encodings(store_path)
+    if err is not None or not isinstance(data, dict):
+        return None, f"解析失败: draft_virtual_store.json 读取失败 ({err})"
+    return data, None
+
+
+def _load_draft_content(template_path):
+    data, err, _diagnostics = _service_load_draft_content(template_path, logger=draft_logger)
+    return data, err
+
+
+def _extract_meta_material_entries(template_path: str) -> list[dict]:
+    template_path = _normalize_draft_project_path(template_path)
+    meta_path = os.path.join(template_path, "draft_meta_info.json")
+    if not os.path.exists(meta_path):
+        return []
+    data, err = _load_json_with_encodings(meta_path)
+    if err is not None or not isinstance(data, dict):
+        return []
+
+    source_map = {
+        "photo": "videos",
+        "image": "images",
+        "video": "videos",
+        "music": "audios",
+        "audio": "audios",
+    }
+    prefix_map = {
+        "videos": "video_slot",
+        "images": "image_slot",
+        "audios": "audio_slot",
+    }
+    counters = defaultdict(int)
+    entries = []
+    seen = set()
+
+    for group in data.get("draft_materials", []) or []:
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("value", []) or []:
+            if not isinstance(item, dict):
+                continue
+            raw_type = str(item.get("metetype") or item.get("type") or "").strip().lower()
+            if raw_type in {"text", "subtitle"}:
+                continue
+            source = source_map.get(raw_type, "videos")
+            path = (
+                item.get("file_Path")
+                or item.get("file_path")
+                or item.get("path")
+                or ""
+            )
+            name = os.path.basename(path) if path else ""
+            if not name:
+                name = (
+                    item.get("extra_info")
+                    or item.get("name")
+                    or item.get("file_name")
+                    or ""
+                )
+                if name:
+                    name = os.path.basename(name)
+            if not name:
+                counters[source] += 1
+                material_id = str(item.get("id") or "").strip()
+                suffix = re.sub(r"[^0-9A-Za-z_-]+", "_", material_id).strip("_")
+                if not suffix:
+                    suffix = f"{counters[source]:02d}"
+                name = f"{prefix_map.get(source, 'material_slot')}_{suffix}"
+            if name in seen:
+                continue
+            seen.add(name)
+            entries.append(
+                {
+                    "name": name,
+                    "source": source,
+                    "material_id": item.get("id"),
+                }
+            )
+    return entries
+
+
+def _extract_official_track_fallback(template_path: str):
+    template_path = _normalize_draft_project_path(template_path)
+    meta_path = os.path.join(template_path, "draft_meta_info.json")
+    meta_data, meta_err = _load_json_with_encodings(meta_path) if os.path.exists(meta_path) else (None, None)
+    store_data, store_err = _load_draft_virtual_store(template_path)
+
+    material_counts = {"video": 0, "audio": 0, "text": 0}
+    if isinstance(meta_data, dict):
+        for group in meta_data.get("draft_materials", []) or []:
+            if not isinstance(group, dict):
+                continue
+            for item in group.get("value", []) or []:
+                if not isinstance(item, dict):
+                    continue
+                raw_type = str(item.get("metetype") or item.get("type") or "").strip().lower()
+                if raw_type in {"music", "audio"}:
+                    material_counts["audio"] += 1
+                elif raw_type in {"text", "subtitle"}:
+                    material_counts["text"] += 1
+                else:
+                    material_counts["video"] += 1
+
+    placeholder_count = 0
+    encrypted = False
+    if isinstance(store_data, dict):
+        for group in store_data.get("draft_virtual_store", []) or []:
+            if not isinstance(group, dict):
+                continue
+            group_type = group.get("type")
+            values = group.get("value") or []
+            if group_type == 1 and isinstance(values, list):
+                placeholder_count = max(
+                    placeholder_count,
+                    len([item for item in values if isinstance(item, dict) and (item.get("child_id") or item.get("parent_id"))]),
+                )
+            if group_type == 2 and isinstance(values, list):
+                encrypted = any(bool(item.get("is_encrypted")) for item in values if isinstance(item, dict))
+
+    scan_materials = _scan_material_files(template_path)
+    audio_scan_count = len([name for name in scan_materials if os.path.splitext(name)[1].lower() in _AUDIO_EXTS])
+    visual_scan_count = len(scan_materials) - audio_scan_count
+    video_segments = max(material_counts["video"], placeholder_count, visual_scan_count)
+    audio_segments = max(material_counts["audio"], audio_scan_count)
+
+    tracks = []
+    seg_map = {}
+    if video_segments > 0:
+        tracks.append({"name": "video_0", "type": "video"})
+        seg_map["video_0"] = video_segments
+    if audio_segments > 0:
+        tracks.append({"name": "audio_1", "type": "audio"})
+        seg_map["audio_1"] = audio_segments
+
+    if tracks:
+        draft_logger.info(
+            "draft_inspect: official_fallback tracks=%s video_segments=%s audio_segments=%s encrypted=%s",
+            len(tracks),
+            video_segments,
+            audio_segments,
+            encrypted,
+        )
+        return tracks, seg_map, None
+
+    error = meta_err or store_err or "解析失败"
+    if encrypted:
+        error = "解析失败: 官方草稿时间线不可直接读取"
+    return [], {}, error
 
 def _scan_material_files(template_path: str):
     if not template_path:
@@ -1875,9 +2100,13 @@ def _scan_material_files(template_path: str):
 def _extract_template_material_entries(template_path: str) -> list[dict]:
     data, err = _load_draft_content(template_path)
     if err or not isinstance(data, dict):
+        meta_entries = _extract_meta_material_entries(template_path)
+        if meta_entries:
+            return [{"name": item["name"], "source": item.get("source")} for item in meta_entries]
         materials, _texts, _extract_err = _extract_template_info(template_path)
         return [{'name': name, 'source': None} for name in materials]
 
+    data = _resolve_active_draft_payload(data)
     entries = []
     seen = set()
     mats = data.get('materials', {})
@@ -1957,6 +2186,7 @@ def _filter_replaceable_template_materials(
 
 
 def _extract_template_info(template_path):
+    template_path = _normalize_draft_project_path(template_path)
     materials = []
     texts = []
     data, err = _load_draft_content(template_path)
@@ -1981,6 +2211,7 @@ def _extract_template_info(template_path):
             return scan_materials, texts, None
         return materials, texts, err
 
+    data = _resolve_active_draft_payload(data)
     mats = data.get('materials', {})
     for media_type in ('videos', 'images', 'audios'):
         for item in mats.get(media_type, []) or []:
@@ -2182,10 +2413,15 @@ def _validate_mix_materials_root_v2(materials_root, replace_strategy, replace_ty
     return None
 
 def _extract_template_tracks(template_path):
+    template_path = _normalize_draft_project_path(template_path)
     data, err = _load_draft_content(template_path)
     if err or not isinstance(data, dict):
-        return [], {}, err
+        tracks, seg_map, fallback_err = _extract_official_track_fallback(template_path)
+        if tracks:
+            return tracks, seg_map, None
+        return [], {}, fallback_err or err
     try:
+        data = _resolve_active_draft_payload(data)
         tracks = []
         seg_map = {}
         for idx, tr in enumerate(data.get('tracks', [])):
@@ -2452,16 +2688,10 @@ def browse_file_thread():
 
 @api_bp.route('/browse-folder', methods=['POST'])
 def browse_folder():
-    result = {}
-    def target():
-        nonlocal result
-        result['folder'] = browse_folder_thread()
-    thread = threading.Thread(target=target)
-    thread.start()
-    thread.join()
-    if result.get('folder') is None:
+    folder = browse_folder_thread()
+    if folder is None:
         return _desktop_dialog_unavailable_response()
-    return jsonify({'folder': result.get('folder', '')})
+    return jsonify({'ok': True, 'folder': folder or ''})
 
 
 @api_bp.route('/path/exists', methods=['POST'])
@@ -2479,16 +2709,10 @@ def path_exists():
 
 @api_bp.route('/browse-file', methods=['POST'])
 def browse_file():
-    result = {}
-    def target():
-        nonlocal result
-        result['file'] = browse_file_thread()
-    thread = threading.Thread(target=target)
-    thread.start()
-    thread.join()
-    if result.get('file') is None:
+    file_path = browse_file_thread()
+    if file_path is None:
         return _desktop_dialog_unavailable_response()
-    return jsonify({'file': result.get('file', '')})
+    return jsonify({'ok': True, 'file': file_path or ''})
 
 @api_bp.route('/net-assets/start', methods=['POST'])
 def net_assets_start():
@@ -2561,7 +2785,8 @@ def draft_inspect_api():
     if err:
         return err
     data = request.get_json() or {}
-    draft_path = data.get('draft_path')
+    raw_draft_path = data.get('draft_path')
+    draft_path = _normalize_draft_project_path(raw_draft_path)
     if not draft_path:
         return jsonify({'ok': False, 'error': '缺少草稿路径'}), 400
     draft_logger.info("draft_inspect: request path=%s", draft_path)
@@ -2588,7 +2813,7 @@ def draft_timeline_summary_api():
     if err:
         return err
     data = request.get_json(silent=True) or {}
-    draft_path = (data.get('draft_path') or '').strip()
+    draft_path = _normalize_draft_project_path((data.get('draft_path') or '').strip())
     if not draft_path:
         return jsonify({'ok': False, 'error': '缺少草稿路径'}), 400
 
@@ -2596,6 +2821,7 @@ def draft_timeline_summary_api():
     if load_err or not isinstance(draft_data, dict):
         return jsonify({'ok': False, 'error': load_err or '草稿读取失败'}), 400
 
+    draft_data = _resolve_active_draft_payload(draft_data)
     tracks = draft_data.get('tracks', []) or []
     materials = draft_data.get('materials', {}) or {}
     video_map = {item.get('id'): item for item in (materials.get('videos') or []) if isinstance(item, dict)}
@@ -2694,6 +2920,7 @@ def drafts_timeline_summary_api():
             items.append(entry)
             continue
 
+        draft_data = _resolve_active_draft_payload(draft_data)
         video_tracks = [track for track in (draft_data.get('tracks') or []) if isinstance(track, dict) and track.get('type') == 'video']
         text_tracks = [track for track in (draft_data.get('tracks') or []) if isinstance(track, dict) and track.get('type') == 'text']
         entry['ok'] = True
@@ -2711,7 +2938,7 @@ def draft_split_main_track_api():
     if err:
         return err
     data = request.get_json(silent=True) or {}
-    draft_path = (data.get('draft_path') or '').strip()
+    draft_path = _normalize_draft_project_path((data.get('draft_path') or '').strip())
     output_dir = (data.get('output_dir') or '').strip() or (get_drafts_folder() or '').strip()
     track_name = (data.get('track_name') or '').strip()
     save_path = output_dir or 'skip'
@@ -2734,6 +2961,7 @@ def draft_split_main_track_api():
     if load_err or not isinstance(draft_data, dict):
         return jsonify({'ok': False, 'error': load_err or '草稿读取失败'}), 400
 
+    draft_data = _resolve_active_draft_payload(draft_data)
     tracks = draft_data.get('tracks', []) or []
     target_track = None
     for track in tracks:
@@ -3291,11 +3519,18 @@ def discover_drafts_api():
         return err
     limit = int(request.args.get('limit') or 30)
     limit = max(1, min(limit, 100))
+    roots = discover_draft_roots()
+    drafts = list_local_drafts(limit=limit)
     return jsonify({
         'ok': True,
-        'roots': discover_draft_roots(),
-        'drafts': list_local_drafts(limit=limit),
+        'roots': roots,
+        'drafts': drafts,
         'configured_root': get_drafts_folder() or '',
+        'diagnostics': {
+            'root_count': len(roots),
+            'existing_root_count': len([item for item in roots if item.get('exists')]),
+            'draft_count': len(drafts),
+        },
     })
 
 
@@ -4530,7 +4765,7 @@ def micro_adjust_api():
     if err:
         return err
     data = request.get_json() or {}
-    draft_path = (data.get('draft_path') or '').strip()
+    draft_path = _normalize_draft_project_path((data.get('draft_path') or '').strip())
     export_path = (data.get('export_path') or '').strip() or None
     export_format = (data.get('export_format') or '').strip().lower() or None
     micro_adjust = data.get('micro_adjust') or {}
@@ -4768,7 +5003,7 @@ def materials_create_layout():
     if err:
         return err
     data = request.get_json(silent=True) or {}
-    draft_path = (data.get('draft_path') or '').strip()
+    draft_path = _normalize_draft_project_path((data.get('draft_path') or '').strip())
     materials_root = (data.get('materials_root') or '').strip()
     strategy = (data.get('strategy') or 'group').strip() or 'group'
     slots = [str(item).strip() for item in (data.get('slots') or []) if str(item).strip()]
@@ -5099,7 +5334,7 @@ def export_main_track_api():
     if err:
         return err
     data = request.get_json(silent=True) or {}
-    draft_path = (data.get('draft_path') or '').strip()
+    draft_path = _normalize_draft_project_path((data.get('draft_path') or '').strip())
     output_dir = (data.get('output_dir') or '').strip()
     track_name = (data.get('track_name') or '').strip()
 
@@ -5117,6 +5352,7 @@ def export_main_track_api():
         return jsonify({'ok': False, 'error': load_err or '草稿读取失败'}), 400
 
     os.makedirs(output_dir, exist_ok=True)
+    draft_data = _resolve_active_draft_payload(draft_data)
     tracks = draft_data.get('tracks', []) or []
     target_track = None
     for track in tracks:
@@ -6987,7 +7223,7 @@ def api_user_deduct():
 def submit_task():
     data = request.get_json() or {}
     template_id = data.get('template_id')
-    draft_path = data.get('draft_path')
+    draft_path = _normalize_draft_project_path(data.get('draft_path'))
     texts_input = data.get('texts_input', [])
     materials_root = data.get('materials_root')
     effects_config = data.get('effects_config', {})
@@ -7142,7 +7378,7 @@ def generate_batch_api():
             return jsonify({'error': 'quota exhausted'}), 403
 
     data = request.get_json() or {}
-    draft_path = data.get('draft_path')
+    draft_path = _normalize_draft_project_path(data.get('draft_path'))
     materials_root = data.get('materials_root')
     texts_input = data.get('texts_input', [])
     batch_count = data.get('batch_count', 1)

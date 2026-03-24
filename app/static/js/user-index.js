@@ -71,6 +71,7 @@
         const recentMaterialFoldersKey = 'vf_recent_material_folders';
         const rememberedLoginKey = 'vf_remembered_login';
         const runtimeUserTokenStateKey = 'user_session_token';
+        const runtimeUserPersistStateKey = 'user_session_persist';
         const workspaceSensitiveSettingKeys = ['net_provider', 'net_base_url', 'net_token'];
         let workspaceSettingsConfigCache = null;
         let siteSettingsCache = readInitialSiteSettings();
@@ -586,6 +587,12 @@
                 window.localStorage.removeItem(tokenKey);
                 return active;
             }
+            const persistFlag = await getRuntimeLocalStateValue(runtimeUserPersistStateKey);
+            if (String(persistFlag || '').trim() !== '1') {
+                await removeRuntimeLocalStateValue(runtimeUserTokenStateKey);
+                window.localStorage.removeItem(tokenKey);
+                return '';
+            }
             const stored = await getRuntimeLocalStateValue(runtimeUserTokenStateKey);
             if (stored) {
                 window.sessionStorage.setItem(tokenKey, stored);
@@ -598,8 +605,9 @@
             return getTokenStorage().getItem(tokenKey) || '';
         }
 
-        function setToken(token) {
+        function setToken(token, options = {}) {
             const value = token || '';
+            const persist = !!options.persist;
             const storage = getTokenStorage();
             if (value) {
                 storage.setItem(tokenKey, value);
@@ -609,9 +617,16 @@
             if (isLocalRuntimeClient()) {
                 window.localStorage.removeItem(tokenKey);
                 if (value) {
-                    void setRuntimeLocalStateValue(runtimeUserTokenStateKey, value);
+                    if (persist) {
+                        void setRuntimeLocalStateValue(runtimeUserTokenStateKey, value);
+                        void setRuntimeLocalStateValue(runtimeUserPersistStateKey, '1');
+                    } else {
+                        void removeRuntimeLocalStateValue(runtimeUserTokenStateKey);
+                        void removeRuntimeLocalStateValue(runtimeUserPersistStateKey);
+                    }
                 } else {
                     void removeRuntimeLocalStateValue(runtimeUserTokenStateKey);
+                    void removeRuntimeLocalStateValue(runtimeUserPersistStateKey);
                 }
                 return;
             }
@@ -627,6 +642,7 @@
             window.localStorage.removeItem(tokenKey);
             if (isLocalRuntimeClient()) {
                 void removeRuntimeLocalStateValue(runtimeUserTokenStateKey);
+                void removeRuntimeLocalStateValue(runtimeUserPersistStateKey);
             }
         }
 
@@ -1672,6 +1688,37 @@
             return fetch(url, opts);
         }
 
+        async function parseJsonResponse(res, fallbackMessage = '请求失败') {
+            try {
+                return await res.json();
+            } catch (error) {
+                const text = await res.text().catch(() => '');
+                const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+                const snippet = normalized
+                    ? normalized.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+                    : '';
+                throw new Error(snippet || fallbackMessage);
+            }
+        }
+
+        async function requestBrowseFolder() {
+            const response = await fetch('/api/browse-folder', {method: 'POST'});
+            const data = await parseJsonResponse(response, '目录选择失败');
+            if (!response.ok || data.ok === false) {
+                throw new Error(data.error || '目录选择失败');
+            }
+            return data.folder || '';
+        }
+
+        async function requestBrowseFile() {
+            const response = await fetch('/api/browse-file', {method: 'POST'});
+            const data = await parseJsonResponse(response, '文件选择失败');
+            if (!response.ok || data.ok === false) {
+                throw new Error(data.error || '文件选择失败');
+            }
+            return data.file || '';
+        }
+
         const effectsState = {
             video_effects: [],
             video_animations: [],
@@ -1767,7 +1814,7 @@
             list.innerHTML = '<div class="tool-result">正在读取最近草稿...</div>';
             try {
                 const res = await authFetch('/api/drafts/discover?limit=20');
-                const data = await res.json();
+                const data = await parseJsonResponse(res, '草稿扫描失败');
                 if (!res.ok || !data.ok) {
                     throw new Error(data.error || '草稿扫描失败');
                 }
@@ -2550,12 +2597,11 @@
         }
 
         async function selectFolder() {
-            const response = await fetch('/api/browse-folder', {method: 'POST'});
-            const data = await response.json();
-            document.getElementById('folder_path').value = data.folder || '';
-            if (data.folder) {
-                pushRecentMaterialFolder(data.folder);
-                setWorkspaceSettings({last_materials_root: data.folder});
+            const folder = await requestBrowseFolder();
+            document.getElementById('folder_path').value = folder || '';
+            if (folder) {
+                pushRecentMaterialFolder(folder);
+                setWorkspaceSettings({last_materials_root: folder});
             }
             updatePrimaryActionState();
         }
@@ -2614,21 +2660,19 @@
         }
 
         async function selectAudioFolder() {
-            const response = await fetch('/api/browse-folder', {method: 'POST'});
-            const data = await response.json();
             const input = document.getElementById('audio_folder_path');
-            if (input) input.value = data.folder || '';
-            if (data.folder) {
-                setWorkspaceSettings({last_audio_root: data.folder});
+            const folder = await requestBrowseFolder();
+            if (input) input.value = folder || '';
+            if (folder) {
+                setWorkspaceSettings({last_audio_root: folder});
             }
         }
 
         async function selectDraftFolder() {
-            const response = await fetch('/api/browse-folder', {method: 'POST'});
-            const data = await response.json();
             const input = getDraftElement('path');
-            if (input) input.value = data.folder || '';
-            if (data.folder) {
+            const folder = await requestBrowseFolder();
+            if (input) input.value = folder || '';
+            if (folder) {
                 await loadDraftInfo();
             } else {
                 updatePrimaryActionState();
@@ -3410,9 +3454,10 @@
                 const data = await res.json();
                 if (data.ok) {
                     saveRememberedLogin(Boolean(loginRememberMe?.checked), account, password);
-                    setToken(data.token);
+                    setToken(data.token, {persist: Boolean(loginRememberMe?.checked)});
                     setAuthMessage('登录成功', false);
                     updateUserPanel(data.user);
+                    await initSettingsWorkspace();
                     await Promise.all([loadAiProviders(), loadAiKeys()]);
                     closeAuthModal();
                     discoverDrafts();
@@ -3450,9 +3495,10 @@
                 });
                 const data = await res.json();
                 if (data.ok) {
-                    setToken(data.token || '');
+                    setToken(data.token || '', {persist: false});
                     setAuthMessage(data.message || '注册成功', false);
                     updateUserPanel(data.user);
+                    await initSettingsWorkspace();
                     await Promise.all([loadAiProviders(), loadAiKeys()]);
                     closeAuthModal();
                     discoverDrafts();
@@ -3497,32 +3543,23 @@
         }
 
         async function selectSplitSourceFile() {
-            const response = await fetch('/api/browse-file', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({file_types: ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v']})
-            });
-            const data = await response.json();
-            if (data.path) {
-                document.getElementById('split_source_path').value = data.path;
-            } else if (data.file) {
-                document.getElementById('split_source_path').value = data.file;
+            const filePath = await requestBrowseFile();
+            if (filePath) {
+                document.getElementById('split_source_path').value = filePath;
             }
         }
 
         async function selectSplitSourceFolder() {
-            const response = await fetch('/api/browse-folder', {method: 'POST'});
-            const data = await response.json();
-            if (data.folder) {
-                document.getElementById('split_source_path').value = data.folder;
+            const folder = await requestBrowseFolder();
+            if (folder) {
+                document.getElementById('split_source_path').value = folder;
             }
         }
 
         async function selectSplitOutput() {
-            const response = await fetch('/api/browse-folder', {method: 'POST'});
-            const data = await response.json();
-            if (data.folder) {
-                document.getElementById('split_output_dir').value = data.folder;
+            const folder = await requestBrowseFolder();
+            if (folder) {
+                document.getElementById('split_output_dir').value = folder;
             }
         }
 
@@ -3531,16 +3568,9 @@
         }
 
         async function selectSplitSubtitle() {
-            const response = await fetch('/api/browse-file', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({file_types: ['.srt']})
-            });
-            const data = await response.json();
-            if (data.path) {
-                document.getElementById('split_subtitle_path').value = data.path;
-            } else if (data.file) {
-                document.getElementById('split_subtitle_path').value = data.file;
+            const filePath = await requestBrowseFile();
+            if (filePath) {
+                document.getElementById('split_subtitle_path').value = filePath;
             }
         }
 
@@ -3549,20 +3579,18 @@
         }
 
         async function selectSettingsDraftRoot() {
-            const response = await fetch('/api/browse-folder', {method: 'POST'});
-            const data = await response.json();
-            if (data.folder) {
+            const folder = await requestBrowseFolder();
+            if (folder) {
                 const input = document.getElementById('settingsDraftRoot');
-                if (input) input.value = data.folder;
+                if (input) input.value = folder;
             }
         }
 
         async function selectExportFolder() {
-            const response = await fetch('/api/browse-folder', {method: 'POST'});
-            const data = await response.json();
-            if (data.folder) {
+            const folder = await requestBrowseFolder();
+            if (folder) {
                 const input = document.getElementById('export_dir');
-                if (input) input.value = data.folder;
+                if (input) input.value = folder;
             }
         }
 
@@ -3664,10 +3692,22 @@ async function renameUserMaterialProject() {
 }
 
         async function loadWorkspaceSettingsConfig() {
+            const fallbackSettings = {
+                workspace: getWorkspaceSettings() || {},
+                paths: {},
+                services: {}
+            };
+            if (!getToken()) {
+                return fallbackSettings;
+            }
             const res = await authFetch('/api/workspace/settings');
-            const data = await res.json();
+            const data = await parseJsonResponse(res, '设置加载失败');
             if (!res.ok || data.ok === false) {
-                throw new Error(data.error || '设置加载失败');
+                const message = data.error || '设置加载失败';
+                if (res.status === 401 && /missing auth token/i.test(message)) {
+                    return fallbackSettings;
+                }
+                throw new Error(message);
             }
             const settings = data.settings || {};
             cacheWorkspaceSettingsConfig(settings);
@@ -3681,7 +3721,7 @@ async function renameUserMaterialProject() {
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(payload || {})
             });
-            const data = await res.json();
+            const data = await parseJsonResponse(res, '设置保存失败');
             if (!res.ok || data.ok === false) {
                 throw new Error(data.error || '设置保存失败');
             }
@@ -3708,6 +3748,12 @@ async function renameUserMaterialProject() {
 
             try {
                 const localSettings = getWorkspaceSettings();
+                if (!getToken()) {
+                    if (strategyInput) strategyInput.value = localSettings.strategy || 'simple';
+                    if (autoDiscoverInput) autoDiscoverInput.checked = localSettings.auto_discover !== false;
+                    if (autoLoadInput) autoLoadInput.checked = !!localSettings.auto_load_last_draft;
+                    return;
+                }
                 const settings = await loadWorkspaceSettingsConfig();
                 const workspace = settings.workspace || {};
                 const paths = settings.paths || {};
@@ -4164,11 +4210,10 @@ async function renameUserMaterialProject() {
 
         async function selectSplitDraftOutputFolder() {
             try {
-                const response = await fetch('/api/browse-folder', {method: 'POST'});
-                const data = await response.json();
-                if (data.folder) {
+                const folder = await requestBrowseFolder();
+                if (folder) {
                     const input = document.getElementById('split_draft_output_dir');
-                    if (input) input.value = data.folder;
+                    if (input) input.value = folder;
                 }
             } catch (e) {
                 setToolResult('split_draft_result', `选择输出目录失败：${e.message || e}`);
@@ -4445,11 +4490,10 @@ async function renameUserMaterialProject() {
 
         async function browseWorkspaceFolder(inputId) {
             try {
-                const res = await fetch('/api/browse-folder', {method: 'POST'});
-                const data = await res.json();
-                if (!data.folder) return;
+                const folder = await requestBrowseFolder();
+                if (!folder) return;
                 const input = document.getElementById(inputId);
-                if (input) input.value = data.folder;
+                if (input) input.value = folder;
             } catch (e) {}
         }
 

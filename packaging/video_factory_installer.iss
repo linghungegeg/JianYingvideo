@@ -16,8 +16,8 @@ AppSupportURL={#AppURL}
 AppUpdatesURL={#AppURL}
 DefaultDirName={code:GetDefaultInstallDir}
 DefaultGroupName={#AppName}
-AllowNoIcons=no
-OutputDir=.
+AllowNoIcons=yes
+OutputDir={src}\..
 OutputBaseFilename={#AppName}
 Compression=lzma
 SolidCompression=yes
@@ -41,12 +41,15 @@ Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "{#DistRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[UninstallDelete]
+Type: filesandordirs; Name: "{localappdata}\VideoFactoryDesktop"
+Type: filesandordirs; Name: "{userappdata}\VideoFactoryDesktop"
+Type: filesandordirs; Name: "{localappdata}\Temp\VideoFactoryDesktop"
+Type: filesandordirs; Name: "{tmp}\VideoFactoryDesktop"
+
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"
-
-[Run]
-Filename: "{app}\{#AppExeName}"; Description: "启动 {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 function GetDefaultInstallDir(Param: string): string;
@@ -73,13 +76,4 @@ begin
   end;
 
   Result := ExpandConstant('{localappdata}\Programs\{#InstallSubdir}');
-end;
-
-function InitializeSetup(): Boolean;
-begin
-  Result := True;
-  if WizardSilent then
-  begin
-    SuppressibleMsgBox('当前安装包不使用静默安装，请在安装界面选择安装位置后继续。', mbInformation, MB_OK, IDOK);
-  end;
 end;
