@@ -420,6 +420,46 @@ def normalize_draft_project_path(template_path: str) -> str:
     return normalized_path
 
 
+def is_valid_draft_project_path(template_path: str) -> bool:
+    normalized_path = normalize_draft_project_path(template_path)
+    if not normalized_path or not os.path.isdir(normalized_path):
+        return False
+
+    direct_markers = (
+        "draft_content.json",
+        "draft_content.json.bak",
+        "draft_meta_info.json",
+        "draft_virtual_store.json",
+        "draft_settings",
+        "draft.extra",
+        "cover.png",
+        "draft_cover.jpg",
+        "timeline_layout.json",
+    )
+    for name in direct_markers:
+        candidate = os.path.join(normalized_path, name)
+        if os.path.exists(candidate) and not _path_contains_skipped_dir(candidate):
+            return True
+
+    timelines_root = os.path.join(normalized_path, "Timelines")
+    if not os.path.isdir(timelines_root) or _path_contains_skipped_dir(timelines_root):
+        return False
+
+    project_files = (
+        os.path.join(timelines_root, "project.json"),
+        os.path.join(timelines_root, "project.json.bak"),
+    )
+    if any(os.path.exists(path) for path in project_files):
+        return True
+
+    for root, dirs, files in os.walk(timelines_root):
+        dirs[:] = [name for name in dirs if not _path_contains_skipped_dir(os.path.join(root, name))]
+        for name in _DRAFT_CANDIDATE_NAMES:
+            if name in files:
+                return True
+    return False
+
+
 def load_json_file_with_encodings(path: str) -> tuple[Optional[Any], Optional[Exception]]:
     last_err: Optional[Exception] = None
     raw_bytes = None

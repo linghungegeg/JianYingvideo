@@ -70,6 +70,7 @@ from app.services.ai_service import generate_with_key
 from app.services.openclaw_client import OpenClawClient
 from app.services.jianying.local_draft_service import (
     find_draft_content_files as _service_find_draft_content_files,
+    is_valid_draft_project_path as _service_is_valid_draft_project_path,
     load_draft_content as _service_load_draft_content,
     load_json_file_with_encodings as _service_load_json_file_with_encodings,
     normalize_draft_project_path as _service_normalize_draft_project_path,
@@ -597,6 +598,12 @@ def _proxy_remote_response():
         if "text/html" in content_type or "application/xhtml+xml" in content_type or response_preview.startswith("<!doctype") or response_preview.startswith("<html") or response_preview.startswith("<"):
             snippet = re.sub(r"<[^>]+>", " ", response_text)
             snippet = re.sub(r"\s+", " ", snippet).strip()[:160]
+            if request.path.startswith("/api/license/") and int(response.status_code or 0) >= 500:
+                return jsonify({
+                    "ok": False,
+                    "error": "官方授权服务异常，请同步官网服务端后重试",
+                    "status_code": int(response.status_code or 0),
+                }), 502
             return jsonify({
                 "ok": False,
                 "error": snippet or f"remote api returned html ({response.status_code})",
@@ -1581,6 +1588,10 @@ def _find_draft_content_files(template_path: str):
 
 def _normalize_draft_project_path(template_path: str) -> str:
     return _service_normalize_draft_project_path(template_path)
+
+
+def _is_valid_draft_project_path(template_path: str) -> bool:
+    return _service_is_valid_draft_project_path(template_path)
 
 
 def _resolve_draft_output_root(draft_path: str, output_dir: str | None = None) -> str:
@@ -2730,6 +2741,7 @@ def _remote_desktop_task_claim(task_id: str, action_key: str, quota_amount: int 
     token = extract_bearer_token(request)
     if not token:
         return None, _auth_error('missing auth token', 401)
+    response = None
     try:
         response = call_remote_api(
             "/api/desktop/task-claim",
@@ -2744,10 +2756,45 @@ def _remote_desktop_task_claim(task_id: str, action_key: str, quota_amount: int 
         )
         data = response.json()
     except Exception as exc:
-        return None, jsonify({'ok': False, 'error': f'remote task claim failed: {exc}'}), 503
+        if response is not None and int(response.status_code or 0) >= 500:
+            logging.warning(
+                "remote desktop task claim json decode failed, fallback to local execution: action=%s status=%s error=%s",
+                action_key,
+                int(response.status_code or 0),
+                str(exc),
+            )
+            return None, None
+        return None, (jsonify({'ok': False, 'error': f'remote task claim failed: {exc}'}), 503)
     if not response.ok or not isinstance(data, dict) or not data.get("ok"):
         status_code = response.status_code or 502
-        return None, jsonify(data if isinstance(data, dict) else {'ok': False, 'error': 'remote task claim failed'}), status_code
+        error_text = ""
+        if isinstance(data, dict):
+            error_text = str(data.get("error") or data.get("message") or "").strip()
+        if not error_text:
+            try:
+                error_text = str(response.text or "").strip()
+            except Exception:
+                error_text = ""
+        lowered = error_text.lower()
+        if status_code >= 500:
+            logging.warning(
+                "remote desktop task claim fallback to local execution: action=%s status=%s error=%s",
+                action_key,
+                status_code,
+                error_text[:200],
+            )
+            return None, None
+        if "too many values to unpack" in lowered:
+            logging.warning(
+                "remote desktop task claim returned compatibility error, fallback to local execution: action=%s error=%s",
+                action_key,
+                error_text[:200],
+            )
+            return None, None
+        return None, (
+            jsonify(data if isinstance(data, dict) else {'ok': False, 'error': 'remote task claim failed'}),
+            status_code,
+        )
     return token, None
 
 
@@ -2876,6 +2923,8 @@ def draft_inspect_api():
     data = request.get_json() or {}
     raw_draft_path = data.get('draft_path')
     draft_path = _normalize_draft_project_path(raw_draft_path)
+    if draft_path and not _is_valid_draft_project_path(draft_path):
+        return jsonify({'ok': False, 'error': '请选择真正的剪映草稿目录，当前路径不是有效草稿'}), 400
     if not draft_path:
         return jsonify({'ok': False, 'error': '缺少草稿路径'}), 400
     draft_logger.info("draft_inspect: request path=%s", draft_path)
@@ -3424,10 +3473,12 @@ def desktop_task_claim():
         return jsonify({'ok': False, 'error': 'task claim already finished'}), 409
 
     quota = get_or_create_quota(user.id)
-    if (quota.remaining or 0) < quota_amount:
-        return jsonify({'ok': False, 'error': 'quota exhausted', **quota_to_dict(quota)}), 403
+    quota_payload = quota_to_dict(quota)
+    if not quota_payload.get("is_vip") and (quota.remaining or 0) < quota_amount:
+        return jsonify({'ok': False, 'error': 'quota exhausted', **quota_payload}), 403
 
-    quota.remaining = max(0, (quota.remaining or 0) - quota_amount)
+    if not quota_payload.get("is_vip"):
+        quota.remaining = max(0, (quota.remaining or 0) - quota_amount)
     task = Task(
         id=task_id,
         user_id=user.id,
@@ -7479,6 +7530,8 @@ def submit_task():
     data = request.get_json() or {}
     template_id = data.get('template_id')
     draft_path = _normalize_draft_project_path(data.get('draft_path'))
+    if draft_path and not _is_valid_draft_project_path(draft_path):
+        return jsonify({'error': 'draft_path is not a valid draft project'}), 400
     texts_input = data.get('texts_input', [])
     materials_root = data.get('materials_root')
     effects_config = data.get('effects_config', {})

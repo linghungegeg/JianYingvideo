@@ -22,6 +22,7 @@ from app.models.template_model import TemplateModel
 from app.models.task_effect_log import TaskEffectLog
 from app.services.jianying.local_draft_service import (
     find_draft_content_files as _service_find_draft_content_files,
+    is_valid_draft_project_path as _service_is_valid_draft_project_path,
     load_draft_content as _service_load_draft_content,
     normalize_draft_project_path as _service_normalize_draft_project_path,
     resolve_active_draft_payload as _service_resolve_active_draft_payload,
@@ -54,6 +55,10 @@ def normalize_draft_project_path(template_path):
 
 def find_draft_content_files(template_path):
     return _service_find_draft_content_files(template_path)
+
+
+def is_valid_draft_project_path(template_path):
+    return _service_is_valid_draft_project_path(template_path)
 
 
 def _resolve_active_draft_payload(data):
@@ -794,6 +799,8 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
             template_path = normalize_draft_project_path(template_path)
             if not template_path or not os.path.isdir(template_path):
                 raise Exception("template_path is invalid")
+            if not is_valid_draft_project_path(template_path):
+                raise Exception("template_path is not a valid draft project")
 
             materials, material_map, texts_info, material_sources = _extract_template_runtime_info(template_path)
 

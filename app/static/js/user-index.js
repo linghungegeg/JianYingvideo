@@ -1,4 +1,5 @@
 ﻿        let currentDraftPath = '';
+        let currentDraftInfoPath = '';
         let materialsConfig = [];
         let currentDraftVersion = 'all';
         let textsConfig = [];
@@ -1100,7 +1101,7 @@
             const hasToken = !!getToken();
             const draftPath = getDraftElement('path')?.value?.trim();
             const folderPath = document.getElementById('folder_path')?.value?.trim();
-            const ready = currentDraftPath && currentDraftPath === draftPath;
+            const ready = currentDraftInfoPath && currentDraftInfoPath === draftPath;
             const needsFolder = isMixMaterialsRootRequired();
             submitBtn.disabled = !(hasToken && draftPath && ready && (!needsFolder || folderPath));
         }
@@ -2488,6 +2489,7 @@
 
         function resetDraftInfo(message = '') {
             currentDraftPath = '';
+            currentDraftInfoPath = '';
             currentDraftVersion = getDraftElement('version')?.value || 'all';
             materialsConfig = [];
             textsConfig = [];
@@ -2546,6 +2548,7 @@
                 }
 
                 currentDraftPath = draftPath;
+                currentDraftInfoPath = draftPath;
                 currentDraftVersion = getDraftElement('version')?.value || inferDraftVersion(draftPath);
                 materialsConfig = data.materials || [];
                 textsConfig = data.texts || [];
