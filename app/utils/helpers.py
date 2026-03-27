@@ -4,6 +4,7 @@ import json
 import uuid
 import logging
 import tempfile
+import time
 from pathlib import Path
 from datetime import datetime
 from flask import current_app
@@ -51,6 +52,19 @@ _SITE_SETTING_ENV_KEYS = {
     "privacy_agreement_title": "VF_PRIVACY_AGREEMENT_TITLE",
     "privacy_agreement_content": "VF_PRIVACY_AGREEMENT_CONTENT",
     "contact_entries": "VF_CONTACT_ENTRIES",
+}
+_DRAFT_ROOT_CACHE_TTL_SECONDS = 15.0
+_DRAFT_LIST_CACHE_TTL_SECONDS = 15.0
+_draft_root_cache = {
+    "expires_at": 0.0,
+    "configured_root": "",
+    "value": [],
+}
+_draft_list_cache = {
+    "expires_at": 0.0,
+    "configured_root": "",
+    "scan_limit": 0,
+    "value": [],
 }
 
 
@@ -551,7 +565,18 @@ def _candidate_draft_roots() -> list[str]:
         ]
     )
     roots.extend(_read_recorded_draft_roots())
-    roots.extend(_discover_nested_draft_roots(max_depth=4))
+
+    existing_known_roots = []
+    seen_existing = set()
+    for item in roots:
+        norm = os.path.normpath(str(item).strip())
+        if not norm or norm in seen_existing:
+            continue
+        seen_existing.add(norm)
+        if os.path.isdir(norm):
+            existing_known_roots.append(norm)
+    if not existing_known_roots:
+        roots.extend(_discover_nested_draft_roots(max_depth=4))
 
     deduped = []
     seen = set()
@@ -566,7 +591,21 @@ def _candidate_draft_roots() -> list[str]:
     return deduped
 
 
-def discover_draft_roots() -> list[dict]:
+def _draft_cache_key() -> str:
+    return os.path.normpath(str(get_drafts_folder() or "").strip())
+
+
+def discover_draft_roots(force_refresh: bool = False) -> list[dict]:
+    cache_key = _draft_cache_key()
+    now = time.time()
+    if (
+        not force_refresh
+        and _draft_root_cache["value"]
+        and _draft_root_cache["configured_root"] == cache_key
+        and float(_draft_root_cache["expires_at"] or 0.0) > now
+    ):
+        return [dict(item) for item in _draft_root_cache["value"]]
+
     items = []
     for root in _candidate_draft_roots():
         exists = os.path.isdir(root)
@@ -574,12 +613,28 @@ def discover_draft_roots() -> list[dict]:
             "剪映国际版" if "capcut" in root.lower() else "剪映"
         )
         items.append({"path": root, "label": label, "exists": exists})
+    _draft_root_cache["configured_root"] = cache_key
+    _draft_root_cache["expires_at"] = now + _DRAFT_ROOT_CACHE_TTL_SECONDS
+    _draft_root_cache["value"] = [dict(item) for item in items]
     return items
 
 
-def list_local_drafts(limit: int = 30) -> list[dict]:
+def list_local_drafts(limit: int = 30, force_refresh: bool = False) -> list[dict]:
+    limit = max(1, int(limit or 30))
+    cache_key = _draft_cache_key()
+    now = time.time()
+    if (
+        not force_refresh
+        and _draft_list_cache["value"]
+        and _draft_list_cache["configured_root"] == cache_key
+        and int(_draft_list_cache["scan_limit"] or 0) >= limit
+        and float(_draft_list_cache["expires_at"] or 0.0) > now
+    ):
+        return [dict(item) for item in _draft_list_cache["value"][:limit]]
+
     drafts = []
     seen = set()
+    scan_limit = max(limit, 100)
     skip_prefixes = (".cloud_cache", ".recycle_bin", ".trashed", "$recycle.bin")
 
     def _should_skip_dir(name: str) -> bool:
@@ -614,12 +669,12 @@ def list_local_drafts(limit: int = 30) -> list[dict]:
 
         yield from _visit(base, 0)
 
-    for root_info in discover_draft_roots():
+    for root_info in discover_draft_roots(force_refresh=force_refresh):
         root = root_info["path"]
         if not root_info["exists"]:
             continue
         try:
-            metadata_drafts = extract_root_meta_draft_projects(root, limit=max(limit * 3, 60))
+            metadata_drafts = extract_root_meta_draft_projects(root, limit=max(scan_limit * 3, 60))
             for item in metadata_drafts:
                 norm = os.path.normpath(str(item.get("path") or "").strip())
                 if not norm or norm in seen:
@@ -653,9 +708,14 @@ def list_local_drafts(limit: int = 30) -> list[dict]:
         except Exception:
             continue
     if not drafts:
-        drafts.extend(_scan_drive_for_draft_projects(max_depth=6, max_hits=max(limit * 3, 60)))
+        drafts.extend(_scan_drive_for_draft_projects(max_depth=6, max_hits=max(scan_limit * 3, 60)))
     drafts.sort(key=lambda item: item["updated_at"], reverse=True)
-    return drafts[:limit]
+    cached_items = drafts[:scan_limit]
+    _draft_list_cache["configured_root"] = cache_key
+    _draft_list_cache["scan_limit"] = scan_limit
+    _draft_list_cache["expires_at"] = now + _DRAFT_LIST_CACHE_TTL_SECONDS
+    _draft_list_cache["value"] = [dict(item) for item in cached_items]
+    return cached_items[:limit]
 
 
 def _legacy_candidate_draft_roots() -> list[str]:

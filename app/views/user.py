@@ -1,6 +1,6 @@
 from functools import wraps
 
-from flask import Blueprint, jsonify, redirect, render_template, session
+from flask import Blueprint, jsonify, make_response, redirect, render_template, session
 
 from app.extensions import db
 from app.models.template import Template
@@ -32,7 +32,11 @@ def dashboard():
 
 @user_bp.route("/user")
 def user_home():
-    return render_template("user/index.html", site_settings=get_site_settings())
+    response = make_response(render_template("user/index.html", site_settings=get_site_settings()))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @user_bp.route("/download")

@@ -57,12 +57,12 @@
             {title: '批量混剪', keywords: '批量混剪 按组精准替换 混剪裂变替换 分区混剪裂变 槽位拼接混剪', body: '先选参考草稿，再按当前模式准备素材目录或文字内容。前三种模式会保持每次每槽位使用 1 个素材，槽位拼接混剪则会在单个槽位内连续拼接多段视频。'},
             {title: 'AI 成片', keywords: 'AI 成片 即梦 火山 TTS AI 文案 AI账号管理', body: '先在“软件设置 -> AI账号管理”里维护好账号，再回到本页执行图生视频、语音合成或文案生成。页面里只保留真正会影响出片的参数。'},
             {title: 'AI 漫剧', keywords: 'AI 漫剧 草稿 分镜 脚本 场景目录', body: 'AI 漫剧会直接生成剪映草稿、场景素材目录和分镜说明。你可以先拿到完整草稿结构，再按自己的节奏补图、补视频和细化镜头。'},
-            {title: '批量效果', keywords: '批量效果 Duo 资源 贴纸 转场', body: '选好草稿后，可以统一追加视频效果、转场、贴纸和 Duo 素材。普通用户先用搜索和预设即可，高级参数留到需要精修时再打开。'},
+            {title: '批量效果', keywords: '批量效果 Duo 资源 贴纸 转场', body: '选好草稿后，可以直接搜索你想要的效果或素材，再一键加入当前草稿。日常先用分类、关键词和常用预设就够了，不需要一开始就碰高级参数。'},
             {title: '批量分割', keywords: '批量分割 文件分割 草稿处理 批量查看', body: '既可以对文件按时长、镜头或字幕做分割，也可以批量查看草稿结构，提前排查内容问题，再决定是否导出或继续加工。'},
             {title: '片段微调', keywords: '片段微调 节奏变速 画面校正 摇晃关键帧', body: '适合在出片前做最后一轮细节调整，例如节奏变速、画面校正、镜像、摇晃关键帧和局部修饰。'},
             {title: '批量导出', keywords: '批量导出 导出设置 多草稿 片段导出', body: '把当前草稿或多份草稿加入队列后，可以统一导出；也支持单独导出主要视频片段，方便复用和复检。'},
             {title: '账户中心', keywords: '账户中心 账户信息 VIP说明 邀请中心 授权激活 使用教程', body: '这里集中查看会员状态、剩余次数、签到奖励、邀请关系、授权激活和全站使用教程，生成前也会同步刷新当前余额。'},
-            {title: '资源互换', keywords: '资源互换 资源大厅 互换发布 审核 免费', body: '资源互换是免费功能，不扣次数。资源大厅只展示审核通过的内容；互换发布支持查看自己的审核状态、发布时间和拒绝原因。'},
+            {title: '资源互换', keywords: '资源互换 资源大厅 互换发布 审核 免费', body: '资源互换是免费功能，不扣次数。你可以先在资源大厅找合作和置换信息，再到互换发布里提交自己的项目，并随时查看审核状态和发布时间。'},
             {title: '软件设置', keywords: '软件设置 工作台设置 路径与目录 AI账号管理', body: '工作台偏好、默认目录和 AI 账号都统一放在这里维护。日常使用时先把常用路径和账号配好，后续每个功能页都会直接复用。'}
         ];
 
@@ -230,7 +230,17 @@
         function isMixMaterialsRootRequired(strategy = getSelectedReplaceStrategy()) {
             const replaceMaterials = !!document.getElementById('replace_materials')?.checked;
             const replaceAudios = !!document.getElementById('replace_audios')?.checked;
-            return strategy === 'sequence' || replaceMaterials || replaceAudios;
+            const replaceTypes = getSelectedReplaceTypes();
+            const needsVisual = replaceMaterials && replaceTypes.some((item) => item === 'image' || item === 'video');
+            const needsAudio = replaceAudios || replaceTypes.includes('audio');
+            return strategy === 'sequence' || needsVisual || needsAudio;
+        }
+
+        function getSelectedReplaceTypes() {
+            const inputs = Array.from(document.querySelectorAll('input[name="replace_type"]'));
+            const values = inputs.filter((input) => input.checked).map((input) => input.value);
+            if (!values.length) return [];
+            return values;
         }
 
         function toggleDraftCompactSection(button) {
@@ -288,14 +298,16 @@
                             ${toggle}
                         </div>
                     </div>
-                    <div class="tool-result">支持多行粘贴，也支持 txt / csv 导入。每行会依次填入一个文字槽。</div>
-                    <div class="inline-actions">
-                        <button class="effect-add" type="button" onclick="applyBatchTextTemplate()">批量导入文字</button>
-                        <button class="effect-add" type="button" onclick="importTextTemplateFile()">导入 txt/csv</button>
-                    </div>
-                    <div class="form-group">
-                        <label for="text_batch_input">批量文字输入</label>
-                        <textarea id="text_batch_input" rows="4" placeholder="每行一段，或直接粘贴 csv / txt 内容"></textarea>
+                    <div class="tool-result">支持多行粘贴，也支持 txt / csv 导入。你可以先把整批文案放进下方输入框，再一键写入所有文字槽。</div>
+                    <div class="text-batch-shell">
+                        <div class="form-group text-batch-main">
+                            <label for="text_batch_input">批量文字输入</label>
+                            <textarea id="text_batch_input" rows="6" placeholder="每行一段，或直接粘贴 csv / txt 内容"></textarea>
+                        </div>
+                        <div class="text-batch-actions">
+                            <button class="effect-add" type="button" onclick="applyBatchTextTemplate()">批量导入文字</button>
+                            <button class="effect-add" type="button" onclick="importTextTemplateFile()">导入 txt/csv</button>
+                        </div>
                     </div>
                     <div class="text-strip" data-compact-section="texts">${cards}</div>
                 </div>
@@ -738,15 +750,20 @@
 
             if (workspaceQuotaBadge) {
                 if (!currentUserInfo) {
-                    workspaceQuotaBadge.textContent = '登录后显示会员与次数';
+                    workspaceQuotaBadge.textContent = '登录后显示会员状态';
                     workspaceQuotaBadge.className = 'workspace-badge workspace-badge-soft';
                 } else {
                     const tier = currentUserInfo.is_vip ? 'VIP会员' : '试用用户';
                     const remain = Number(currentUserInfo.remaining ?? 0);
-                    workspaceQuotaBadge.textContent = `${tier} / 剩余 ${remain} 次`;
-                    workspaceQuotaBadge.className = remain > 0
-                        ? 'workspace-badge workspace-badge-accent'
-                        : 'workspace-badge workspace-badge-warn';
+                    if (currentUserInfo.is_vip) {
+                        workspaceQuotaBadge.textContent = `${tier} / 无限使用`;
+                        workspaceQuotaBadge.className = 'workspace-badge workspace-badge-accent';
+                    } else {
+                        workspaceQuotaBadge.textContent = `${tier} / 剩余 ${remain} 次`;
+                        workspaceQuotaBadge.className = remain > 0
+                            ? 'workspace-badge workspace-badge-accent'
+                            : 'workspace-badge workspace-badge-warn';
+                    }
                 }
             }
         }
@@ -821,6 +838,11 @@
         async function loadLicenseCardTypes() {
             const box = document.getElementById('accountCardTypeList');
             if (!box) return;
+            const vipSection = document.getElementById('account-vip-section');
+            const usagePolicyBox = document.getElementById('accountUsagePolicyList');
+            if (vipSection && usagePolicyBox && box.previousElementSibling !== usagePolicyBox) {
+                vipSection.insertBefore(box, usagePolicyBox);
+            }
             box.textContent = '正在读取卡类型说明。';
             try {
                 const res = await fetch('/api/license/card-types');
@@ -933,6 +955,10 @@
         }
 
         function closeAuthModal() {
+            if (!getToken()) {
+                openAuthModal();
+                return;
+            }
             const modal = document.getElementById('authModal');
             if (!modal) return;
             modal.classList.remove('open');
@@ -1222,7 +1248,7 @@
             const replaceAudios = !!document.getElementById('replace_audios')?.checked;
             const replaceTypeField = document.getElementById('replaceTypeField');
             const replaceModeField = document.getElementById('replaceModeField');
-            const replaceType = document.getElementById('replace_type');
+            const replaceTypeInputs = Array.from(document.querySelectorAll('input[name="replace_type"]'));
             const sequenceClipField = document.getElementById('sequenceClipField');
             const partitionTextModeField = document.getElementById('partitionTextModeField');
 
@@ -1240,23 +1266,29 @@
             if (replaceAudiosInput && strategy !== 'sequence') {
                 replaceAudiosInput.disabled = false;
             }
-            if (replaceType) {
+            if (replaceTypeInputs.length) {
                 if (strategy === 'sequence') {
-                    replaceType.value = 'video';
-                    replaceType.disabled = true;
+                    replaceTypeInputs.forEach((input) => {
+                        input.checked = input.value === 'video';
+                        input.disabled = true;
+                    });
                 } else {
-                    replaceType.disabled = false;
+                    replaceTypeInputs.forEach((input) => {
+                        input.disabled = false;
+                    });
+                    if (!replaceTypeInputs.some((input) => input.checked)) {
+                        replaceTypeInputs.forEach((input) => {
+                            input.checked = input.value === 'image' || input.value === 'video';
+                        });
+                    }
                 }
             }
 
             if (replaceTypeField) {
-                replaceTypeField.style.display = (replaceMaterialsInput?.checked || strategy === 'sequence') ? '' : 'none';
+                replaceTypeField.style.display = (replaceMaterialsInput?.checked || replaceAudios || strategy === 'sequence') ? '' : 'none';
             }
             if (replaceModeField) {
                 replaceModeField.style.display = ((replaceMaterialsInput?.checked || strategy === 'sequence') || replaceAudios) ? '' : 'none';
-            }
-            if (!replaceMaterials && replaceAudios && replaceType) {
-                replaceType.value = 'audio';
             }
             if (sequenceClipField) {
                 sequenceClipField.style.display = strategy === 'sequence' ? '' : 'none';
@@ -1403,14 +1435,14 @@
                 const refCodeEl = document.getElementById('userRefCode');
                 const referrerEl = document.getElementById('userReferrer');
                 const membershipHintEl = document.getElementById('accountMembershipHint');
-                if (remainEl) remainEl.textContent = user.remaining ?? 0;
+                if (remainEl) remainEl.textContent = user.is_vip ? '无限使用' : (user.remaining ?? 0);
                 if (totalEl) totalEl.textContent = user.total_generated ?? 0;
                 if (vipEl) vipEl.textContent = user.vip_expire_at ? new Date(user.vip_expire_at).toLocaleString() : '-';
                 if (refCodeEl) refCodeEl.textContent = user.ref_code || '-';
                 if (referrerEl) referrerEl.textContent = user.referrer_id ? `已绑定 #${user.referrer_id}` : '未绑定上级';
                 if (membershipHintEl) {
                     membershipHintEl.textContent = user.is_vip
-                        ? 'VIP 时效生效中'
+                        ? 'VIP 时效生效中，可无限使用'
                         : '按试用规则使用';
                 }
                 const copyBtn = document.getElementById('copyRefCodeBtn');
@@ -1488,7 +1520,7 @@
             if (streakEl) streakEl.textContent = overview.streak_days ?? 0;
             if (rewardEl) rewardEl.textContent = overview.checkin_reward ?? 0;
             if (gainEl) gainEl.textContent = overview.today_gain ?? 0;
-            if (costEl) costEl.textContent = overview.today_cost ?? 0;
+            if (costEl) costEl.textContent = Math.abs(Number(overview.today_cost || 0));
             if (checkinBtn) {
                 checkinBtn.disabled = !currentUserInfo || checkedIn;
                 checkinBtn.textContent = checkedIn ? '今日已签到' : '立即签到';
@@ -1822,7 +1854,7 @@
                 .join('');
         }
 
-        async function discoverDrafts(targetShell = null, renderInModal = isDraftPickerOpen()) {
+        async function discoverDrafts(targetShell = null, renderInModal = isDraftPickerOpen(), forceRefresh = false) {
             const shell = getCurrentDraftShell(targetShell || activeDraftShell || getActiveWorkspacePanel());
             const picker = getDraftPickerElements();
             const summary = renderInModal ? picker.summary : getDraftElement('summary', shell);
@@ -1843,7 +1875,8 @@
             summary.textContent = '正在读取最近草稿，请稍候...';
             list.innerHTML = '<div class="tool-result">正在读取最近草稿...</div>';
             try {
-                const res = await authFetch('/api/drafts/discover?limit=20');
+                const query = forceRefresh ? '/api/drafts/discover?limit=20&refresh=1' : '/api/drafts/discover?limit=20';
+                const res = await authFetch(query);
                 const data = await parseJsonResponse(res, '草稿扫描失败');
                 if (!res.ok || !data.ok) {
                     throw new Error(data.error || '草稿扫描失败');
@@ -1857,6 +1890,7 @@
                     summary.textContent = '暂未发现可用草稿。';
                     list.innerHTML = '<div class="tool-result">暂未发现可用草稿。</div>';
                     window.__vfDiscoveredDrafts = [];
+                    window.__vfDiscoveredDraftsAll = [];
                     return;
                 }
                 const visibleDrafts = renderInModal ? filteredDrafts : filteredDrafts.slice(0, 3);
@@ -1865,7 +1899,7 @@
                     : `已发现 ${filteredDrafts.length} 个草稿。`;
                 list.innerHTML = visibleDrafts.map((item, idx) => `
                     <div class="draft-item ${activePath && activePath === item.path ? 'active' : ''}" data-draft-index="${idx}" role="button" tabindex="0">
-                        <div class="draft-item-head"><strong>${item.name || '未命名草稿'}</strong><span class="draft-use-tag">点击即用</span></div>
+                        <div class="draft-item-head"><strong class="draft-item-title" title="${escapeHtml(item.name || '未命名草稿')}">${item.name || '未命名草稿'}</strong><span class="draft-use-tag">点击即用</span></div>
                         <div class="draft-meta">来源：${item.source || '-'}\n更新时间：${new Date(item.updated_at).toLocaleString()}\n路径：${item.path}</div>
                     </div>
                 `).join('');
@@ -1873,6 +1907,7 @@
                     list.innerHTML += `<div class="draft-more-note">其余 ${filteredDrafts.length - visibleDrafts.length} 个草稿已收起，可在弹窗查看完整列表。</div>`;
                 }
                 window.__vfDiscoveredDrafts = visibleDrafts;
+                window.__vfDiscoveredDraftsAll = filteredDrafts;
                 list.querySelectorAll('.draft-item').forEach((node) => {
                     const draftIndex = parseInt(node.getAttribute('data-draft-index') || '-1', 10);
                     if (Number.isNaN(draftIndex) || draftIndex < 0) return;
@@ -2129,12 +2164,14 @@
             const fps = parseInt(document.getElementById('export_fps')?.value || '30', 10);
             const exportEnabled = !!document.getElementById('export_enable')?.checked;
             const batchCount = parseInt(document.getElementById('batch_count')?.value || '1', 10);
+            const queued = exportDraftQueue.length;
             const lines = [
+                '这是导出预览，不会立即执行导出。',
                 `导出目录：${exportDir || '尚未填写，建议先设置固定输出目录'}`,
                 `导出执行：${exportEnabled ? '生成后自动导出' : '仅生成草稿，不直接导出'}`,
                 `格式设置：${format.toUpperCase()} / ${resolution} / ${fps} FPS`,
-                '执行说明：当前只按导出目录、格式、分辨率和帧率执行导出',
-                `执行建议：先导出 1 条做抽检，再批量导出剩余 ${batchCount} 条。`
+                `当前待导出草稿：${queued} 个`,
+                `如果你在批量混剪里生成 ${batchCount} 条，这里建议先抽检 1 条，再继续批量导出。`
             ];
             setToolResult('export_result', lines.join('\n'));
         }
@@ -2145,20 +2182,28 @@
             if (!summary || !list) return;
             if (!exportDraftQueue.length) {
                 summary.textContent = '当前还没有待导出的草稿。';
-                list.textContent = '待导出草稿会显示在这里。';
+                list.innerHTML = '<div class="tool-result">待导出草稿会显示在这里。</div>';
                 return;
             }
             summary.textContent = `已加入 ${exportDraftQueue.length} 个待导出草稿。`;
-            list.innerHTML = exportDraftQueue.map((item, index) => `
-                <article class="draft-item draft-item-queue">
-                    <div class="draft-item-head">
-                        <strong>${escapeHtml(item.name || '未命名草稿')}</strong>
-                        <span class="draft-use-tag">${escapeHtml(item.source || '本机草稿')}</span>
+            list.innerHTML = `
+                <div class="resource-table-shell export-table-shell">
+                    <div class="resource-table-head export-table-head">
+                        <span>草稿名称</span>
+                        <span>来源</span>
+                        <span>草稿路径</span>
+                        <span>操作</span>
                     </div>
-                    <div class="draft-item-path" title="${escapeHtml(item.path || '')}">${escapeHtml(compactPathLabel(item.path || ''))}</div>
-                    <div class="key-actions"><button class="effect-add" type="button" onclick="removeExportDraftAt(${index})">移除</button></div>
-                </article>
-            `).join('');
+                    ${exportDraftQueue.map((item, index) => `
+                        <article class="resource-table-row export-table-row">
+                            <div class="resource-table-cell"><strong title="${escapeHtml(item.name || '未命名草稿')}">${escapeHtml(item.name || '未命名草稿')}</strong></div>
+                            <div class="resource-table-cell"><span class="resource-level-badge">${escapeHtml(item.source || '本机草稿')}</span></div>
+                            <div class="resource-table-cell export-path-cell" title="${escapeHtml(item.path || '')}">${escapeHtml(compactPathLabel(item.path || ''))}</div>
+                            <div class="resource-table-cell"><button class="effect-add" type="button" onclick="removeExportDraftAt(${index})">移除</button></div>
+                        </article>
+                    `).join('')}
+                </div>
+            `;
         }
 
         function removeExportDraftAt(index) {
@@ -2185,7 +2230,7 @@
         }
 
         function addDiscoveredDraftsToExportQueue() {
-            const drafts = Array.isArray(window.__vfDiscoveredDrafts) ? window.__vfDiscoveredDrafts : [];
+            const drafts = Array.isArray(window.__vfDiscoveredDraftsAll) ? window.__vfDiscoveredDraftsAll : [];
             if (!drafts.length) {
                 setToolResult('export_result', '还没有最近发现的草稿，请先打开草稿选择器刷新。');
                 return;
@@ -2215,17 +2260,28 @@
             if (!summary || !list) return;
             if (!splitDraftQueue.length) {
                 summary.textContent = '当前还没有加入要查看的草稿。';
-                list.textContent = '加入后的草稿会显示在这里。';
+                list.innerHTML = '<div class="tool-result">加入后的草稿会显示在这里。</div>';
                 return;
             }
             summary.textContent = `已加入 ${splitDraftQueue.length} 个草稿。`;
-            list.innerHTML = splitDraftQueue.map((item, index) => `
-                <div class="key-item key-item-compact">
-                    <div class="key-row"><strong>${item.name || '未命名草稿'}</strong><span class="key-badge">${item.source || '本机草稿'}</span></div>
-                    <div class="hint" title="${escapeHtml(item.path || '')}">${escapeHtml(compactPathLabel(item.path || ''))}</div>
-                    <div class="key-actions"><button class="effect-add" type="button" onclick="removeSplitDraftAt(${index})">移除</button></div>
+            list.innerHTML = `
+                <div class="resource-table-shell export-table-shell">
+                    <div class="resource-table-head export-table-head">
+                        <span>草稿名称</span>
+                        <span>来源</span>
+                        <span>草稿路径</span>
+                        <span>操作</span>
+                    </div>
+                    ${splitDraftQueue.map((item, index) => `
+                        <article class="resource-table-row export-table-row">
+                            <div class="resource-table-cell"><strong title="${escapeHtml(item.name || '未命名草稿')}">${escapeHtml(item.name || '未命名草稿')}</strong></div>
+                            <div class="resource-table-cell"><span class="resource-level-badge">${escapeHtml(item.source || '本机草稿')}</span></div>
+                            <div class="resource-table-cell export-path-cell" title="${escapeHtml(item.path || '')}">${escapeHtml(compactPathLabel(item.path || ''))}</div>
+                            <div class="resource-table-cell"><button class="effect-add" type="button" onclick="removeSplitDraftAt(${index})">移除</button></div>
+                        </article>
+                    `).join('')}
                 </div>
-            `).join('');
+            `;
         }
 
         function compactPathLabel(path = '') {
@@ -2240,7 +2296,7 @@
         }
 
         function addDiscoveredDraftsToSplitQueue() {
-            const drafts = Array.isArray(window.__vfDiscoveredDrafts) ? window.__vfDiscoveredDrafts : [];
+            const drafts = Array.isArray(window.__vfDiscoveredDraftsAll) ? window.__vfDiscoveredDraftsAll : [];
             if (!drafts.length) {
                 setToolResult('split_multi_result', '还没有最近发现的草稿，请先打开草稿选择器刷新。');
                 return;
@@ -2945,7 +3001,14 @@
                 notify('请至少选择一种替换内容。', 'warn');
                 return;
             }
-            const replaceType = document.getElementById('replace_type')?.value || 'both';
+            const replaceTypes = getSelectedReplaceTypes();
+            const visualTypes = replaceTypes.filter((item) => item === 'image' || item === 'video');
+            const effectiveReplaceMaterials = replaceMaterials && visualTypes.length > 0;
+            const effectiveReplaceAudios = replaceAudios || replaceTypes.includes('audio');
+            if (replaceMaterials && !visualTypes.length && !effectiveReplaceAudios) {
+                notify('请至少勾选一种素材类型。', 'warn');
+                return;
+            }
             const replaceMode = document.getElementById('replace_mode')?.value || 'order';
             const replaceStrategy = getSelectedReplaceStrategy();
             const folderPath = document.getElementById('folder_path')?.value?.trim() || '';
@@ -2993,10 +3056,10 @@
                 materials_root: folderPath,
                 texts_input: textsInput,
                 batch_count: batchCount,
-                replace_materials: replaceMaterials,
+                replace_materials: effectiveReplaceMaterials,
                 replace_texts: replaceTexts,
-                replace_audios: replaceAudios,
-                replace_type: replaceType,
+                replace_audios: effectiveReplaceAudios,
+                replace_type: replaceTypes,
                 replace_mode: replaceMode,
                 replace_strategy: replaceStrategy,
                 partition_text_mode: partitionTextMode,
@@ -3037,16 +3100,27 @@
             }
         }
         async function loadResourceTypes() {
+            const fallbackTypes = Object.keys(EFFECT_TYPE_LABELS || {});
             try {
                 const res = await fetch('/api/effects/types');
                 const data = await res.json();
                 const sel = document.getElementById('effect_type');
-                if (sel && data.types) {
-                    sel.innerHTML = data.types
+                if (!sel) return;
+                const types = Array.isArray(data.types) && data.types.length ? data.types : fallbackTypes;
+                if (types.length) {
+                    sel.innerHTML = types
                         .map((t) => `<option value="${t}">${escapeHtml(EFFECT_TYPE_LABELS[t] || t)}</option>`)
                         .join('');
                 }
-            } catch (e) {}
+            } catch (e) {
+                const sel = document.getElementById('effect_type');
+                if (!sel) return;
+                if (fallbackTypes.length) {
+                    sel.innerHTML = fallbackTypes
+                        .map((t) => `<option value="${t}">${escapeHtml(EFFECT_TYPE_LABELS[t] || t)}</option>`)
+                        .join('');
+                }
+            }
         }
 
         async function searchResources() {
@@ -3092,6 +3166,20 @@
                 || '';
         }
 
+        function getResourcePreviewUrl(item = {}) {
+            const meta = item?.meta && typeof item.meta === 'object' ? item.meta : {};
+            return item?.preview_url
+                || item?.preview
+                || item?.cover_url
+                || item?.cover
+                || item?.url
+                || meta?.preview_url
+                || meta?.cover_url
+                || meta?.cover
+                || meta?.url
+                || '';
+        }
+
         function renderResourceResults(items) {
             const results = document.getElementById('resource_results');
             if (!results) return;
@@ -3102,6 +3190,7 @@
             results.innerHTML = `
                 <div class="resource-table-shell resource-search-table">
                     <div class="resource-table-head">
+                        <span>预览</span>
                         <span>资源名称</span>
                         <span>资源标识</span>
                         <span>资源分类</span>
@@ -3112,10 +3201,14 @@
                         const name = item.name || item.title || '未命名资源';
                         const identifier = item.resource_id || item.effect_id || item.id || '-';
                         const category = item.effect_type || item.type || '-';
+                        const previewUrl = getResourcePreviewUrl(item);
                         const chips = buildResourceMetaChips(item)
                             .filter((chip) => chip !== category && chip !== `资源ID ${identifier}` && chip !== `效果ID ${identifier}` && chip !== `编号 ${identifier}`);
                         return `
                             <article class="resource-table-row resource-search-row">
+                                <div class="resource-table-cell duo-preview-cell">${previewUrl
+                                    ? `<img class="resource-browser-thumb" src="${previewUrl}" alt="${escapeHtml(name)}">`
+                                    : '<div class="resource-browser-thumb resource-browser-thumb-empty">资源</div>'}</div>
                                 <div class="resource-table-cell resource-search-name"><strong>${escapeHtml(name)}</strong></div>
                                 <div class="resource-table-cell"><span>${escapeHtml(identifier)}</span></div>
                                 <div class="resource-table-cell"><span>${escapeHtml(category)}</span></div>
@@ -3155,12 +3248,15 @@
         }
 
         async function loadDuoCategories() {
+            const fallbackCategories = ['video_effects', 'transitions', 'face_effects', 'stickers', 'text_templates'];
             try {
                 const res = await fetch('/api/duo/resources/categories');
                 const data = await parseJsonResponse(res, 'Duo 分类读取失败');
                 const sel = document.getElementById('duo_category');
                 if (sel) {
-                    const categories = Array.isArray(data.categories) ? data.categories.filter(Boolean) : [];
+                    const categories = Array.isArray(data.categories) && data.categories.length
+                        ? data.categories.filter(Boolean)
+                        : fallbackCategories;
                     const total = Number(data.resource_count || 0);
                     const previousValue = sel.value || '';
                     const allLabel = total > 0 ? `全部分类（${total}）` : '全部分类';
@@ -3171,7 +3267,11 @@
                 }
             } catch (e) {
                 const sel = document.getElementById('duo_category');
-                if (sel) sel.innerHTML = '<option value="">分类读取失败</option>';
+                if (sel) {
+                    sel.innerHTML = ['<option value="">全部分类</option>']
+                        .concat(fallbackCategories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`))
+                        .join('');
+                }
             }
         }
 
@@ -4325,7 +4425,7 @@ async function renameUserMaterialProject() {
                 button.textContent = '选择草稿';
                 button.addEventListener('click', () => openDraftPicker(button.closest('[data-draft-shell="true"]')));
             });
-            document.getElementById('draftPickerRefreshBtn')?.addEventListener('click', () => discoverDrafts(activeDraftShell, true));
+            document.getElementById('draftPickerRefreshBtn')?.addEventListener('click', () => discoverDrafts(activeDraftShell, true, true));
             document.querySelectorAll('[data-close-draft-picker="true"]').forEach((el) => {
                 el.addEventListener('click', closeDraftPicker);
             });
@@ -4347,6 +4447,12 @@ async function renameUserMaterialProject() {
             document.getElementById('replace_materials')?.addEventListener('change', syncMixReplaceControls);
             document.getElementById('replace_texts')?.addEventListener('change', syncMixReplaceControls);
             document.getElementById('replace_audios')?.addEventListener('change', syncMixReplaceControls);
+            document.querySelectorAll('input[name="replace_type"]').forEach((input) => {
+                input.addEventListener('change', syncMixReplaceControls);
+            });
+            document.querySelectorAll('input[name="replace_type"]').forEach((input) => {
+                input.checked = false;
+            });
             document.getElementById('partition_text_mode')?.addEventListener('change', syncPartitionTextStrategy);
             updateMixModeUI();
         }
@@ -4431,7 +4537,7 @@ async function renameUserMaterialProject() {
             },
             account: {
                 panelId: 'panel-account',
-                defaultItem: 'account-profile-section',
+                defaultItem: 'account-vip-section',
                 items: {
                     'account-profile-section': {kind: 'section', sectionId: 'account-profile-section'},
                     'account-vip-section': {kind: 'section', sectionId: 'account-vip-section'},
@@ -4515,11 +4621,33 @@ async function renameUserMaterialProject() {
             if (entry.kind === 'section') {
                 activateHardSection(entry.panelId, entry.sectionId);
             }
+            if (entry.groupKey === 'ai') {
+                applyAiWorkspaceSection(entry.itemKey);
+            }
 
             const shouldScroll = options.scroll !== false;
             const scrollTarget = entry.focusId ? document.getElementById(entry.focusId) : targetPanel;
             if (shouldScroll && scrollTarget) {
                 scrollTarget.scrollIntoView({behavior: 'smooth', block: 'start'});
+            }
+        }
+
+        function applyAiWorkspaceSection(itemKey) {
+            const aiMakePanel = document.getElementById('panel-ai-make');
+            const aiMangaPanel = document.getElementById('panel-ai-manga');
+            const aiInspirationCard = document.getElementById('aiInspirationCard');
+            if (aiMakePanel) {
+                aiMakePanel.querySelectorAll('.tool-card').forEach((node) => {
+                    if (!(node instanceof HTMLElement)) return;
+                    if (node.id === 'aiInspirationCard') return;
+                    node.style.display = itemKey === 'make' ? '' : 'none';
+                });
+            }
+            if (aiInspirationCard) {
+                aiInspirationCard.style.display = itemKey === 'inspiration' ? '' : 'none';
+            }
+            if (aiMangaPanel) {
+                aiMangaPanel.style.display = itemKey === 'manga' ? '' : 'none';
             }
         }
 
@@ -4596,6 +4724,21 @@ async function renameUserMaterialProject() {
         function prepareWorkspaceLayout() {
             relocateAiInspirationWorkspace();
             simplifyExportPanel();
+        }
+
+        function reorderAccountSections() {
+            const panel = document.getElementById('panel-account');
+            const profile = document.getElementById('account-profile-section');
+            const vip = document.getElementById('account-vip-section');
+            const nav = document.querySelector('.sidebar-group[data-group="account"] .sidebar-submenu');
+            const navProfile = nav?.querySelector('[data-hard-section="account-profile-section"]');
+            const navVip = nav?.querySelector('[data-hard-section="account-vip-section"]');
+            if (panel && profile && vip && vip.nextElementSibling !== profile) {
+                panel.insertBefore(vip, profile);
+            }
+            if (nav && navProfile && navVip && navVip.nextElementSibling !== navProfile) {
+                nav.insertBefore(navVip, navProfile);
+            }
         }
 
         function annotateWorkspaceSidebarLinks() {
@@ -4799,7 +4942,7 @@ async function renameUserMaterialProject() {
                     applyWorkspaceNavigation(resolved.groupKey, resolved.itemKey, {openActiveGroup: true});
                 });
             });
-            activateHardSection('panel-account', 'account-profile-section');
+            activateHardSection('panel-account', 'account-vip-section');
             activateHardSection('panel-resource-exchange', 'resource-square-section');
             activateHardSection('panel-settings', 'settings-basic-section');
             applyWorkspaceNavigation('assistant', 'assistant-main', {openActiveGroup: true, scroll: false});
@@ -4820,10 +4963,10 @@ async function renameUserMaterialProject() {
         function initEffectWorkspace() {
             initEffectInputs();
             loadResourceTypes();
+            loadDuoCategories();
+            renderDuoLists();
+            toggleDuoFields();
             if (runtimeFeatures.duo) {
-                loadDuoCategories();
-                renderDuoLists();
-                toggleDuoFields();
                 loadDuoCacheStatus();
                 loadFfmpegStatus();
                 document.getElementById('duo_param_blur')?.addEventListener('change', syncDuoParamUI);
@@ -4907,7 +5050,24 @@ async function renameUserMaterialProject() {
             const box = document.getElementById('resourceMyPostsList');
             if (!box) return;
             box.innerHTML = items.length
-                ? items.map((item) => `<article class="resource-post-card is-owned"><div class="resource-post-head"><span class="resource-level-badge">${escapeHtml(item.membership_label || '试用用户')}</span><span class="resource-post-status ${escapeHtml(item.status || 'pending')}">${escapeHtml(formatResourceExchangeStatus(item.status))}</span></div><div class="resource-detail-grid resource-detail-grid-wide"><div class="resource-detail-field"><span>项目名称</span><strong>${escapeHtml(item.project_name || '-')}</strong></div><div class="resource-detail-field"><span>项目介绍</span><strong>${escapeHtml(item.project_intro || '-')}</strong></div><div class="resource-detail-field"><span>联系方式</span><strong>${escapeHtml(item.contact || '-')}</strong></div><div class="resource-detail-field"><span>发布时间</span><strong>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : '-')}</strong></div></div><div class="resource-review-note">${item.status === 'rejected' ? `拒绝原因：${escapeHtml(item.review_reason || '管理员未填写')}` : (item.status === 'approved' ? '审核已通过，内容已在资源大厅展示。' : '等待管理员审核通过后展示。')}</div></article>`).join('')
+                ? `<div class="resource-table-shell">
+                    <div class="resource-table-head resource-table-head-owned">
+                        <span>状态</span>
+                        <span>项目名称</span>
+                        <span>项目介绍</span>
+                        <span>联系方式</span>
+                        <span>发布时间</span>
+                        <span>备注</span>
+                    </div>
+                    ${items.map((item) => `<article class="resource-table-row resource-table-row-owned">
+                        <div class="resource-table-cell"><span class="resource-post-status ${escapeHtml(item.status || 'pending')}">${escapeHtml(formatResourceExchangeStatus(item.status))}</span></div>
+                        <div class="resource-table-cell"><strong>${escapeHtml(item.project_name || '-')}</strong></div>
+                        <div class="resource-table-cell"><span>${escapeHtml(item.project_intro || '-')}</span></div>
+                        <div class="resource-table-cell"><span>${escapeHtml(item.contact || '-')}</span></div>
+                        <div class="resource-table-cell"><div>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : '-')}</div></div>
+                        <div class="resource-table-cell"><div class="resource-inline-note">${item.status === 'rejected' ? `拒绝原因：${escapeHtml(item.review_reason || '管理员未填写')}` : (item.status === 'approved' ? '审核已通过，内容已在资源大厅展示。' : '等待管理员审核通过后展示。')}</div></div>
+                    </article>`).join('')}
+                </div>`
                 : '<div class="tool-result">你今天还没有发布资源互换内容。</div>';
         }
 
@@ -4994,14 +5154,31 @@ async function renameUserMaterialProject() {
         }
 
         async function initWorkspacePage() {
-            await loadSiteSettings();
             initTheme();
             initAuthUI();
-            await loadRuntimeFeatures();
-            await restoreRuntimeToken();
-            await loadUserInfo();
+            // Desktop flow: require explicit login on each launch to avoid silent stale-session bypass.
+            clearToken();
+            openAuthModal();
             prepareWorkspaceLayout();
+            reorderAccountSections();
             initWorkspaceSidebar();
+
+            try {
+                await loadSiteSettings();
+            } catch (e) {
+                console.warn('loadSiteSettings failed', e);
+            }
+            try {
+                await loadRuntimeFeatures();
+            } catch (e) {
+                console.warn('loadRuntimeFeatures failed', e);
+            }
+            try {
+                await loadUserInfo();
+            } catch (e) {
+                console.warn('loadUserInfo failed', e);
+            }
+
             initDraftWorkspace();
             initEffectWorkspace();
             initAssistantWorkspace();
@@ -5037,24 +5214,34 @@ async function renameUserMaterialProject() {
                 {id: 'clip-shake', label: '摇晃关键帧', indexes: [2]}
             ], {rootId: 'clipToolsGrid', hideNav: true});
             initSecondaryTabs('panel-export', [
-                {id: 'export-settings', label: '导出设置', indexes: [0, 1]},
+                {id: 'export-segments', label: '片段导出', indexes: [0, 1]},
                 {id: 'export-batch', label: '批量导出', indexes: [2]},
-                {id: 'export-segments', label: '片段导出', indexes: [3]}
+                {id: 'export-settings', label: '导出设置', indexes: [3]}
             ], {hideNav: true});
             initSettingsWorkspace();
             await Promise.all([loadAiProviders(), loadAiKeys()]);
             initAiWorkspace();
+            const aiTextStatus = document.getElementById('ai_text_status');
+            if (aiTextStatus && aiTextStatus.textContent.includes('选择账号并填写需求后即可开始')) {
+                aiTextStatus.textContent = '';
+            }
             if (getWorkspaceSettings().auto_discover !== false) {
                 discoverDrafts();
             }
             if (!getToken()) {
                 openAuthModal();
-                window.setTimeout(() => openAuthModal(), 120);
             }
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            initWorkspacePage();
+            initWorkspacePage().catch((err) => {
+                console.error('initWorkspacePage failed', err);
+                try {
+                    if (!document.querySelector('.sidebar-group.active')) {
+                        initWorkspaceSidebar();
+                    }
+                } catch (e) {}
+            });
         });
 
         async function pollTaskStatus(jobId) {
@@ -5079,6 +5266,7 @@ async function renameUserMaterialProject() {
                         clearInterval(pollInterval);
                         pollInterval = null;
                         document.getElementById('progress-text').innerText = '✅ 生成完成！';
+                        notify('批量生成已完成，请检查新草稿。', 'success');
                         const summary = progress.effects_summary;
                         if (summary && summary.warnings && summary.warnings.length) {
                             const warnText = summary.warnings.map(w => `- ${w}`).join('<br>');
@@ -5097,6 +5285,7 @@ async function renameUserMaterialProject() {
                         clearInterval(pollInterval);
                         pollInterval = null;
                         document.getElementById('progress-text').innerText = `❌ 生成失败: ${data.error_msg || '未知错误'}`;
+                        notify(data.error_msg || '生成失败，请检查当前设置。', 'error');
                         document.getElementById('submitBtn').disabled = false;
                         await loadUserInfo();
                     }

@@ -78,6 +78,9 @@ def _ensure_fixed_runtime_base_dir() -> str:
 
 def main() -> int:
     _ensure_fixed_runtime_base_dir()
+    # Desktop runtime should default to online auth mode for official packaged builds.
+    os.environ.setdefault("VF_REMOTE_AUTH_MODE", "1")
+    os.environ.setdefault("VF_OFFICIAL_SITE_URL", "https://www.zysj.site")
     from werkzeug.serving import make_server
     from app import create_app
     from app.utils.desktop_runtime import (

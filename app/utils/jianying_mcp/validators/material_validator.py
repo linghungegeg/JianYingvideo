@@ -290,7 +290,7 @@ class MaterialValidator:
         """检查格式是否支持"""
         if expected_type == "audio" and ext not in self.SUPPORTED_AUDIO_FORMATS:
             raise ValueError(f"不支持的音频格式 {ext}: {source}")
-        elif expected_type == "video" and ext not in self.SUPPORTED_VIDEO_FORMATS:
+        elif expected_type == "video" and ext not in self.SUPPORTED_VIDEO_FORMATS and ext not in self.SUPPORTED_IMAGE_FORMATS:
             raise ValueError(f"不支持的视频格式 {ext}: {source}")
         elif expected_type == "image" and ext not in self.SUPPORTED_IMAGE_FORMATS:
             raise ValueError(f"不支持的图片格式 {ext}: {source}")

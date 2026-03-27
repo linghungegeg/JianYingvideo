@@ -1,4 +1,4 @@
-import os
+﻿import os
 import json
 import uuid
 import threading
@@ -2239,29 +2239,122 @@ def _extract_template_material_entries(template_path: str) -> list[dict]:
     return entries
 
 
-def _template_material_matches_type(name: str, source: str | None, replace_type: str, replace_strategy: str | None = None) -> bool:
+def _to_bool_flag(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    if text in {"0", "false", "off", "no", "n", "none", "null", "undefined"}:
+        return False
+    if text in {"1", "true", "on", "yes", "y"}:
+        return True
+    return bool(text)
+
+
+def _normalize_replace_types_api(replace_type) -> list[str]:
+    explicit_empty = False
+    if isinstance(replace_type, dict):
+        raw_items = [key for key, enabled in replace_type.items() if _to_bool_flag(enabled)]
+        explicit_empty = len(replace_type) > 0 and not raw_items
+    elif isinstance(replace_type, (list, tuple, set)):
+        raw_items = list(replace_type)
+        explicit_empty = len(raw_items) == 0
+    else:
+        raw_text = str(replace_type or "both")
+        for sep in ("|", ";", "/", " "):
+            raw_text = raw_text.replace(sep, ",")
+        raw_items = raw_text.split(",")
+
+    alias_map = {
+        "image": "image",
+        "images": "image",
+        "img": "image",
+        "photo": "image",
+        "photos": "image",
+        "pic": "image",
+        "pics": "image",
+        "图片": "image",
+        "图像": "image",
+        "video": "video",
+        "videos": "video",
+        "movie": "video",
+        "movies": "video",
+        "视频": "video",
+        "audio": "audio",
+        "audios": "audio",
+        "music": "audio",
+        "音频": "audio",
+        "音乐": "audio",
+        "both": "both",
+    }
+
+    normalized = []
+    seen = set()
+    for item in raw_items:
+        value = str(item or "").strip().lower()
+        if not value:
+            continue
+        value = alias_map.get(value, value)
+        if value == "both":
+            for kind in ("image", "video"):
+                if kind not in seen:
+                    normalized.append(kind)
+                    seen.add(kind)
+            continue
+        if value in {"image", "video", "audio"} and value not in seen:
+            normalized.append(value)
+            seen.add(value)
+    if explicit_empty:
+        return []
+    if not normalized:
+        return ["image", "video"]
+    return normalized
+
+
+def _template_material_matches_type(name: str, source: str | None, replace_type, replace_strategy: str | None = None) -> bool:
     ext = os.path.splitext(name or '')[1].lower()
+    replace_types = set(_normalize_replace_types_api(replace_type))
     if replace_strategy == 'sequence':
         if source:
             return source == 'videos'
         return ext in _VIDEO_EXTS
-    if replace_type == 'image':
+    if replace_types == {'image'}:
         if source == 'audios':
             return False
         if source == 'images':
             return True
         return ext in _IMAGE_EXTS
-    if replace_type == 'video':
+    if replace_types == {'video'}:
         if source:
             return source == 'videos'
         return ext in _VIDEO_EXTS
-    if replace_type == 'audio':
+    if replace_types == {'audio'}:
         if source:
             return source == 'audios'
         return ext in _AUDIO_EXTS
+    if replace_types == {'image', 'video'}:
+        if source == 'audios':
+            return False
+        if source in ('videos', 'images'):
+            return True
+        return ext in (_IMAGE_EXTS + _VIDEO_EXTS)
     if source in ('videos', 'images', 'audios'):
-        return True
-    return ext in _ALL_MEDIA_EXTS
+        if source == 'images':
+            return 'image' in replace_types
+        if source == 'videos':
+            return 'video' in replace_types
+        if source == 'audios':
+            return 'audio' in replace_types
+    if ext in _IMAGE_EXTS:
+        return 'image' in replace_types
+    if ext in _VIDEO_EXTS:
+        return 'video' in replace_types
+    if ext in _AUDIO_EXTS:
+        return 'audio' in replace_types
+    return False
 
 
 def _filter_replaceable_template_materials(
@@ -2371,17 +2464,19 @@ def _list_media_files_for_strategy(root_path, replace_type='both'):
     exts_img = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')
     exts_vid = ('.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v')
     exts_aud = ('.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac')
+    replace_types = set(_normalize_replace_types_api(replace_type))
     files = []
     for walk_root, _dirs, filenames in os.walk(root_path):
         for filename in filenames:
             ext = os.path.splitext(filename)[1].lower()
-            if replace_type == 'image' and ext not in exts_img:
-                continue
-            if replace_type == 'video' and ext not in exts_vid:
-                continue
-            if replace_type == 'audio' and ext not in exts_aud:
-                continue
-            if replace_type == 'both' and ext not in (exts_img + exts_vid + exts_aud):
+            matches = False
+            if 'image' in replace_types and ext in exts_img:
+                matches = True
+            if 'video' in replace_types and ext in exts_vid:
+                matches = True
+            if 'audio' in replace_types and ext in exts_aud:
+                matches = True
+            if not matches:
                 continue
             files.append(os.path.join(walk_root, filename))
     return files
@@ -2418,15 +2513,12 @@ def _validate_mix_materials_root(materials_root, replace_strategy, replace_type,
     if replace_strategy == 'group':
         if not subfolders:
             return '按组精准替换需要在总目录下准备子文件夹，例如 01、02、03。'
-        if len(subfolders) < len(material_names):
-            return f'按组精准替换至少需要 {len(material_names)} 个子文件夹，当前只有 {len(subfolders)} 个。'
-        empty_folders = [
-            os.path.basename(folder)
-            for folder in subfolders[:len(material_names)]
-            if not _list_media_files_for_strategy(folder, replace_type)
+        valid_subfolders = [
+            folder for folder in subfolders
+            if _list_media_files_for_strategy(folder, replace_type)
         ]
-        if empty_folders:
-            return f'这些分组目录里还没有可用素材：{", ".join(empty_folders)}。'
+        if not valid_subfolders:
+            return '按组精准替换至少需要 1 个包含所选素材类型的子文件夹。'
         return None
 
     if replace_strategy == 'partition':
@@ -2466,15 +2558,12 @@ def _validate_mix_materials_root_v2(materials_root, replace_strategy, replace_ty
     if replace_strategy == 'group':
         if not subfolders:
             return '按组精准替换需要在总目录下准备子文件夹，例如 01、02、03。'
-        if len(subfolders) < len(material_names):
-            return f'按组精准替换至少需要 {len(material_names)} 个子文件夹，当前只有 {len(subfolders)} 个。'
-        empty_folders = [
-            os.path.basename(folder)
-            for folder in subfolders[:len(material_names)]
-            if not _list_media_files_for_strategy(folder, replace_type)
+        valid_subfolders = [
+            folder for folder in subfolders
+            if _list_media_files_for_strategy(folder, replace_type)
         ]
-        if empty_folders:
-            return f'这些分组目录里还没有可用素材：{", ".join(empty_folders)}。'
+        if not valid_subfolders:
+            return '按组精准替换至少需要 1 个包含所选素材类型的子文件夹。'
         return None
 
     if replace_strategy == 'sequence':
@@ -2742,29 +2831,55 @@ def _remote_desktop_task_claim(task_id: str, action_key: str, quota_amount: int 
     if not token:
         return None, _auth_error('missing auth token', 401)
     response = None
-    try:
-        response = call_remote_api(
-            "/api/desktop/task-claim",
-            method="POST",
-            headers={"Authorization": f"Bearer {token}"},
-            json_data={
-                "task_id": task_id,
-                "action_key": action_key,
-                "quota_amount": quota_amount,
-            },
-            timeout=15,
-        )
-        data = response.json()
-    except Exception as exc:
+    data = None
+    last_exc = None
+    for attempt in range(3):
         if response is not None and int(response.status_code or 0) >= 500:
             logging.warning(
                 "remote desktop task claim json decode failed, fallback to local execution: action=%s status=%s error=%s",
                 action_key,
                 int(response.status_code or 0),
-                str(exc),
+                str(last_exc),
             )
             return None, None
-        return None, (jsonify({'ok': False, 'error': f'remote task claim failed: {exc}'}), 503)
+        try:
+            response = call_remote_api(
+                "/api/desktop/task-claim",
+                method="POST",
+                headers={"Authorization": f"Bearer {token}"},
+                json_data={
+                    "task_id": task_id,
+                    "action_key": action_key,
+                    "quota_amount": quota_amount,
+                },
+                timeout=20,
+            )
+            data = response.json()
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            exc_text = str(exc).lower()
+            is_timeout = "connect timeout" in exc_text or "read timeout" in exc_text or "timed out" in exc_text
+            if is_timeout and attempt < 2:
+                time.sleep(0.8 * (attempt + 1))
+                continue
+            if is_timeout:
+                logging.warning(
+                    "remote desktop task claim timeout, fallback to local execution: action=%s error=%s",
+                    action_key,
+                    str(exc),
+                )
+                return None, None
+            if response is not None and int(response.status_code or 0) >= 500:
+                logging.warning(
+                    "remote desktop task claim json decode failed, fallback to local execution: action=%s status=%s error=%s",
+                    action_key,
+                    int(response.status_code or 0),
+                    str(exc),
+                )
+                return None, None
+            return None, (jsonify({'ok': False, 'error': f'remote task claim failed: {exc}'}), 503)
     if not response.ok or not isinstance(data, dict) or not data.get("ok"):
         status_code = response.status_code or 502
         error_text = ""
@@ -4747,6 +4862,23 @@ def admin_security_overview():
         except Exception:
             audit_items = []
 
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+    except Exception:
+        page = 1
+    try:
+        per_page = int(request.args.get("per_page") or 15)
+    except Exception:
+        per_page = 15
+    per_page = max(1, min(per_page, 50))
+    total = len(audit_items)
+    pages = max(1, (total + per_page - 1) // per_page)
+    if page > pages:
+        page = pages
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_items = audit_items[start:end]
+
     rate_limit_buckets = 0
     rate_limit_path = _rate_limit_path()
     if rate_limit_path.exists():
@@ -4760,10 +4892,16 @@ def admin_security_overview():
 
     return jsonify({
         "ok": True,
-        "audit_events": audit_items[-100:],
+        "audit_events": page_items,
         "rate_limit_buckets": int(rate_limit_buckets),
         "audit_log_path": str(audit_path),
         "rate_limit_path": str(rate_limit_path),
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "pages": pages,
+            "total": total,
+        },
     })
 
 
@@ -7385,6 +7523,29 @@ def api_register():
 @api_bp.route('/auth/login', methods=['POST'])
 def api_login():
     data = request.get_json(silent=True) or {}
+    if remote_auth_mode_enabled() and bool(_get_official_site_origin()):
+        try:
+            response = call_remote_api(
+                "/api/auth/login",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                json_data=data,
+                timeout=15,
+            )
+            remote_ct = str(response.headers.get("content-type") or "").lower()
+            if "application/json" in remote_ct:
+                remote_payload = response.json()
+                return jsonify(remote_payload), int(response.status_code or 200)
+            return jsonify({
+                "ok": False,
+                "error": "remote login returned non-json response",
+                "status_code": int(response.status_code or 502),
+            }), 502
+        except Exception as exc:
+            return jsonify({
+                "ok": False,
+                "error": f"remote login unavailable: {exc}",
+            }), 502
     online_err = _require_remote_online('login')
     if online_err:
         return online_err

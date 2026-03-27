@@ -21,12 +21,14 @@ from app.models.task import Task
 from app.models.template_model import TemplateModel
 from app.models.task_effect_log import TaskEffectLog
 from app.services.jianying.local_draft_service import (
+    build_attachment_material_entries as _service_build_attachment_material_entries,
     find_draft_content_files as _service_find_draft_content_files,
     is_valid_draft_project_path as _service_is_valid_draft_project_path,
     load_draft_content as _service_load_draft_content,
     normalize_draft_project_path as _service_normalize_draft_project_path,
     resolve_active_draft_payload as _service_resolve_active_draft_payload,
 )
+from app.services.jianying.official_draft_replace_service import replace_official_draft
 from app.utils.helpers import get_drafts_folder
 from app.utils.ffmpeg_utils import find_ffmpeg
 from app.utils.remote_service import call_remote_api
@@ -124,20 +126,93 @@ def _build_file_index(root_path):
                 index[key] = os.path.join(root, fname)
     return index
 
+def _to_bool_flag(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    if text in {"0", "false", "off", "no", "n", "none", "null", "undefined"}:
+        return False
+    if text in {"1", "true", "on", "yes", "y"}:
+        return True
+    return bool(text)
+
+
+def _normalize_replace_types(replace_type):
+    explicit_empty = False
+    if isinstance(replace_type, dict):
+        raw_items = [key for key, enabled in replace_type.items() if _to_bool_flag(enabled)]
+        explicit_empty = len(replace_type) > 0 and not raw_items
+    elif isinstance(replace_type, (list, tuple, set)):
+        raw_items = replace_type
+        explicit_empty = len(list(replace_type)) == 0
+    else:
+        raw_text = str(replace_type or "both")
+        for sep in ("|", ";", "/", " "):
+            raw_text = raw_text.replace(sep, ",")
+        raw_items = raw_text.split(",")
+    alias_map = {
+        "image": "image",
+        "images": "image",
+        "img": "image",
+        "photo": "image",
+        "photos": "image",
+        "pic": "image",
+        "pics": "image",
+        "图片": "image",
+        "图像": "image",
+        "video": "video",
+        "videos": "video",
+        "movie": "video",
+        "movies": "video",
+        "视频": "video",
+        "audio": "audio",
+        "audios": "audio",
+        "music": "audio",
+        "音频": "audio",
+        "音乐": "audio",
+    }
+    normalized = []
+    seen = set()
+    for item in raw_items:
+        value = str(item or "").strip().lower()
+        if not value:
+            continue
+        if value == "both":
+            for kind in ("image", "video"):
+                if kind not in seen:
+                    normalized.append(kind)
+                    seen.add(kind)
+            continue
+        value = alias_map.get(value, value)
+        if value in {"image", "video", "audio"} and value not in seen:
+            normalized.append(value)
+            seen.add(value)
+    if explicit_empty:
+        return []
+    if not normalized:
+        return ["image", "video"]
+    return normalized
+
 def _list_media_files(root_path, replace_type):
     if not root_path or not os.path.exists(root_path):
         return []
+    replace_types = set(_normalize_replace_types(replace_type))
     files = []
     for root, _dirs, fnames in os.walk(root_path):
         for fname in fnames:
             ext = os.path.splitext(fname)[1].lower()
-            if replace_type == 'image' and ext not in _IMAGE_EXTS:
-                continue
-            if replace_type == 'video' and ext not in _VIDEO_EXTS:
-                continue
-            if replace_type == 'audio' and ext not in _AUDIO_EXTS:
-                continue
-            if replace_type == 'both' and ext not in _ALL_MEDIA_EXTS:
+            matches = False
+            if 'image' in replace_types and ext in _IMAGE_EXTS:
+                matches = True
+            if 'video' in replace_types and ext in _VIDEO_EXTS:
+                matches = True
+            if 'audio' in replace_types and ext in _AUDIO_EXTS:
+                matches = True
+            if not matches:
                 continue
             files.append(os.path.join(root, fname))
     return files
@@ -159,27 +234,45 @@ def _normalize_name(name):
 
 def _template_material_matches_type(name, source_kind, replace_type, replace_strategy=None):
     ext = os.path.splitext(name or '')[1].lower()
+    replace_types = set(_normalize_replace_types(replace_type))
     if replace_strategy == 'sequence':
         if source_kind:
             return source_kind == 'videos'
         return ext in _VIDEO_EXTS
-    if replace_type == 'image':
+    if replace_types == {'image'}:
         if source_kind == 'audios':
             return False
         if source_kind == 'images':
             return True
         return ext in _IMAGE_EXTS
-    if replace_type == 'video':
+    if replace_types == {'video'}:
         if source_kind:
             return source_kind == 'videos'
         return ext in _VIDEO_EXTS
-    if replace_type == 'audio':
+    if replace_types == {'audio'}:
         if source_kind:
             return source_kind == 'audios'
         return ext in _AUDIO_EXTS
+    if replace_types == {'image', 'video'}:
+        if source_kind == 'audios':
+            return False
+        if source_kind in ('videos', 'images'):
+            return True
+        return ext in (_IMAGE_EXTS + _VIDEO_EXTS)
     if source_kind in ('videos', 'images', 'audios'):
-        return True
-    return ext in _ALL_MEDIA_EXTS
+        if source_kind == 'images':
+            return 'image' in replace_types
+        if source_kind == 'videos':
+            return 'video' in replace_types
+        if source_kind == 'audios':
+            return 'audio' in replace_types
+    if ext in _IMAGE_EXTS:
+        return 'image' in replace_types
+    if ext in _VIDEO_EXTS:
+        return 'video' in replace_types
+    if ext in _AUDIO_EXTS:
+        return 'audio' in replace_types
+    return False
 
 
 def _build_sequence_output_path(draft_root, fname, source_files, slot_index):
@@ -245,6 +338,26 @@ def _find_material_target_file(root_path, fname, material_map):
     return None
 
 
+def _ensure_draft_material_target_file(root_path, fname, source_kind=None, material_map=None):
+    target_file = _find_material_target_file(root_path, fname, material_map or {})
+    if target_file:
+        return target_file
+
+    safe_name = os.path.basename(str(fname or "").strip())
+    if not safe_name:
+        return None
+
+    folder_by_source = {
+        'videos': os.path.join('materials', 'video'),
+        'images': os.path.join('materials', 'image'),
+        'audios': os.path.join('materials', 'audio'),
+    }
+    relative_dir = folder_by_source.get(source_kind or 'videos', os.path.join('materials', 'video'))
+    target_dir = os.path.join(root_path, relative_dir)
+    os.makedirs(target_dir, exist_ok=True)
+    return os.path.join(target_dir, safe_name)
+
+
 def _compose_slot_sequence(files, output_path):
     if not files or not output_path:
         return None
@@ -289,61 +402,61 @@ def _compose_slot_sequence(files, output_path):
     return output_path
 
 def _update_material_paths(draft_data, file_index):
-    draft_data = _resolve_active_draft_payload(draft_data)
-    materials = draft_data.get('materials', {})
-    for media_type in ('videos', 'images', 'audios'):
-        items = materials.get(media_type, [])
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict):
+    for payload in _iter_draft_payloads(draft_data):
+        materials = payload.get('materials', {})
+        for media_type in ('videos', 'images', 'audios'):
+            items = materials.get(media_type, [])
+            if not isinstance(items, list):
                 continue
-            path = item.get('path') or item.get('file_path')
-            if not path:
-                continue
-            fname = os.path.basename(path)
-            if not fname:
-                continue
-            new_path = file_index.get(fname.lower())
-            if new_path:
-                item['path'] = new_path
-                if 'file_path' in item:
-                    item['file_path'] = new_path
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                path = item.get('path') or item.get('file_path')
+                if not path:
+                    continue
+                fname = os.path.basename(path)
+                if not fname:
+                    continue
+                new_path = file_index.get(fname.lower())
+                if new_path:
+                    item['path'] = new_path
+                    if 'file_path' in item:
+                        item['file_path'] = new_path
 
 def _update_material_paths_from_user_files(draft_data, user_files, material_map):
     if not user_files:
         return
-    draft_data = _resolve_active_draft_payload(draft_data)
-    materials = draft_data.get('materials', {})
-    for media_type in ('videos', 'images', 'audios'):
-        items = materials.get(media_type, [])
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict):
+    for payload in _iter_draft_payloads(draft_data):
+        materials = payload.get('materials', {})
+        for media_type in ('videos', 'images', 'audios'):
+            items = materials.get(media_type, [])
+            if not isinstance(items, list):
                 continue
-            item_id = item.get('id')
-            material_name = item.get('material_name')
-            path = item.get('path') or item.get('file_path')
-            fname = None
-            if material_name:
-                fname = material_name
-            elif path:
-                fname = os.path.basename(path)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                item_id = item.get('id')
+                material_name = item.get('material_name')
+                path = item.get('path') or item.get('file_path')
+                fname = None
+                if material_name:
+                    fname = material_name
+                elif path:
+                    fname = os.path.basename(path)
 
-            new_path = None
-            if fname and fname.lower() in user_files:
-                new_path = user_files[fname.lower()]
-            elif item_id and material_map:
-                for name, mid in material_map.items():
-                    if mid == item_id and name.lower() in user_files:
-                        new_path = user_files[name.lower()]
-                        break
+                new_path = None
+                if fname and fname.lower() in user_files:
+                    new_path = user_files[fname.lower()]
+                elif item_id and material_map:
+                    for name, mid in material_map.items():
+                        if mid == item_id and name.lower() in user_files:
+                            new_path = user_files[name.lower()]
+                            break
 
-            if new_path:
-                item['path'] = new_path
-                if 'file_path' in item:
-                    item['file_path'] = new_path
+                if new_path:
+                    item['path'] = new_path
+                    if 'file_path' in item:
+                        item['file_path'] = new_path
 
 def _safe_update_style_ranges(styles, total_len):
     if not isinstance(styles, list) or total_len is None:
@@ -379,6 +492,30 @@ def _safe_update_style_ranges(styles, total_len):
                     end = start
                 fixed.append([start, end])
             style['ranges'] = fixed
+
+
+def _iter_draft_payloads(draft_data):
+    visited = set()
+
+    def _walk(payload):
+        if not isinstance(payload, dict):
+            return
+        ident = id(payload)
+        if ident in visited:
+            return
+        visited.add(ident)
+        yield payload
+        materials = payload.get('materials', {})
+        if not isinstance(materials, dict):
+            return
+        for item in materials.get('drafts', []) or []:
+            if not isinstance(item, dict):
+                continue
+            child = item.get('draft')
+            if isinstance(child, dict):
+                yield from _walk(child)
+
+    yield from _walk(draft_data)
 
 
 def _replace_word_timing_payload(words_payload, new_text):
@@ -420,11 +557,30 @@ def _extract_template_runtime_info_from_meta(template_path):
     material_map = {}
     texts_info = []
     material_sources = {}
+    attachment_entries = _build_attachment_material_entries(template_path)
+
+    def _apply_entries(entries):
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            if name not in materials:
+                materials.append(name)
+            source_kind = str(entry.get("source") or "videos").strip() or "videos"
+            material_sources[name] = source_kind
+            material_id = entry.get("material_id")
+            if material_id:
+                material_map[name] = material_id
+
     meta_path = os.path.join(template_path, "draft_meta_info.json")
     if not os.path.exists(meta_path):
+        _apply_entries(attachment_entries)
         return materials, material_map, texts_info, material_sources
     data, err = _load_json_with_encodings(meta_path)
     if err is not None or not isinstance(data, dict):
+        _apply_entries(attachment_entries)
         return materials, material_map, texts_info, material_sources
 
     source_map = {
@@ -471,6 +627,9 @@ def _extract_template_runtime_info_from_meta(template_path):
             material_id = item.get("id")
             if material_id:
                 material_map[name] = material_id
+
+    if not materials:
+        _apply_entries(attachment_entries)
 
     return materials, material_map, texts_info, material_sources
 
@@ -537,158 +696,345 @@ def _extract_template_runtime_info(template_path):
             break
 
 def _replace_texts_with_style(draft_data, texts_input, texts_info):
-    draft_data = _resolve_active_draft_payload(draft_data)
-    materials = draft_data.get('materials', {})
-    text_materials = materials.get('texts', [])
-    if not isinstance(text_materials, list) or not text_materials:
-        return 0
-
-    # 从文本轨道提取 material_id 顺序（更可靠的索引映射）
-    track_material_ids = []
-    for track in draft_data.get('tracks', []):
-        if track.get('type') != 'text':
-            continue
-        for seg in track.get('segments', []):
-            mid = seg.get('material_id')
-            if mid:
-                track_material_ids.append(mid)
-
-    # 预构建 material_id -> text_material
-    text_by_id = {}
-    for item in text_materials:
-        if isinstance(item, dict) and item.get('id'):
-            text_by_id[item['id']] = item
-
     replaced = 0
-    for user_text in texts_input:
-        if not isinstance(user_text, dict):
-            continue
-        idx = user_text.get('index')
-        contents = user_text.get('contents') or []
-        new_text = contents[0] if contents else ''
-        if new_text is None:
-            continue
-        new_text = str(new_text)
-
-        target_item = None
-        material_id = None
-        if isinstance(texts_info, list) and idx is not None and 0 <= idx < len(texts_info):
-            info = texts_info[idx]
-            if isinstance(info, dict):
-                material_id = info.get('material_id')
-        if material_id and material_id in text_by_id:
-            target_item = text_by_id[material_id]
-        elif idx is not None and 0 <= idx < len(track_material_ids):
-            track_mid = track_material_ids[idx]
-            target_item = text_by_id.get(track_mid)
-        elif idx is not None and 0 <= idx < len(text_materials):
-            target_item = text_materials[idx]
-
-        if not isinstance(target_item, dict):
+    for payload in _iter_draft_payloads(draft_data):
+        materials = payload.get('materials', {})
+        text_materials = materials.get('texts', [])
+        if not isinstance(text_materials, list) or not text_materials:
             continue
 
-        content_str = target_item.get('content')
-        if content_str:
-            try:
-                content_json = json.loads(content_str)
-                content_json['text'] = new_text
-                styles = content_json.get('styles', [])
-                _safe_update_style_ranges(styles, len(new_text))
-                target_item['content'] = json.dumps(content_json, ensure_ascii=False)
-            except Exception:
-                # 如果 content 解析失败，至少更新 recognize_text
-                pass
+        track_material_ids = []
+        for track in payload.get('tracks', []):
+            if track.get('type') != 'text':
+                continue
+            for seg in track.get('segments', []):
+                mid = seg.get('material_id')
+                if mid:
+                    track_material_ids.append(mid)
 
-        target_item['recognize_text'] = new_text
-        _replace_word_timing_payload(target_item.get('words'), new_text)
-        _replace_word_timing_payload(target_item.get('current_words'), new_text)
-        target_item['_vf_new_text'] = new_text
-        replaced += 1
+        text_by_id = {}
+        for item in text_materials:
+            if isinstance(item, dict) and item.get('id'):
+                text_by_id[item['id']] = item
+
+        payload_replaced_ids = set()
+        for user_text in texts_input:
+            if not isinstance(user_text, dict):
+                continue
+            idx = user_text.get('index')
+            contents = user_text.get('contents') or []
+            new_text = contents[0] if contents else ''
+            if new_text is None:
+                continue
+            new_text = str(new_text)
+
+            target_item = None
+            material_id = None
+            if isinstance(texts_info, list) and idx is not None and 0 <= idx < len(texts_info):
+                info = texts_info[idx]
+                if isinstance(info, dict):
+                    material_id = info.get('material_id')
+            if material_id and material_id in text_by_id:
+                target_item = text_by_id[material_id]
+            elif idx is not None and 0 <= idx < len(track_material_ids):
+                track_mid = track_material_ids[idx]
+                target_item = text_by_id.get(track_mid)
+            elif idx is not None and 0 <= idx < len(text_materials):
+                target_item = text_materials[idx]
+
+            if not isinstance(target_item, dict):
+                continue
+
+            content_str = target_item.get('content')
+            if content_str:
+                try:
+                    content_json = json.loads(content_str)
+                    content_json['text'] = new_text
+                    styles = content_json.get('styles', [])
+                    _safe_update_style_ranges(styles, len(new_text))
+                    target_item['content'] = json.dumps(content_json, ensure_ascii=False)
+                except Exception:
+                    pass
+
+            target_item['recognize_text'] = new_text
+            _replace_word_timing_payload(target_item.get('words'), new_text)
+            _replace_word_timing_payload(target_item.get('current_words'), new_text)
+            target_item['_vf_new_text'] = new_text
+            material_key = target_item.get('id') or f"idx:{idx}"
+            if material_key not in payload_replaced_ids:
+                payload_replaced_ids.add(material_key)
+                replaced += 1
 
     return replaced
 
 def _update_subtitle_taskinfo(draft_data):
-    draft_data = _resolve_active_draft_payload(draft_data)
     updated = 0
-    text_by_task = {}
-    for txt in draft_data.get('materials', {}).get('texts', []):
-        if isinstance(txt, dict):
-            task_id = txt.get('recognize_task_id')
-            new_text = txt.get('_vf_new_text')
-            if task_id and new_text is not None:
-                text_by_task[task_id] = new_text
+    for payload in _iter_draft_payloads(draft_data):
+        text_by_task = {}
+        for txt in payload.get('materials', {}).get('texts', []):
+            if isinstance(txt, dict):
+                task_id = txt.get('recognize_task_id')
+                new_text = txt.get('_vf_new_text')
+                if task_id and new_text is not None:
+                    text_by_task[task_id] = new_text
 
-    config = draft_data.get('config', {})
-    subtitle_taskinfo = config.get('subtitle_taskinfo', [])
-    if not isinstance(subtitle_taskinfo, list):
-        return 0
-
-    for item in subtitle_taskinfo:
-        if not isinstance(item, dict):
+        config = payload.get('config', {})
+        subtitle_taskinfo = config.get('subtitle_taskinfo', [])
+        if not isinstance(subtitle_taskinfo, list):
             continue
-        task_id = item.get('id')
-        if task_id in text_by_task:
-            try:
-                content = item.get('content')
-                if not content:
-                    continue
-                content_json = json.loads(content)
-                utterances = content_json.get('utterances', [])
-                if utterances:
-                    for u in utterances:
-                        u['text'] = text_by_task[task_id]
-                        words = u.get('words')
-                        if isinstance(words, list) and words:
-                            first_word = words[0] if isinstance(words[0], dict) else {}
-                            last_word = words[-1] if isinstance(words[-1], dict) else {}
-                            start_time = first_word.get('start_time', u.get('start_time', 0))
-                            end_time = last_word.get('end_time', u.get('end_time', start_time))
-                            u['words'] = [{
-                                'start_time': start_time,
-                                'end_time': end_time,
-                                'text': text_by_task[task_id],
-                                'attribute': first_word.get('attribute') if isinstance(first_word, dict) else {},
-                            }]
-                content_json['utterances'] = utterances
-                item['content'] = json.dumps(content_json, ensure_ascii=False)
-                updated += 1
-            except Exception:
+
+        for item in subtitle_taskinfo:
+            if not isinstance(item, dict):
                 continue
-    return updated
-
-def _clear_temp_text_marks(draft_data):
-    for txt in draft_data.get('materials', {}).get('texts', []):
-        if isinstance(txt, dict) and '_vf_new_text' in txt:
-            del txt['_vf_new_text']
-
-def _update_track_text_segments(draft_data):
-    draft_data = _resolve_active_draft_payload(draft_data)
-    updated = 0
-    text_by_id = {}
-    for txt in draft_data.get('materials', {}).get('texts', []):
-        if isinstance(txt, dict) and txt.get('id') and txt.get('_vf_new_text') is not None:
-            text_by_id[txt['id']] = txt['_vf_new_text']
-
-    for track in draft_data.get('tracks', []):
-        if track.get('type') != 'text':
-            continue
-        for seg in track.get('segments', []):
-            mid = seg.get('material_id')
-            if not mid or mid not in text_by_id:
-                continue
-            new_text = text_by_id[mid]
-            if seg.get('content'):
+            task_id = item.get('id')
+            if task_id in text_by_task:
                 try:
-                    content_json = json.loads(seg.get('content'))
-                    if isinstance(content_json, dict):
-                        content_json['text'] = new_text
-                        styles = content_json.get('styles', [])
-                        _safe_update_style_ranges(styles, len(new_text))
-                        seg['content'] = json.dumps(content_json, ensure_ascii=False)
-                        updated += 1
+                    content = item.get('content')
+                    if not content:
+                        continue
+                    content_json = json.loads(content)
+                    utterances = content_json.get('utterances', [])
+                    if utterances:
+                        for u in utterances:
+                            u['text'] = text_by_task[task_id]
+                            words = u.get('words')
+                            if isinstance(words, list) and words:
+                                first_word = words[0] if isinstance(words[0], dict) else {}
+                                last_word = words[-1] if isinstance(words[-1], dict) else {}
+                                start_time = first_word.get('start_time', u.get('start_time', 0))
+                                end_time = last_word.get('end_time', u.get('end_time', start_time))
+                                u['words'] = [{
+                                    'start_time': start_time,
+                                    'end_time': end_time,
+                                    'text': text_by_task[task_id],
+                                    'attribute': first_word.get('attribute') if isinstance(first_word, dict) else {},
+                                }]
+                    content_json['utterances'] = utterances
+                    item['content'] = json.dumps(content_json, ensure_ascii=False)
+                    updated += 1
                 except Exception:
                     continue
     return updated
+
+def _clear_temp_text_marks(draft_data):
+    for payload in _iter_draft_payloads(draft_data):
+        for txt in payload.get('materials', {}).get('texts', []):
+            if isinstance(txt, dict) and '_vf_new_text' in txt:
+                del txt['_vf_new_text']
+
+def _update_track_text_segments(draft_data):
+    updated = 0
+    for payload in _iter_draft_payloads(draft_data):
+        text_by_id = {}
+        for txt in payload.get('materials', {}).get('texts', []):
+            if isinstance(txt, dict) and txt.get('id') and txt.get('_vf_new_text') is not None:
+                text_by_id[txt['id']] = txt['_vf_new_text']
+
+        for track in payload.get('tracks', []):
+            if track.get('type') != 'text':
+                continue
+            for seg in track.get('segments', []):
+                mid = seg.get('material_id')
+                if not mid or mid not in text_by_id:
+                    continue
+                new_text = text_by_id[mid]
+                if seg.get('content'):
+                    try:
+                        content_json = json.loads(seg.get('content'))
+                        if isinstance(content_json, dict):
+                            content_json['text'] = new_text
+                            styles = content_json.get('styles', [])
+                            _safe_update_style_ranges(styles, len(new_text))
+                            seg['content'] = json.dumps(content_json, ensure_ascii=False)
+                            updated += 1
+                    except Exception:
+                        continue
+    return updated
+
+
+def _build_text_replacement_map(texts_input):
+    replacements = {}
+    if not isinstance(texts_input, list):
+        return replacements
+    for item in texts_input:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index")
+        contents = item.get("contents") or []
+        if not isinstance(idx, int) or not contents:
+            continue
+        replacement = contents[0]
+        if replacement is None:
+            continue
+        replacements[idx] = str(replacement)
+    return replacements
+
+
+def _collect_user_material_overrides(
+    material_names,
+    materials_root,
+    replace_type,
+    replace_mode,
+    replace_strategy,
+    sequence_clip_count,
+    batch_index,
+    sequence_cache_root,
+):
+    user_files = {}
+    folder_cache = {}
+    pool_files = []
+    group_folders = []
+    partition_map = {}
+
+    if replace_strategy == 'mix':
+        pool_files = _list_media_files(materials_root, replace_type)
+    elif replace_strategy == 'partition':
+        partition_map = _build_partition_folder_map(materials_root)
+    else:
+        # In group mode, only folders that contain media matching selected replace_type
+        # should participate in slot assignment.
+        group_folders = [
+            folder
+            for folder in _list_subfolders(materials_root)
+            if _list_media_files(folder, replace_type)
+        ]
+
+    for idx, fname in enumerate(material_names or []):
+        user_file = None
+        if replace_strategy == 'mix':
+            user_file = _pick_from_list(pool_files, replace_mode, batch_index + idx)
+        elif replace_strategy == 'sequence':
+            if not group_folders:
+                group_folders = _list_subfolders(materials_root)
+            if idx < len(group_folders):
+                folder = group_folders[idx]
+                files = folder_cache.get(folder)
+                if files is None:
+                    files = _list_media_files(folder, 'video')
+                    folder_cache[folder] = files
+                sequence_files = _pick_sequence_files(files, replace_mode, batch_index, sequence_clip_count)
+                if sequence_files:
+                    composed_target = _build_sequence_output_path(
+                        sequence_cache_root,
+                        fname,
+                        sequence_files,
+                        idx,
+                    )
+                    composed_file = _compose_slot_sequence(sequence_files, composed_target)
+                    if composed_file:
+                        user_files[fname.lower()] = composed_file
+                        continue
+                user_file = sequence_files[0] if sequence_files else None
+        elif replace_strategy == 'partition':
+            folder = partition_map.get(_normalize_name(fname))
+            if folder:
+                files = folder_cache.get(folder)
+                if files is None:
+                    files = _list_media_files(folder, replace_type)
+                    folder_cache[folder] = files
+                user_file = _pick_from_list(files, replace_mode, batch_index)
+        else:
+            if not group_folders:
+                if not pool_files:
+                    pool_files = _list_media_files(materials_root, replace_type)
+                user_file = _pick_from_list(pool_files, replace_mode, batch_index + idx)
+            elif len(group_folders) > 0:
+                folder = group_folders[idx % len(group_folders)]
+                files = folder_cache.get(folder)
+                if files is None:
+                    files = _list_media_files(folder, replace_type)
+                    folder_cache[folder] = files
+                user_file = _pick_from_list(files, replace_mode, batch_index)
+
+        if user_file:
+            user_files[fname.lower()] = user_file
+
+    return user_files
+
+
+def _lookup_material_override(material_replacements, material_name=None, material_path=None, material_id=None):
+    if not isinstance(material_replacements, dict) or not material_replacements:
+        return None
+
+    candidates = []
+    if material_name:
+        candidates.append(str(material_name).strip().lower())
+    if material_path:
+        basename = os.path.basename(str(material_path).strip())
+        if basename:
+            candidates.append(basename.lower())
+    if material_id:
+        candidates.append(str(material_id).strip().lower())
+
+    seen = set()
+    for key in candidates:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        path = material_replacements.get(key)
+        if path:
+            return path
+    return None
+
+
+def _estimate_media_duration(media_path, default_duration=3.0):
+    if not media_path:
+        return default_duration
+    try:
+        from app.utils.jianying_mcp.utils.media_parser import get_media_duration
+        duration = get_media_duration(media_path)
+        if duration and duration > 0:
+            return max(0.1, float(duration))
+    except Exception:
+        pass
+    return default_duration
+
+
+def _build_attachment_material_entries(template_path):
+    entries = _service_build_attachment_material_entries(template_path)
+    if entries:
+        return entries
+
+    normalized_path = normalize_draft_project_path(template_path)
+    if not normalized_path or not os.path.isdir(normalized_path):
+        return []
+
+    slot_keys = []
+    for root_path in (
+        normalized_path,
+        os.path.join(normalized_path, "common_attachment"),
+        os.path.join(normalized_path, "video"),
+    ):
+        if not os.path.isdir(root_path):
+            continue
+        for walk_root, _dirs, files in os.walk(root_path):
+            for name in files:
+                lower_name = str(name).lower()
+                if "material_placeholder" not in lower_name or "_water_mark" not in lower_name:
+                    continue
+                prefix = lower_name.split("##", 1)[0].strip()
+                if re.fullmatch(r"[0-9a-f]{32}", prefix):
+                    slot_keys.append(prefix)
+
+    deduped_keys = []
+    seen = set()
+    for key in slot_keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_keys.append(key)
+
+    if not deduped_keys:
+        return []
+
+    return [
+        {
+            "name": f"video_slot_{idx + 1:02d}",
+            "source": "videos",
+            "material_id": f"attachment_fragment_{idx + 1:02d}",
+        }
+        for idx, _key in enumerate(deduped_keys)
+    ]
 
 def update_task_meta(meta, task_id=None):
     resolved_task_id = task_id
@@ -771,6 +1117,239 @@ def _complete_remote_desktop_task(task_id, auth_token, success, error_msg=""):
     except Exception as exc:
         logging.warning("remote desktop task finalize failed: %s", exc)
 
+
+def _generate_video_task_via_mcp(
+    template_id,
+    materials_root,
+    texts_input,
+    batch_count,
+    replace_materials,
+    replace_texts,
+    replace_audios,
+    replace_type,
+    replace_mode,
+    replace_strategy,
+    sequence_clip_count,
+    audio_enabled,
+    audio_root,
+    export_enabled,
+    export_path,
+    export_format,
+    export_resolution,
+    export_fps,
+    effects_config,
+    duo_config,
+    template_path,
+    task_id,
+):
+    from app.services.jianying_service import JianYingService
+
+    if not template_path:
+        template = TemplateModel.query.get(template_id)
+        if not template:
+            raise Exception("legacy template not found")
+        template_path = template.template_path
+
+    template_path = normalize_draft_project_path(template_path)
+    if not template_path or not os.path.isdir(template_path):
+        raise Exception("template_path is invalid")
+    if not is_valid_draft_project_path(template_path):
+        raise Exception("template_path is not a valid draft project")
+
+    update_task_meta({'progress': 'reading material files...'}, task_id=task_id)
+    drafts_folder = _resolve_generated_drafts_root(template_path, export_path)
+    if not drafts_folder:
+        raise Exception("drafts folder is not configured")
+    os.makedirs(drafts_folder, exist_ok=True)
+
+    materials, material_map, texts_info, material_sources = _extract_template_runtime_info(template_path)
+    all_material_names = list(material_map.keys())
+    material_names = []
+    for fname in all_material_names:
+        is_audio = material_sources.get(fname) == 'audios'
+        if is_audio and not replace_audios:
+            continue
+        if not is_audio and not replace_materials:
+            continue
+        if _template_material_matches_type(
+            fname,
+            material_sources.get(fname),
+            replace_type,
+            replace_strategy,
+        ):
+            material_names.append(fname)
+
+    generated = 0
+    generated_paths = []
+    warnings = []
+
+    material_replacements_by_key = {}
+    if replace_materials and material_names:
+        sequence_cache_root = os.path.join(drafts_folder, ".vf_sequence_cache")
+        os.makedirs(sequence_cache_root, exist_ok=True)
+    else:
+        sequence_cache_root = None
+
+    for i in range(batch_count):
+        draft_name = f"task_{uuid.uuid4().hex[:8]}"
+        update_task_meta({'progress': f'mcp rebuilding draft ({i+1}/{batch_count})...'}, task_id=task_id)
+
+        user_files = {}
+        if replace_materials and material_names:
+            user_files = _collect_user_material_overrides(
+                material_names=material_names,
+                materials_root=materials_root,
+                replace_type=replace_type,
+                replace_mode=replace_mode,
+                replace_strategy=replace_strategy,
+                sequence_clip_count=sequence_clip_count,
+                batch_index=i,
+                sequence_cache_root=os.path.join(sequence_cache_root, draft_name) if sequence_cache_root else drafts_folder,
+            )
+            material_replacements_by_key = dict(user_files)
+
+        svc = JianYingService(output_path=drafts_folder)
+        summary = _apply_mcp_effects(
+            template_path,
+            effects_config or {},
+            svc,
+            duo_config,
+            export_format=export_format,
+            export_resolution=export_resolution,
+            export_fps=export_fps,
+            texts_input=texts_input if replace_texts else None,
+            material_replacements=material_replacements_by_key if replace_materials else None,
+            output_path=drafts_folder,
+            force_export=True,
+            draft_name=draft_name,
+            audio_source_root=audio_root or materials_root if (audio_enabled or replace_audios) else None,
+        )
+        exported_name = str((summary or {}).get("exported_draft_name") or draft_name).strip() or draft_name
+        exported_path = os.path.join(drafts_folder, exported_name)
+        if not os.path.isdir(exported_path):
+            raise RuntimeError(f"MCP export draft missing: {exported_path}")
+        if summary:
+            if task_id:
+                try:
+                    log = TaskEffectLog(task_id=task_id, summary=json.dumps(summary, ensure_ascii=False))
+                    db.session.add(log)
+                    db.session.commit()
+                except Exception as exc:
+                    logging.warning("MCP effects log failed: %s", exc)
+            for warning in summary.get("warnings") or []:
+                if warning not in warnings:
+                    warnings.append(warning)
+
+        generated += 1
+        generated_paths.append(exported_path)
+        update_task_meta({'progress': f'completed {generated}/{batch_count} drafts'}, task_id=task_id)
+
+    result = {'ok': True, 'message': 'batch generation completed', 'generated': generated}
+    if warnings:
+        result['warnings'] = warnings
+    if generated_paths:
+        result['generated_paths'] = generated_paths
+    return result
+
+
+def _generate_video_task_via_official_draft(
+    template_id,
+    materials_root,
+    texts_input,
+    batch_count,
+    replace_materials,
+    replace_texts,
+    replace_audios,
+    replace_type,
+    replace_mode,
+    replace_strategy,
+    sequence_clip_count,
+    audio_enabled,
+    audio_root,
+    export_enabled,
+    export_path,
+    export_format,
+    export_resolution,
+    export_fps,
+    effects_config,
+    duo_config,
+    template_path,
+    task_id,
+):
+    if not template_path:
+        template = TemplateModel.query.get(template_id)
+        if not template:
+            raise Exception("legacy template not found")
+        template_path = template.template_path
+
+    template_path = normalize_draft_project_path(template_path)
+    if not template_path or not os.path.isdir(template_path):
+        raise Exception("template_path is invalid")
+    if not is_valid_draft_project_path(template_path):
+        raise Exception("template_path is not a valid draft project")
+
+    drafts_folder = _resolve_generated_drafts_root(template_path, export_path)
+    if not drafts_folder:
+        raise Exception("drafts folder is not configured")
+    os.makedirs(drafts_folder, exist_ok=True)
+
+    materials, material_map, _texts_info, material_sources = _extract_template_runtime_info(template_path)
+    material_names = []
+    for fname in materials:
+        source_kind = material_sources.get(fname)
+        is_audio = source_kind == 'audios'
+        if is_audio and not replace_audios:
+            continue
+        if not is_audio and not replace_materials:
+            continue
+        if _template_material_matches_type(fname, source_kind, replace_type, replace_strategy):
+            material_names.append(fname)
+
+    generated_paths = []
+    warnings = []
+    for i in range(batch_count):
+        draft_name = f"task_{uuid.uuid4().hex[:8]}"
+        update_task_meta({'progress': f'official draft rebuilding ({i+1}/{batch_count})...'}, task_id=task_id)
+
+        material_replacements = {}
+        if replace_materials and material_names:
+            material_replacements = _collect_user_material_overrides(
+                material_names=material_names,
+                materials_root=materials_root,
+                replace_type=replace_type,
+                replace_mode=replace_mode,
+                replace_strategy=replace_strategy,
+                sequence_clip_count=sequence_clip_count,
+                batch_index=i,
+                sequence_cache_root=os.path.join(drafts_folder, ".vf_sequence_cache", draft_name),
+            )
+            if material_map and material_replacements:
+                expanded_replacements = dict(material_replacements)
+                for material_name, override_path in material_replacements.items():
+                    material_id = material_map.get(material_name) or material_map.get(str(material_name or "").strip())
+                    if material_id and override_path:
+                        expanded_replacements[str(material_id).strip().lower()] = override_path
+                material_replacements = expanded_replacements
+
+        summary = replace_official_draft(
+            template_path=template_path,
+            draft_name=draft_name,
+            texts_input=texts_input if replace_texts else None,
+            material_replacements=material_replacements if replace_materials else None,
+            output_root=drafts_folder,
+        )
+        generated_paths.append(summary["draft_path"])
+        for warning in summary.get("warnings") or []:
+            if warning not in warnings:
+                warnings.append(warning)
+
+    result = {'ok': True, 'message': 'batch generation completed', 'generated': len(generated_paths)}
+    if warnings:
+        result['warnings'] = warnings
+    if generated_paths:
+        result['generated_paths'] = generated_paths
+    return result
+
 def generate_video_task(template_id, materials_root, texts_input, batch_count,
                         replace_materials=True, replace_texts=True,
                         replace_audios=False,
@@ -785,7 +1364,7 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
         job = get_current_job()
         task_id = task_id_override or (job.id if job else None)
         _LOCAL_TASK_CONTEXT.task_id = task_id
-        task = Task.query.get(task_id)
+        task = Task.query.get(task_id) if task_id else None
         if task:
             task.status = 'started'
             db.session.commit()
@@ -796,290 +1375,31 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                     raise Exception("legacy template not found")
 
                 template_path = template.template_path
-            template_path = normalize_draft_project_path(template_path)
-            if not template_path or not os.path.isdir(template_path):
-                raise Exception("template_path is invalid")
-            if not is_valid_draft_project_path(template_path):
-                raise Exception("template_path is not a valid draft project")
-
-            materials, material_map, texts_info, material_sources = _extract_template_runtime_info(template_path)
-
-            # 素材映射（用于素材替换）
-            all_material_names = list(material_map.keys())
-
-            def filter_by_type(fname):
-                return _template_material_matches_type(
-                    fname,
-                    material_sources.get(fname),
-                    replace_type,
-                    replace_strategy,
-                )
-            material_names = []
-            for fname in all_material_names:
-                is_audio = material_sources.get(fname) == 'audios'
-                if is_audio and not replace_audios:
-                    continue
-                if not is_audio and not replace_materials:
-                    continue
-                if filter_by_type(fname):
-                    material_names.append(fname)
-
-            # 原文字列表（从模板配置中获取，必须是纯字符串列表）
-            raw_texts = texts_info or []
-            original_texts = []
-            if raw_texts:
-                if isinstance(raw_texts[0], dict):
-                    original_texts = [item.get('default', '') for item in raw_texts]
-                else:
-                    original_texts = raw_texts
-            update_task_meta({'progress': 'reading material files...'})
-            drafts_folder = _resolve_generated_drafts_root(template_path, export_path)
-            if not drafts_folder:
-                raise Exception("drafts folder is not configured")
-            os.makedirs(drafts_folder, exist_ok=True)
-
-
-            folder_cache = {}
-            pool_files = []
-            group_folders = []
-            partition_map = {}
-            if replace_strategy == 'mix':
-                pool_files = _list_media_files(materials_root, replace_type)
-            elif replace_strategy == 'partition':
-                partition_map = _build_partition_folder_map(materials_root)
-            else:
-                group_folders = _list_subfolders(materials_root)
-
-            generated = 0
-
-            for i in range(batch_count):
-                draft_name = f"task_{uuid.uuid4().hex[:8]}"
-                new_draft_path = os.path.join(drafts_folder, draft_name)
-                if os.path.exists(new_draft_path):
-                    shutil.rmtree(new_draft_path)
-
-                update_task_meta({'progress': f'正在复制模板 ({i+1}/{batch_count})...'})
-                shutil.copytree(template_path, new_draft_path)
-
-                draft_content_candidates = find_draft_content_files(new_draft_path)
-                draft_content_path = draft_content_candidates[0] if draft_content_candidates else os.path.join(new_draft_path, 'draft_content.json')
-                if not os.path.exists(draft_content_path):
-                    raise Exception(f"新草稿缺少 draft_content.json")
-
-                # 预先修正素材路径，避免仍指向旧草稿目录
-                try:
-                    file_index = _build_file_index(new_draft_path)
-                    with open(draft_content_path, 'r', encoding='utf-8') as f:
-                        draft_data = json.load(f)
-                    _update_material_paths(draft_data, file_index)
-                    with open(draft_content_path, 'w', encoding='utf-8') as f:
-                        json.dump(draft_data, f, ensure_ascii=False)
-                except Exception as e:
-                    print(f"[DEBUG] 修正素材路径失败: {e}")
-
-                # ---------- 素材替换 ----------
-                draft_data, draft_load_err, draft_diagnostics = load_draft_content(new_draft_path)
-                draft_content_path = (
-                    (draft_diagnostics or {}).get("matched_candidate")
-                    or (find_draft_content_files(new_draft_path) or [os.path.join(new_draft_path, 'draft_content.json')])[0]
-                )
-                draft_json_editable = not draft_load_err and isinstance(draft_data, dict)
-                mcp_text_rebuild_required = bool(replace_texts and texts_input and not draft_json_editable)
-                if not draft_json_editable:
-                    print(f"[DEBUG] draft content unreadable, fallback to internal-id replacement: {draft_load_err}")
-                    update_task_meta({'progress': 'official draft fallback: replace by internal id'})
-                if False and (draft_load_err or not isinstance(draft_data, dict)):
-                    raise Exception(draft_load_err or "新草稿读取失败")
-
-                if draft_json_editable:
-                    try:
-                        file_index = _build_file_index(new_draft_path)
-                        _update_material_paths(draft_data, file_index)
-                        with open(draft_content_path, 'w', encoding='utf-8') as f:
-                            json.dump(draft_data, f, ensure_ascii=False)
-                    except Exception as e:
-                        print(f"[DEBUG] matched draft json update failed: {e}")
-
-                user_files = {}
-                if replace_materials and material_names:
-                    for idx, fname in enumerate(material_names):
-                        user_file = None
-                        if replace_strategy == 'mix':
-                            user_file = _pick_from_list(pool_files, replace_mode, i + idx)
-                        elif replace_strategy == 'sequence':
-                            if not group_folders:
-                                group_folders = _list_subfolders(materials_root)
-                            if idx < len(group_folders):
-                                folder = group_folders[idx]
-                                files = folder_cache.get(folder)
-                                if files is None:
-                                    files = _list_media_files(folder, 'video')
-                                    folder_cache[folder] = files
-                                sequence_files = _pick_sequence_files(files, replace_mode, i, sequence_clip_count)
-                                if sequence_files:
-                                    composed_target = _build_sequence_output_path(
-                                        new_draft_path,
-                                        fname,
-                                        sequence_files,
-                                        idx,
-                                    )
-                                    composed_file = _compose_slot_sequence(sequence_files, composed_target)
-                                    if composed_file:
-                                        user_files[fname.lower()] = composed_file
-                                        print(f"[DEBUG] 拼接槽位素材: {sequence_files} -> {composed_file}")
-                                        update_task_meta({'progress': f'拼接槽位素材: {fname}'})
-                                        continue
-                                user_file = sequence_files[0] if sequence_files else None
-                        elif replace_strategy == 'partition':
-                            folder = partition_map.get(_normalize_name(fname))
-                            if folder:
-                                files = folder_cache.get(folder)
-                                if files is None:
-                                    files = _list_media_files(folder, replace_type)
-                                    folder_cache[folder] = files
-                                user_file = _pick_from_list(files, replace_mode, i)
-                        else:
-                            if not group_folders:
-                                if not pool_files:
-                                    pool_files = _list_media_files(materials_root, replace_type)
-                                user_file = _pick_from_list(pool_files, replace_mode, i + idx)
-                            elif idx < len(group_folders):
-                                folder = group_folders[idx]
-                                files = folder_cache.get(folder)
-                                if files is None:
-                                    files = _list_media_files(folder, replace_type)
-                                    folder_cache[folder] = files
-                                user_file = _pick_from_list(files, replace_mode, i)
-
-                        if not user_file:
-                            print(f"[DEBUG] 未找到素材文件: {fname}")
-                            update_task_meta({'progress': f'素材缺失: {fname}'})
-                            continue
-                        user_files[fname.lower()] = user_file
-
-                        target_file = None
-                        for root, dirs, files in os.walk(new_draft_path):
-                            if fname in files:
-                                target_file = os.path.join(root, fname)
-                                break
-                        if target_file:
-                            shutil.copy2(user_file, target_file)
-                            print(f"[DEBUG] 替换素材: {user_file} -> {target_file}")
-                            update_task_meta({'progress': f'替换素材: {fname}'})
-                        else:
-                            internal_id = material_map.get(fname)
-                            if internal_id:
-                                for root, dirs, files in os.walk(new_draft_path):
-                                    if internal_id in files:
-                                        target_file = os.path.join(root, internal_id)
-                                        shutil.copy2(user_file, target_file)
-                                        print(f"[DEBUG] 替换素材(内部ID): {user_file} -> {target_file}")
-                                        update_task_meta({'progress': f'替换素材: {fname}'})
-                                        break
-                                else:
-                                    print(f"[DEBUG] 未找到目标文件: {fname}")
-                            else:
-                                print(f"[DEBUG] 未找到目标文件: {fname}")
-
-                if replace_materials and user_files and draft_json_editable:
-                    try:
-                        with open(draft_content_path, 'r', encoding='utf-8') as f:
-                            draft_data = json.load(f)
-                        _update_material_paths_from_user_files(
-                            draft_data,
-                            user_files,
-                            material_map
-                        )
-                        with open(draft_content_path, 'w', encoding='utf-8') as f:
-                            json.dump(draft_data, f, ensure_ascii=False)
-                    except Exception as e:
-                        print(f"[DEBUG] 更新素材路径失败: {e}")
-
-                # ---------- 文字替换：结构化更新，保留样式 ----------
-                if replace_texts and texts_input:
-                    if draft_json_editable:
-                        with open(draft_content_path, 'r', encoding='utf-8') as f:
-                            draft_data = json.load(f)
-                        replaced_count = _replace_texts_with_style(
-                            draft_data,
-                            texts_input,
-                            texts_info or []
-                        )
-                        subtitle_updated = _update_subtitle_taskinfo(draft_data)
-                        track_updated = _update_track_text_segments(draft_data)
-                        _clear_temp_text_marks(draft_data)
-                        if replaced_count:
-                            with open(draft_content_path, 'w', encoding='utf-8') as f:
-                                json.dump(draft_data, f, ensure_ascii=False)
-                            print(f"[DEBUG] 文字替换完成，共替换 {replaced_count} 段，字幕更新 {subtitle_updated}，轨道更新 {track_updated}")
-                            update_task_meta({'progress': f'文字替换完成，共替换 {replaced_count} 段'})
-                    else:
-                        update_task_meta({'progress': 'official draft text replacement fallback to MCP'})
-
-                # 附加音频
-                if audio_enabled:
-                    audio_dir = os.path.join(new_draft_path, 'audio')
-                    os.makedirs(audio_dir, exist_ok=True)
-                    audio_source_root = audio_root or materials_root
-                    for root, _dirs, files in os.walk(audio_source_root):
-                        for fname in files:
-                            if fname.lower().endswith(('.mp3','.wav','.m4a')):
-                                src = os.path.join(root, fname)
-                                dst = os.path.join(audio_dir, fname)
-                                shutil.copy2(src, dst)
-                                update_task_meta({'progress': f'复制音频: {fname}'})
-
-                # 高级效果（MCP）导出
-                mcp_output_path = export_path if (export_enabled and export_path) else (drafts_folder if mcp_text_rebuild_required else None)
-                previous_output_path = os.environ.get("OUTPUT_PATH")
-                if mcp_output_path:
-                    os.environ["OUTPUT_PATH"] = mcp_output_path
-                # MCP effects apply
-                if effects_config or duo_config or export_enabled or mcp_text_rebuild_required:
-                    try:
-                        from app.services.jianying_service import JianYingService
-                        from app.utils.jianying_mcp.utils.media_parser import MediaParser
-                        from app.utils.jianying_mcp.utils.time_format import parse_start_end_format
-                        svc = JianYingService()
-                        update_task_meta({'progress': '正在应用高级效果...'})
-                        summary = _apply_mcp_effects(
-                            new_draft_path,
-                            effects_config or {},
-                            svc,
-                            duo_config,
-                            export_format=export_format,
-                            export_resolution=export_resolution,
-                            export_fps=export_fps,
-                            texts_input=texts_input if (replace_texts and texts_input) else None,
-                        )
-                        if mcp_text_rebuild_required and not export_enabled:
-                            exported_draft_name = str((summary or {}).get('draft_name') or '').strip()
-                            exported_draft_path = os.path.join(mcp_output_path or '', exported_draft_name)
-                            if exported_draft_name and os.path.isdir(exported_draft_path):
-                                if os.path.exists(new_draft_path):
-                                    shutil.rmtree(new_draft_path)
-                                shutil.move(exported_draft_path, new_draft_path)
-                        if summary:
-                            update_task_meta({'progress': 'MCP effects applied', 'effects_summary': summary})
-                            try:
-                                log = TaskEffectLog(task_id=task_id, summary=json.dumps(summary, ensure_ascii=False))
-                                db.session.add(log)
-                                db.session.commit()
-                            except Exception as e:
-                                print(f"[DEBUG] MCP effects log failed: {e}")
-                    except Exception as e:
-                        print(f"[DEBUG] MCP effects apply failed: {e}")
-                    finally:
-                        if mcp_output_path:
-                            if previous_output_path is None:
-                                os.environ.pop("OUTPUT_PATH", None)
-                            else:
-                                os.environ["OUTPUT_PATH"] = previous_output_path
-
-                generated += 1
-                update_task_meta({'progress': f'completed {generated}/{batch_count} drafts'})
-
-            update_task_meta({'progress': 'all completed'})
+            result = _generate_video_task_via_official_draft(
+                template_id=template_id,
+                materials_root=materials_root,
+                texts_input=texts_input,
+                batch_count=batch_count,
+                replace_materials=replace_materials,
+                replace_texts=replace_texts,
+                replace_audios=replace_audios,
+                replace_type=replace_type,
+                replace_mode=replace_mode,
+                replace_strategy=replace_strategy,
+                sequence_clip_count=sequence_clip_count,
+                audio_enabled=audio_enabled,
+                audio_root=audio_root,
+                export_enabled=export_enabled,
+                export_path=export_path,
+                export_format=export_format,
+                export_resolution=export_resolution,
+                export_fps=export_fps,
+                effects_config=effects_config,
+                duo_config=duo_config,
+                template_path=template_path,
+                task_id=task_id,
+            )
+            update_task_meta({'progress': 'all completed'}, task_id=task_id)
             if task:
                 task.status = 'finished'
                 db.session.commit()
@@ -1091,9 +1411,7 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                     deduct_quota(user_id, amount=1)
                 except Exception as quota_error:
                     logging.error(f"quota deduct failed: {quota_error}")
-
-            return {'ok': True, 'message': 'batch generation completed', 'generated': generated}
-
+            return result
         except Exception as e:
             if task:
                 task.status = 'failed'
@@ -1109,7 +1427,9 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
 
 def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
                        export_format=None, export_resolution=None, export_fps=None,
-                       texts_input=None):
+                       texts_input=None, material_replacements=None,
+                       output_path=None, force_export=False, draft_name=None,
+                       audio_source_root=None):
     """
     基于 MCP 导出流程生成带效果的新草稿（实验性）。
     注意：该流程会重建轨道与素材，可能丢失部分模板样式。
@@ -1127,16 +1447,39 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
     draft_content = draft_content_candidates[0] if draft_content_candidates else os.path.join(normalized_draft_path, 'draft_content.json')
     if not os.path.exists(draft_content):
         summary["warnings"].append("draft_content.json not found")
-        return summary
+    attachment_entries = []
 
     data, load_err, diagnostics = load_draft_content(normalized_draft_path)
     if load_err or not isinstance(data, dict):
         summary["warnings"].append(load_err or "draft_content.json read failed")
         if diagnostics.get("matched_candidate"):
             draft_content = diagnostics["matched_candidate"]
-        return summary
-    data = _resolve_active_draft_payload(data)
-    draft_content = diagnostics.get("matched_candidate") or draft_content
+        attachment_entries = _build_attachment_material_entries(normalized_draft_path)
+        if not attachment_entries:
+            return summary
+        summary["warnings"].append("attachment fallback active: slot-level MCP rebuild")
+        data = {}
+    else:
+        data = _resolve_active_draft_payload(data)
+        draft_content = diagnostics.get("matched_candidate") or draft_content
+
+    template_file_index = _build_file_index(normalized_draft_path)
+
+    def _resolve_template_media_path(path_value):
+        raw_path = str(path_value or "").strip()
+        if not raw_path:
+            return ""
+        if os.path.isabs(raw_path) and os.path.exists(raw_path):
+            return raw_path
+        joined_path = os.path.normpath(os.path.join(normalized_draft_path, raw_path.replace("/", os.sep)))
+        if os.path.exists(joined_path):
+            return joined_path
+        basename = os.path.basename(raw_path)
+        if basename:
+            resolved = template_file_index.get(basename.lower())
+            if resolved and os.path.exists(resolved):
+                return resolved
+        return raw_path
 
     effects_config = effects_config or {}
 
@@ -1146,7 +1489,7 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
     # 构建 MCP 草稿
     draft_id = uuid.uuid4().hex
     fmt = export_format if export_format in ("mp4", "mov") else None
-    draft_name = f"mcp_{draft_id}{'_' + fmt if fmt else ''}"
+    draft_name = str(draft_name or "").strip() or f"mcp_{draft_id}{'_' + fmt if fmt else ''}"
     canvas = data.get("canvas_config", {}) or {}
     base_w = canvas.get("width", 1080)
     base_h = canvas.get("height", 1920)
@@ -1187,20 +1530,29 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
     summary["draft_name"] = draft_name
     if fmt:
         summary["export_format"] = fmt
+    if audio_source_root:
+        summary["audio_source_root"] = audio_source_root
 
     # create tracks based on original draft order
     track_name_by_index = {}
     overlay_track_name = None
-    for idx, track in enumerate(data.get("tracks", [])):
-        ttype = track.get("type")
-        if ttype not in ("video", "audio", "text"):
-            continue
-        raw_name = track.get("name") or track.get("track_name") or f"{ttype}_{idx}"
-        resp = svc.create_track(draft_id, ttype, raw_name)
+    if attachment_entries:
+        resp = svc.create_track(draft_id, "video", "video_main")
         if resp and getattr(resp, "ok", False) and resp.data and resp.data.get("track_name"):
-            track_name_by_index[idx] = resp.data.get("track_name")
+            track_name_by_index[0] = resp.data.get("track_name")
         else:
-            track_name_by_index[idx] = raw_name
+            track_name_by_index[0] = "video_main"
+    else:
+        for idx, track in enumerate(data.get("tracks", [])):
+            ttype = track.get("type")
+            if ttype not in ("video", "audio", "text"):
+                continue
+            raw_name = track.get("name") or track.get("track_name") or f"{ttype}_{idx}"
+            resp = svc.create_track(draft_id, ttype, raw_name)
+            if resp and getattr(resp, "ok", False) and resp.data and resp.data.get("track_name"):
+                track_name_by_index[idx] = resp.data.get("track_name")
+            else:
+                track_name_by_index[idx] = raw_name
 
     # build maps
     materials = data.get("materials", {})
@@ -1212,23 +1564,28 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
     audio_segment_ids = []
     text_segment_ids = []
 
+    expected_video_segments = 0
+    expected_audio_segments = 0
+    expected_text_segments = 0
+    if attachment_entries:
+        expected_video_segments = len(attachment_entries)
+    else:
+        for track in data.get("tracks", []):
+            ttype = track.get("type")
+            if ttype not in ("video", "audio", "text"):
+                continue
+            segment_count = len(track.get("segments") or [])
+            if ttype == "video":
+                expected_video_segments += segment_count
+            elif ttype == "audio":
+                expected_audio_segments += segment_count
+            else:
+                expected_text_segments += segment_count
+
     video_segment_track = {}
     audio_segment_track = {}
     text_segment_track = {}
-    text_replacements = {}
-
-    if isinstance(texts_input, list):
-        for item in texts_input:
-            if not isinstance(item, dict):
-                continue
-            idx = item.get("index")
-            contents = item.get("contents") or []
-            if not isinstance(idx, int) or not contents:
-                continue
-            replacement = contents[0]
-            if replacement is None:
-                continue
-            text_replacements[idx] = str(replacement)
+    text_replacements = _build_text_replacement_map(texts_input)
 
     micro_cfg = (effects_config.get("video") or {}).get("micro_adjust") or {}
     if micro_cfg.get("enabled") is False:
@@ -1386,141 +1743,217 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
         duration = float(tr.get("duration", 0)) / 1_000_000
         return f"{start}s-{duration}s"
 
-    for idx, track in enumerate(data.get("tracks", [])):
-        ttype = track.get("type")
-        if ttype not in ("video", "audio", "text"):
-            continue
-        track_name = track_name_by_index.get(idx)
-        for seg in track.get("segments", []):
-            mid = seg.get("material_id")
-            if ttype == "video":
-                mat = video_mats.get(mid)
-                if not mat:
-                    continue
-                path = mat.get("path") or mat.get("file_path")
-                if not path:
-                    continue
-                seg_index = len(video_segment_ids)
-                target_timerange = _trange_str(seg.get("target_timerange", {}))
-                if not target_timerange:
-                    continue
-                source_timerange = _trange_str(seg.get("source_timerange", {}))
-                clip_settings = seg.get("clip_settings") or seg.get("clip")
-                speed = seg.get("speed")
-                volume = seg.get("volume", 1.0)
-                change_pitch = seg.get("change_pitch", False)
+    if attachment_entries:
+        track_name = track_name_by_index.get(0, "video_main")
+        cursor = 0.0
+        for seg_index, entry in enumerate(attachment_entries):
+            path = _lookup_material_override(
+                material_replacements,
+                material_name=entry.get("name"),
+                material_id=entry.get("material_id"),
+            )
+            if not path:
+                summary["warnings"].append(f"attachment slot missing replacement: {entry.get('name')}")
+                continue
+            if not os.path.exists(path):
+                summary["warnings"].append(f"attachment slot path missing: {path}")
+                continue
+            duration = _estimate_media_duration(path, default_duration=3.0)
+            target_timerange = f"{cursor:.3f}s-{duration:.3f}s"
+            source_timerange = f"0.000s-{duration:.3f}s"
+            apply_micro = bool(micro_cfg) and (not micro_indexes or seg_index in micro_indexes)
+            resp = svc.add_video_segment(
+                draft_id,
+                path,
+                target_timerange,
+                source_timerange=source_timerange,
+                track_name=track_name,
+            )
+            resp_data = _resp_data(resp)
+            if _resp_ok(resp) and resp_data:
+                video_segment_ids.append(resp_data.get("video_segment_id"))
+                video_segment_track[len(video_segment_ids) - 1] = track_name
+                video_segment_meta.append({
+                    "duration": duration,
+                    "track": track_name,
+                    "apply_micro": apply_micro,
+                })
+                cursor += duration
+    else:
+        for idx, track in enumerate(data.get("tracks", [])):
+            ttype = track.get("type")
+            if ttype not in ("video", "audio", "text"):
+                continue
+            track_name = track_name_by_index.get(idx)
+            for seg in track.get("segments", []):
+                mid = seg.get("material_id")
+                if ttype == "video":
+                    mat = video_mats.get(mid)
+                    if not mat:
+                        continue
+                    path = mat.get("path") or mat.get("file_path")
+                    override_path = _lookup_material_override(
+                        material_replacements,
+                        material_name=mat.get("material_name") or mat.get("name"),
+                        material_path=path,
+                        material_id=mid,
+                    )
+                    if override_path:
+                        path = override_path
+                    else:
+                        path = _resolve_template_media_path(path)
+                    if not path:
+                        continue
+                    seg_index = len(video_segment_ids)
+                    target_timerange = _trange_str(seg.get("target_timerange", {}))
+                    if not target_timerange:
+                        continue
+                    source_timerange = _trange_str(seg.get("source_timerange", {}))
+                    clip_settings = seg.get("clip_settings") or seg.get("clip")
+                    speed = seg.get("speed")
+                    volume = seg.get("volume", 1.0)
+                    change_pitch = seg.get("change_pitch", False)
 
-                apply_micro = bool(micro_cfg) and (not micro_indexes or seg_index in micro_indexes)
-                if apply_micro:
-                    speed_cfg = micro_cfg.get("speed") or {}
-                    rand_speed = _rand_between(speed_cfg.get("min"), speed_cfg.get("max"))
-                    if rand_speed:
-                        base_speed = float(speed) if speed is not None else 1.0
-                        speed = max(0.1, base_speed * rand_speed)
-                        micro_applied = True
-
-                    clip_map = dict(clip_settings) if isinstance(clip_settings, dict) else {}
-                    transform_cfg = micro_cfg.get("transform") or {}
-                    rand_scale = _rand_between(transform_cfg.get("scale_min"), transform_cfg.get("scale_max"))
-                    if rand_scale:
-                        base_sx = float(clip_map.get("scale_x", 1.0) or 1.0)
-                        base_sy = float(clip_map.get("scale_y", 1.0) or 1.0)
-                        clip_map["scale_x"] = base_sx * rand_scale
-                        clip_map["scale_y"] = base_sy * rand_scale
-                        micro_applied = True
-                    pos_x = transform_cfg.get("pos_x")
-                    try:
-                        pos_x_val = float(pos_x)
-                    except Exception:
-                        pos_x_val = None
-                    if pos_x_val is not None:
-                        offset_x = _rand_between(-abs(pos_x_val), abs(pos_x_val))
-                        if offset_x is not None:
-                            base_x = float(clip_map.get("transform_x", 0.0) or 0.0)
-                            clip_map["transform_x"] = base_x + offset_x
+                    apply_micro = bool(micro_cfg) and (not micro_indexes or seg_index in micro_indexes)
+                    if apply_micro:
+                        speed_cfg = micro_cfg.get("speed") or {}
+                        rand_speed = _rand_between(speed_cfg.get("min"), speed_cfg.get("max"))
+                        if rand_speed:
+                            base_speed = float(speed) if speed is not None else 1.0
+                            speed = max(0.1, base_speed * rand_speed)
                             micro_applied = True
-                    pos_y = transform_cfg.get("pos_y")
-                    try:
-                        pos_y_val = float(pos_y)
-                    except Exception:
-                        pos_y_val = None
-                    if pos_y_val is not None:
-                        offset_y = _rand_between(-abs(pos_y_val), abs(pos_y_val))
-                        if offset_y is not None:
-                            base_y = float(clip_map.get("transform_y", 0.0) or 0.0)
-                            clip_map["transform_y"] = base_y + offset_y
+
+                        clip_map = dict(clip_settings) if isinstance(clip_settings, dict) else {}
+                        transform_cfg = micro_cfg.get("transform") or {}
+                        rand_scale = _rand_between(transform_cfg.get("scale_min"), transform_cfg.get("scale_max"))
+                        if rand_scale:
+                            base_sx = float(clip_map.get("scale_x", 1.0) or 1.0)
+                            base_sy = float(clip_map.get("scale_y", 1.0) or 1.0)
+                            clip_map["scale_x"] = base_sx * rand_scale
+                            clip_map["scale_y"] = base_sy * rand_scale
                             micro_applied = True
-                    rot_range = transform_cfg.get("rotation")
-                    try:
-                        rot_val = float(rot_range)
-                    except Exception:
-                        rot_val = None
-                    if rot_val is not None:
-                        offset_r = _rand_between(-abs(rot_val), abs(rot_val))
-                        if offset_r is not None:
-                            base_r = float(clip_map.get("rotation", 0.0) or 0.0)
-                            clip_map["rotation"] = base_r + offset_r
+                        pos_x = transform_cfg.get("pos_x")
+                        try:
+                            pos_x_val = float(pos_x)
+                        except Exception:
+                            pos_x_val = None
+                        if pos_x_val is not None:
+                            offset_x = _rand_between(-abs(pos_x_val), abs(pos_x_val))
+                            if offset_x is not None:
+                                base_x = float(clip_map.get("transform_x", 0.0) or 0.0)
+                                clip_map["transform_x"] = base_x + offset_x
+                                micro_applied = True
+                        pos_y = transform_cfg.get("pos_y")
+                        try:
+                            pos_y_val = float(pos_y)
+                        except Exception:
+                            pos_y_val = None
+                        if pos_y_val is not None:
+                            offset_y = _rand_between(-abs(pos_y_val), abs(pos_y_val))
+                            if offset_y is not None:
+                                base_y = float(clip_map.get("transform_y", 0.0) or 0.0)
+                                clip_map["transform_y"] = base_y + offset_y
+                                micro_applied = True
+                        rot_range = transform_cfg.get("rotation")
+                        try:
+                            rot_val = float(rot_range)
+                        except Exception:
+                            rot_val = None
+                        if rot_val is not None:
+                            offset_r = _rand_between(-abs(rot_val), abs(rot_val))
+                            if offset_r is not None:
+                                base_r = float(clip_map.get("rotation", 0.0) or 0.0)
+                                clip_map["rotation"] = base_r + offset_r
+                                micro_applied = True
+
+                        mirror_cfg = micro_cfg.get("mirror") or {}
+                        if mirror_cfg.get("horizontal"):
+                            clip_map["flip_horizontal"] = random.choice([True, False])
+                            micro_applied = True
+                        if mirror_cfg.get("vertical"):
+                            clip_map["flip_vertical"] = random.choice([True, False])
                             micro_applied = True
 
-                    mirror_cfg = micro_cfg.get("mirror") or {}
-                    if mirror_cfg.get("horizontal"):
-                        clip_map["flip_horizontal"] = random.choice([True, False])
-                        micro_applied = True
-                    if mirror_cfg.get("vertical"):
-                        clip_map["flip_vertical"] = random.choice([True, False])
-                        micro_applied = True
+                        clip_settings = clip_map if clip_map else clip_settings
 
-                    clip_settings = clip_map if clip_map else clip_settings
+                    resp = svc.add_video_segment(
+                        draft_id,
+                        path,
+                        target_timerange,
+                        source_timerange=source_timerange,
+                        speed=speed,
+                        volume=volume,
+                        change_pitch=change_pitch,
+                        clip_settings=clip_settings if isinstance(clip_settings, dict) else None,
+                        track_name=track_name,
+                    )
+                    resp_data = _resp_data(resp)
+                    if _resp_ok(resp) and resp_data:
+                        video_segment_ids.append(resp_data.get("video_segment_id"))
+                        video_segment_track[len(video_segment_ids) - 1] = track_name
+                        video_segment_meta.append({
+                            "duration": _duration_from_tr(seg.get("target_timerange", {})),
+                            "track": track_name,
+                            "apply_micro": apply_micro,
+                        })
+                    else:
+                        summary["warnings"].append(f"video segment rebuild failed: {mid}")
+                    continue
 
-                resp = svc.add_video_segment(
-                    draft_id,
-                    path,
-                    target_timerange,
-                    source_timerange=source_timerange,
-                    speed=speed,
-                    volume=volume,
-                    change_pitch=change_pitch,
-                    clip_settings=clip_settings if isinstance(clip_settings, dict) else None,
-                    track_name=track_name,
-                )
-                resp_data = _resp_data(resp)
-                if _resp_ok(resp) and resp_data:
-                    video_segment_ids.append(resp_data.get("video_segment_id"))
-                    video_segment_track[len(video_segment_ids)-1] = track_name
-                    video_segment_meta.append({
-                        "duration": _duration_from_tr(seg.get("target_timerange", {})),
-                        "track": track_name,
-                        "apply_micro": apply_micro
-                    })
-            elif ttype == "audio":
-                mat = audio_mats.get(mid)
-                if not mat:
+                if ttype == "audio":
+                    mat = audio_mats.get(mid)
+                    if not mat:
+                        continue
+                    path = mat.get("path") or mat.get("file_path")
+                    override_path = _lookup_material_override(
+                        material_replacements,
+                        material_name=mat.get("material_name") or mat.get("name"),
+                        material_path=path,
+                        material_id=mid,
+                    )
+                    if override_path:
+                        path = override_path
+                    else:
+                        path = _resolve_template_media_path(path)
+                    if not path:
+                        continue
+                    target_range_data = seg.get("target_timerange", {})
+                    target_timerange = _trange_str(target_range_data)
+                    if not target_timerange:
+                        continue
+                    source_timerange = _trange_str(seg.get("source_timerange", {}))
+                    speed = seg.get("speed")
+                    volume = seg.get("volume", 1.0)
+                    change_pitch = seg.get("change_pitch", False)
+                    if override_path:
+                        audio_duration = _estimate_media_duration(path, default_duration=3.0)
+                        if audio_duration > 0:
+                            try:
+                                target_start = float(target_range_data.get("start", 0)) / 1_000_000
+                            except Exception:
+                                target_start = 0.0
+                            requested_duration = _duration_from_tr(target_range_data) or audio_duration
+                            effective_duration = min(requested_duration, audio_duration)
+                            target_timerange = f"{target_start:.3f}s-{effective_duration:.3f}s"
+                            source_timerange = f"0.000s-{effective_duration:.3f}s"
+                    resp = svc.add_audio_segment(
+                        draft_id,
+                        path,
+                        target_timerange,
+                        source_timerange=source_timerange,
+                        speed=speed,
+                        volume=volume,
+                        change_pitch=change_pitch,
+                        track_name=track_name,
+                    )
+                    resp_data = _resp_data(resp)
+                    if _resp_ok(resp) and resp_data:
+                        audio_segment_ids.append(resp_data.get("audio_segment_id"))
+                        audio_segment_track[len(audio_segment_ids) - 1] = track_name
+                    else:
+                        summary["warnings"].append(f"audio segment rebuild failed: {mid}")
                     continue
-                path = mat.get("path") or mat.get("file_path")
-                if not path:
-                    continue
-                target_timerange = _trange_str(seg.get("target_timerange", {}))
-                if not target_timerange:
-                    continue
-                source_timerange = _trange_str(seg.get("source_timerange", {}))
-                speed = seg.get("speed")
-                volume = seg.get("volume", 1.0)
-                change_pitch = seg.get("change_pitch", False)
-                resp = svc.add_audio_segment(
-                    draft_id,
-                    path,
-                    target_timerange,
-                    source_timerange=source_timerange,
-                    speed=speed,
-                    volume=volume,
-                    change_pitch=change_pitch,
-                    track_name=track_name,
-                )
-                resp_data = _resp_data(resp)
-                if _resp_ok(resp) and resp_data:
-                    audio_segment_ids.append(resp_data.get("audio_segment_id"))
-                    audio_segment_track[len(audio_segment_ids)-1] = track_name
-            else:
+
                 mat = text_mats.get(mid)
                 if not mat:
                     continue
@@ -1545,7 +1978,9 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
                 resp_data = _resp_data(resp)
                 if _resp_ok(resp) and resp_data:
                     text_segment_ids.append(resp_data.get("text_segment_id"))
-                    text_segment_track[len(text_segment_ids)-1] = track_name
+                    text_segment_track[len(text_segment_ids) - 1] = track_name
+                else:
+                    summary["warnings"].append(f"text segment rebuild failed: {mid}")
 
 
     def _normalize_list(val):
@@ -2045,13 +2480,22 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
     if micro_applied and "micro_adjust" not in summary["applied"]:
         summary["applied"].append("micro_adjust")
 
+    if expected_video_segments > 0 and not video_segment_ids:
+        raise RuntimeError("MCP rebuild produced no video segments")
+    if expected_audio_segments > 0 and not audio_segment_ids:
+        summary["warnings"].append("MCP rebuild produced no audio segments")
+
     # export
-    output_path = os.getenv("OUTPUT_PATH")
-    if output_path:
-        result = svc.export_draft(draft_id, jianying_draft_path=output_path)
+    export_target = str(output_path or "").strip() or os.getenv("OUTPUT_PATH")
+    if force_export and not export_target:
+        summary["warnings"].append("export skipped: output path missing")
+    elif export_target:
+        result = svc.export_draft(draft_id, jianying_draft_path=export_target)
         if result.ok and result.data:
             print(f"[DEBUG] MCP 效果草稿已导出: {result.data.get('draft_name')}")
             summary["applied"].append(f"export:{result.data.get('draft_name')}")
+            summary["exported_draft_name"] = result.data.get("draft_name")
+            summary["export_output"] = result.data.get("output")
         else:
             summary["warnings"].append("export failed")
 

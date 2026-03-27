@@ -297,5 +297,114 @@
         (async function init(){applyAdminSiteCopy(siteSettingsCache);renderSiteManagementSection();bindEvents();initSiteCopyBindings();initAuthUI();switchCdkSubtab('batch');await Promise.all([loadSiteSettings(),loadCdkTemplates()]);await restoreRuntimeToken();const ok=await loadAdminInfo();if(ok)await loadOverview()})();
         switchCdkSubtab('batch');
     </script>
+    <script>
+        (function () {
+            const securityAuditState = { page: 1, per_page: 15, pages: 1, total: 0 };
+            const levelMap = {
+                info: '信息',
+                warning: '警告',
+                error: '错误',
+                critical: '严重'
+            };
+            const eventMap = {
+                login_success: '登录成功',
+                login_failed: '登录失败',
+                register_duplicate_username: '注册失败：用户名已存在',
+                register_duplicate_email: '注册失败：邮箱已存在',
+                license_activate_success: '授权激活成功',
+                license_activate_conflict: '授权激活冲突',
+                license_verify_success: '授权验证成功',
+                license_deactivate_success: '授权解绑成功'
+            };
+
+            function toCnLevel(level) {
+                const key = String(level || '').trim().toLowerCase();
+                return levelMap[key] || (level || '-');
+            }
+
+            function toCnEvent(eventName) {
+                const key = String(eventName || '').trim();
+                return eventMap[key] || key || '-';
+            }
+
+            function ensureSecurityAuditPager() {
+                const table = document.getElementById('securityAuditTable');
+                if (!table) return null;
+                const shell = table.closest('.admin-subcard');
+                if (!shell) return null;
+                let row = shell.querySelector('#securityAuditPagerRow');
+                if (row) return row;
+                row = document.createElement('div');
+                row.id = 'securityAuditPagerRow';
+                row.className = 'row';
+                row.style.margin = '10px 0 0';
+                row.innerHTML = `
+                    <button id="securityAuditPrevBtn" class="btn secondary" type="button">上一页</button>
+                    <button id="securityAuditNextBtn" class="btn secondary" type="button">下一页</button>
+                    <div id="securityAuditPagerInfo" class="hint"></div>
+                `;
+                shell.appendChild(row);
+                row.querySelector('#securityAuditPrevBtn')?.addEventListener('click', () => {
+                    if (securityAuditState.page > 1) window.loadSecurityOps(securityAuditState.page - 1);
+                });
+                row.querySelector('#securityAuditNextBtn')?.addEventListener('click', () => {
+                    if (securityAuditState.page < securityAuditState.pages) window.loadSecurityOps(securityAuditState.page + 1);
+                });
+                return row;
+            }
+
+            window.loadSecurityOps = async function (page = 1) {
+                const hint = document.getElementById('securityHint');
+                const stats = document.getElementById('securityOverviewStats');
+                const deploy = document.getElementById('deploySteps');
+                const rollback = document.getElementById('rollbackSteps');
+                const backupTable = document.getElementById('serverBackupTable');
+                const auditTable = document.getElementById('securityAuditTable');
+                const pagerRow = ensureSecurityAuditPager();
+                const pagerInfo = document.getElementById('securityAuditPagerInfo');
+                const prevBtn = document.getElementById('securityAuditPrevBtn');
+                const nextBtn = document.getElementById('securityAuditNextBtn');
+                if (!hint || !stats || !deploy || !rollback || !backupTable || !auditTable) return;
+                hint.textContent = '正在加载...';
+                const cleanPage = Math.max(1, parseInt(page || 1, 10) || 1);
+                const [securityRes, opsRes] = await Promise.all([
+                    authFetch(`/api/admin/security/overview?page=${cleanPage}&per_page=${securityAuditState.per_page}`),
+                    authFetch('/api/admin/server/ops')
+                ]);
+                const securityData = await securityRes.json();
+                const opsData = await opsRes.json();
+                if (!securityRes.ok || !securityData.ok) {
+                    hint.textContent = securityData.error || '安全概览加载失败。';
+                    stats.innerHTML = '<div>安全概览加载失败。</div>';
+                    auditTable.innerHTML = '<tr><td colspan="4">安全概览加载失败。</td></tr>';
+                    return;
+                }
+                if (!opsRes.ok || !opsData.ok) {
+                    hint.textContent = opsData.error || '运维概览加载失败。';
+                    deploy.innerHTML = '<div>运维概览加载失败。</div>';
+                    rollback.innerHTML = '<div>运维概览加载失败。</div>';
+                    backupTable.innerHTML = '<tr><td colspan="4">运维概览加载失败。</td></tr>';
+                    return;
+                }
+                const events = Array.isArray(securityData.audit_events) ? securityData.audit_events : [];
+                const backups = Array.isArray(opsData.backups) ? opsData.backups : [];
+                const pagination = securityData.pagination || {};
+                securityAuditState.page = Number(pagination.page || cleanPage || 1);
+                securityAuditState.pages = Number(pagination.pages || 1);
+                securityAuditState.total = Number(pagination.total || events.length || 0);
+
+                stats.innerHTML = `<div><strong>审计事件：</strong>${securityAuditState.total}</div><div><strong>限流桶：</strong>${securityData.rate_limit_buckets || 0}</div><div><strong>审计日志：</strong>${escapeHtml(securityData.audit_log_path || '-')}</div><div><strong>限流文件：</strong>${escapeHtml(securityData.rate_limit_path || '-')}</div><div><strong>备份目录：</strong>${escapeHtml(opsData.backup_root || '-')}</div><div><strong>项目根目录：</strong>${escapeHtml(opsData.project_root || '-')}</div>`;
+                deploy.innerHTML = buildStepLines(opsData.deploy_steps);
+                rollback.innerHTML = buildStepLines(opsData.rollback_steps);
+                backupTable.innerHTML = backups.length ? backups.map((item) => `<tr><td>${escapeHtml(item.name || '-')}</td><td>${formatBytes(item.size)}</td><td>${formatDateTime(item.modified_at)}</td><td>${escapeHtml(item.path || '-')}</td></tr>`).join('') : '<tr><td colspan="4">还没有备份。</td></tr>';
+                auditTable.innerHTML = events.length ? events.slice().reverse().map((item) => `<tr><td>${formatDateTime(item.ts)}</td><td>${escapeHtml(toCnLevel(item.level))}</td><td>${escapeHtml(toCnEvent(item.event))}</td><td>${escapeHtml(item.user_id || '-')} / ${escapeHtml(item.ip || '-')}</td></tr>`).join('') : '<tr><td colspan="4">还没有审计事件。</td></tr>';
+                if (pagerInfo) pagerInfo.textContent = `第 ${securityAuditState.page} / ${securityAuditState.pages} 页，每页 15 条，共 ${securityAuditState.total} 条`;
+                if (prevBtn) prevBtn.disabled = securityAuditState.page <= 1;
+                if (nextBtn) nextBtn.disabled = securityAuditState.page >= securityAuditState.pages;
+                if (pagerRow) pagerRow.style.display = '';
+                hint.textContent = `最近备份 ${backups.length} 个，审计分页已加载。`;
+            };
+        })();
+    </script>
 </body>
 </html>

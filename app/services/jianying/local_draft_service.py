@@ -373,6 +373,94 @@ def _collect_timeline_json_candidates(normalized_path: str) -> list[str]:
     return candidates
 
 
+def _resolve_main_timeline_dir(normalized_path: str) -> str:
+    timelines_root = os.path.join(normalized_path, "Timelines")
+    if not os.path.isdir(timelines_root):
+        return ""
+
+    project_data = _load_json_quietly(os.path.join(timelines_root, "project.json"))
+    if not isinstance(project_data, dict):
+        project_data = _load_json_quietly(os.path.join(timelines_root, "project.json.bak"))
+
+    if isinstance(project_data, dict):
+        main_timeline_id = str(project_data.get("main_timeline_id") or "").strip()
+        if main_timeline_id:
+            candidate = os.path.join(timelines_root, main_timeline_id)
+            if os.path.isdir(candidate):
+                return candidate
+
+    try:
+        children = [
+            path for path in Path(timelines_root).iterdir()
+            if path.is_dir() and not _path_contains_skipped_dir(str(path))
+        ]
+    except Exception:
+        children = []
+    if len(children) == 1:
+        return str(children[0])
+    return ""
+
+
+def extract_attachment_template_info(template_path: str) -> dict:
+    normalized_path = normalize_draft_project_path(template_path)
+    result = {
+        "timeline_dir": "",
+        "attachment_pc_common_path": "",
+        "template_id": "",
+        "template_name": "",
+        "fragment_count": 0,
+        "supports_text_edit": False,
+    }
+    if not normalized_path:
+        return result
+
+    timeline_dir = _resolve_main_timeline_dir(normalized_path)
+    result["timeline_dir"] = timeline_dir
+    if not timeline_dir:
+        return result
+
+    attachment_path = os.path.join(timeline_dir, "attachment_pc_common.json")
+    result["attachment_pc_common_path"] = attachment_path
+    attachment_data = _load_json_quietly(attachment_path)
+    if not isinstance(attachment_data, dict):
+        return result
+
+    template_items = attachment_data.get("template_item_infos") or []
+    if isinstance(template_items, list) and template_items:
+        first = template_items[0] if isinstance(template_items[0], dict) else {}
+        result["template_id"] = str(first.get("template_id") or "").strip()
+        result["template_name"] = str(first.get("template_name") or "").strip()
+        try:
+            result["fragment_count"] = max(0, int(first.get("template_fragment_cnt") or 0))
+        except Exception:
+            result["fragment_count"] = 0
+
+    result["supports_text_edit"] = bool(attachment_data.get("recognize_tasks"))
+    return result
+
+
+def build_attachment_material_entries(template_path: str) -> list[dict]:
+    info = extract_attachment_template_info(template_path)
+    try:
+        fragment_count = max(0, int(info.get("fragment_count") or 0))
+    except Exception:
+        fragment_count = 0
+    if fragment_count <= 0:
+        return []
+
+    entries: list[dict] = []
+    for idx in range(fragment_count):
+        slot_number = idx + 1
+        entries.append(
+            {
+                "name": f"video_slot_{slot_number:02d}",
+                "source": "videos",
+                "material_id": f"attachment_fragment_{slot_number:02d}",
+            }
+        )
+    return entries
+
+
 def find_draft_content_files(template_path: str) -> list[str]:
     if not template_path:
         return []
@@ -585,3 +673,20 @@ def load_draft_content(template_path: str, logger: Optional[logging.Logger] = No
     if diagnostics["diagnostic_paths"]:
         message = f"{message}。诊断文件: {diagnostics['diagnostic_paths'][0]}"
     return None, message, diagnostics
+
+
+def resolve_draft_content_path(template_path: str, logger: Optional[logging.Logger] = None) -> tuple[str, dict]:
+    _data, _err, diagnostics = load_draft_content(template_path, logger=logger)
+    matched_candidate = str((diagnostics or {}).get("matched_candidate") or "").strip()
+    if matched_candidate:
+        return matched_candidate, diagnostics
+
+    normalized_path = normalize_draft_project_path(template_path)
+    candidates = find_draft_content_files(normalized_path)
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate, diagnostics
+
+    if normalized_path:
+        return os.path.join(normalized_path, "draft_content.json"), diagnostics
+    return "", diagnostics
