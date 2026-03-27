@@ -40,6 +40,8 @@ _IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')
 _VIDEO_EXTS = ('.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v')
 _AUDIO_EXTS = ('.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac')
 _ALL_MEDIA_EXTS = _IMAGE_EXTS + _VIDEO_EXTS + _AUDIO_EXTS
+_VF_GENERATED_MARKER = ".vf_generated.json"
+_VF_MANAGED_RUN_KEEP = 3
 _DRAFT_CONTENT_ENCODINGS = (
     "utf-8",
     "utf-8-sig",
@@ -1118,6 +1120,164 @@ def _complete_remote_desktop_task(task_id, auth_token, success, error_msg=""):
         logging.warning("remote desktop task finalize failed: %s", exc)
 
 
+def _normalize_managed_template_key(template_path: str) -> str:
+    normalized = normalize_draft_project_path(template_path) or str(template_path or "").strip()
+    return os.path.normcase(os.path.normpath(normalized)) if normalized else ""
+
+
+def _safe_managed_draft_name_part(value: str, fallback: str, limit: int = 24) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    text = re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", text, flags=re.UNICODE)
+    text = re.sub(r"_+", "_", text).strip("._- ")
+    if not text:
+        return fallback
+    if len(text) > limit:
+        text = text[:limit].rstrip("._- ")
+    return text or fallback
+
+
+def _build_managed_run_token(task_id: str = "") -> str:
+    token = str(task_id or "").strip()
+    if token:
+        return _safe_managed_draft_name_part(token[:8], "run", limit=12)
+    return f"{time.strftime('%m%d%H%M%S', time.localtime())}_{uuid.uuid4().hex[:4]}"
+
+
+def _build_managed_draft_name(
+    template_path: str,
+    task_id: str = "",
+    batch_index: int = 0,
+    generator: str = "official",
+    run_token: str = "",
+) -> str:
+    template_basename = os.path.basename(str(template_path or "").rstrip("\\/")) or "draft"
+    template_part = _safe_managed_draft_name_part(template_basename, "draft")
+    run_part = str(run_token or "").strip() or _build_managed_run_token(task_id)
+    generator_part = "mcp" if str(generator or "").strip().lower() == "mcp" else "official"
+    return f"vf_{generator_part}_{template_part}_{run_part}_{batch_index + 1:03d}"
+
+
+def _build_generated_draft_marker(
+    draft_name: str,
+    draft_path: str,
+    template_path: str,
+    task_id: str = "",
+    generator: str = "official",
+    batch_index: int = 0,
+    batch_count: int = 1,
+    run_token: str = "",
+) -> dict:
+    resolved_run_id = str(run_token or "").strip() or _build_managed_run_token(task_id)
+    return {
+        "generator": str(generator or "official").strip().lower() or "official",
+        "task_id": str(task_id or "").strip(),
+        "run_id": resolved_run_id,
+        "template_path": normalize_draft_project_path(template_path) or str(template_path or "").strip(),
+        "template_key": _normalize_managed_template_key(template_path),
+        "draft_name": str(draft_name or "").strip(),
+        "draft_path": str(draft_path or "").strip(),
+        "batch_index": int(batch_index or 0),
+        "batch_count": max(1, int(batch_count or 1)),
+        "created_at_ms": int(time.time() * 1000),
+        "managed_by": "videofactory",
+    }
+
+
+def _marker_file_path(draft_path: str) -> str:
+    return os.path.join(str(draft_path or "").strip(), _VF_GENERATED_MARKER)
+
+
+def _write_generated_draft_marker(draft_path: str, marker: dict) -> None:
+    target = _marker_file_path(draft_path)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as handle:
+        json.dump(marker, handle, ensure_ascii=False, indent=2)
+
+
+def _load_generated_draft_marker(draft_path: str) -> dict | None:
+    target = _marker_file_path(draft_path)
+    if not os.path.exists(target):
+        return None
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _cleanup_managed_drafts(
+    drafts_folder: str,
+    template_path: str,
+    generator: str = "official",
+    keep_run_count: int = _VF_MANAGED_RUN_KEEP,
+    keep_paths: list[str] | None = None,
+) -> list[str]:
+    root = str(drafts_folder or "").strip()
+    if not root or not os.path.isdir(root):
+        return []
+
+    keep_run_count = max(1, int(keep_run_count or 1))
+    target_template_key = _normalize_managed_template_key(template_path)
+    target_generator = str(generator or "official").strip().lower() or "official"
+    keep_path_set = {
+        os.path.normcase(os.path.normpath(str(item)))
+        for item in (keep_paths or [])
+        if str(item or "").strip()
+    }
+
+    candidates_by_run: dict[str, list[tuple[float, str, dict]]] = {}
+    for name in os.listdir(root):
+        draft_path = os.path.join(root, name)
+        if not os.path.isdir(draft_path):
+            continue
+        marker = _load_generated_draft_marker(draft_path)
+        if not isinstance(marker, dict):
+            continue
+        if str(marker.get("managed_by") or "").strip().lower() != "videofactory":
+            continue
+        if str(marker.get("generator") or "").strip().lower() != target_generator:
+            continue
+        if str(marker.get("template_key") or "").strip().lower() != target_template_key.lower():
+            continue
+        run_id = str(marker.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        try:
+            created_at_ms = float(marker.get("created_at_ms") or 0)
+        except Exception:
+            created_at_ms = 0.0
+        candidates_by_run.setdefault(run_id, []).append((created_at_ms, draft_path, marker))
+
+    if len(candidates_by_run) <= keep_run_count:
+        return []
+
+    run_infos = []
+    for run_id, items in candidates_by_run.items():
+        latest_ts = max((item[0] for item in items), default=0.0)
+        has_keep_path = any(os.path.normcase(os.path.normpath(item[1])) in keep_path_set for item in items)
+        run_infos.append((has_keep_path, latest_ts, run_id, items))
+
+    run_infos.sort(key=lambda item: (1 if item[0] else 0, item[1]), reverse=True)
+    keep_run_ids = {item[2] for item in run_infos[:keep_run_count]}
+    removed_paths: list[str] = []
+    for _has_keep_path, _latest_ts, run_id, items in run_infos[keep_run_count:]:
+        if run_id in keep_run_ids:
+            continue
+        for _created_at_ms, draft_path, _marker in items:
+            norm_path = os.path.normcase(os.path.normpath(draft_path))
+            if norm_path in keep_path_set or not os.path.isdir(draft_path):
+                continue
+            try:
+                shutil.rmtree(draft_path)
+                removed_paths.append(draft_path)
+            except Exception as exc:
+                logging.warning("managed draft cleanup skipped for %s: %s", draft_path, exc)
+    return removed_paths
+
+
 def _generate_video_task_via_mcp(
     template_id,
     materials_root,
@@ -1181,7 +1341,9 @@ def _generate_video_task_via_mcp(
 
     generated = 0
     generated_paths = []
+    cleaned_paths = []
     warnings = []
+    run_token = _build_managed_run_token(task_id)
 
     material_replacements_by_key = {}
     if replace_materials and material_names:
@@ -1191,7 +1353,13 @@ def _generate_video_task_via_mcp(
         sequence_cache_root = None
 
     for i in range(batch_count):
-        draft_name = f"task_{uuid.uuid4().hex[:8]}"
+        draft_name = _build_managed_draft_name(
+            template_path=template_path,
+            task_id=task_id,
+            batch_index=i,
+            generator="mcp",
+            run_token=run_token,
+        )
         update_task_meta({'progress': f'mcp rebuilding draft ({i+1}/{batch_count})...'}, task_id=task_id)
 
         user_files = {}
@@ -1242,13 +1410,41 @@ def _generate_video_task_via_mcp(
 
         generated += 1
         generated_paths.append(exported_path)
+        try:
+            _write_generated_draft_marker(
+                exported_path,
+                _build_generated_draft_marker(
+                    draft_name=exported_name,
+                    draft_path=exported_path,
+                    template_path=template_path,
+                    task_id=task_id,
+                    generator="mcp",
+                    batch_index=i,
+                    batch_count=batch_count,
+                    run_token=run_token,
+                ),
+            )
+        except Exception as exc:
+            logging.warning("managed draft marker write failed for %s: %s", exported_path, exc)
         update_task_meta({'progress': f'completed {generated}/{batch_count} drafts'}, task_id=task_id)
+
+    try:
+        cleaned_paths = _cleanup_managed_drafts(
+            drafts_folder=drafts_folder,
+            template_path=template_path,
+            generator="mcp",
+            keep_paths=generated_paths,
+        )
+    except Exception as exc:
+        logging.warning("managed draft cleanup failed: %s", exc)
 
     result = {'ok': True, 'message': 'batch generation completed', 'generated': generated}
     if warnings:
         result['warnings'] = warnings
     if generated_paths:
         result['generated_paths'] = generated_paths
+    if cleaned_paths:
+        result['cleaned_paths'] = cleaned_paths
     return result
 
 
@@ -1306,9 +1502,17 @@ def _generate_video_task_via_official_draft(
             material_names.append(fname)
 
     generated_paths = []
+    cleaned_paths = []
     warnings = []
+    run_token = _build_managed_run_token(task_id)
     for i in range(batch_count):
-        draft_name = f"task_{uuid.uuid4().hex[:8]}"
+        draft_name = _build_managed_draft_name(
+            template_path=template_path,
+            task_id=task_id,
+            batch_index=i,
+            generator="official",
+            run_token=run_token,
+        )
         update_task_meta({'progress': f'official draft rebuilding ({i+1}/{batch_count})...'}, task_id=task_id)
 
         material_replacements = {}
@@ -1339,15 +1543,43 @@ def _generate_video_task_via_official_draft(
             output_root=drafts_folder,
         )
         generated_paths.append(summary["draft_path"])
+        try:
+            _write_generated_draft_marker(
+                summary["draft_path"],
+                _build_generated_draft_marker(
+                    draft_name=draft_name,
+                    draft_path=summary["draft_path"],
+                    template_path=template_path,
+                    task_id=task_id,
+                    generator="official",
+                    batch_index=i,
+                    batch_count=batch_count,
+                    run_token=run_token,
+                ),
+            )
+        except Exception as exc:
+            logging.warning("managed draft marker write failed for %s: %s", summary["draft_path"], exc)
         for warning in summary.get("warnings") or []:
             if warning not in warnings:
                 warnings.append(warning)
+
+    try:
+        cleaned_paths = _cleanup_managed_drafts(
+            drafts_folder=drafts_folder,
+            template_path=template_path,
+            generator="official",
+            keep_paths=generated_paths,
+        )
+    except Exception as exc:
+        logging.warning("managed draft cleanup failed: %s", exc)
 
     result = {'ok': True, 'message': 'batch generation completed', 'generated': len(generated_paths)}
     if warnings:
         result['warnings'] = warnings
     if generated_paths:
         result['generated_paths'] = generated_paths
+    if cleaned_paths:
+        result['cleaned_paths'] = cleaned_paths
     return result
 
 def generate_video_task(template_id, materials_root, texts_input, batch_count,
