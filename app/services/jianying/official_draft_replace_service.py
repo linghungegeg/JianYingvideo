@@ -24,6 +24,22 @@ _GG_ASSISTANT_SOFTWARE_KEY = "gg-jy-assistant"
 _OFFICIAL_READER_RUNTIME_DIRNAME = "official_reader"
 
 
+def _quiet_subprocess_kwargs() -> dict:
+    kwargs = {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    use_show_window = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    show_window_hidden = getattr(subprocess, "SW_HIDE", 0)
+    if startupinfo_cls and use_show_window:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= use_show_window
+        startupinfo.wShowWindow = show_window_hidden
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 def _build_text_replacement_map(texts_input):
     replacements = {}
     if not isinstance(texts_input, list):
@@ -1231,7 +1247,7 @@ process.stdout.write(plain);
         ["node", "-e", script, rec_path, k6],
         capture_output=True,
         check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **_quiet_subprocess_kwargs(),
     )
     if result.returncode != 0:
         stderr = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
@@ -1401,7 +1417,7 @@ def _load_official_encrypted_draft_content(draft_content_path: str) -> tuple[dic
         ],
         capture_output=True,
         check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **_quiet_subprocess_kwargs(),
     )
     if result.returncode != 0:
         stderr = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
@@ -1682,6 +1698,7 @@ def _write_visual_cover_image(source_path: str, target_path: str, timestamp_us: 
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
+                **_quiet_subprocess_kwargs(),
             )
             return result.returncode == 0 and os.path.isfile(target) and os.path.getsize(target) > 0
 
@@ -1707,6 +1724,7 @@ def _write_visual_cover_image(source_path: str, target_path: str, timestamp_us: 
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        **_quiet_subprocess_kwargs(),
     )
     return result.returncode == 0 and os.path.isfile(target) and os.path.getsize(target) > 0
 
@@ -1842,6 +1860,7 @@ def _refresh_draft_cover_from_visuals(payload: dict, cloned_draft_path: str) -> 
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            **_quiet_subprocess_kwargs(),
         )
         if result.returncode == 0 and os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
             return True

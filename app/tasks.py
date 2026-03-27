@@ -53,6 +53,22 @@ _DRAFT_CONTENT_ENCODINGS = (
 )
 
 
+def _quiet_subprocess_kwargs():
+    kwargs = {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    use_show_window = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    show_window_hidden = getattr(subprocess, "SW_HIDE", 0)
+    if startupinfo_cls and use_show_window:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= use_show_window
+        startupinfo.wShowWindow = show_window_hidden
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 def normalize_draft_project_path(template_path):
     return _service_normalize_draft_project_path(template_path)
 
@@ -388,7 +404,13 @@ def _compose_slot_sequence(files, output_path):
             [ffmpeg, '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-b:a', '192k', output_path],
         ]
         for cmd in commands:
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                **_quiet_subprocess_kwargs(),
+            )
             if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 return output_path
     except Exception as exc:
@@ -2425,7 +2447,13 @@ def _apply_mcp_effects(draft_path, effects_config, svc, duo_config=None,
 
         def _run(cmd):
             try:
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    **_quiet_subprocess_kwargs(),
+                )
                 return True
             except Exception as e:
                 summary['warnings'].append(f'ffmpeg failed: {e}')

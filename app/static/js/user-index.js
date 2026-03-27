@@ -226,12 +226,20 @@
                     <h4 class="mix-result-title">本批新草稿 ${generatedPaths.length} 个</h4>
                     <p class="mix-result-meta">${draftsFolder ? `输出目录：${escapeHtml(draftsFolder)}` : '系统按当前草稿目录生成新的草稿副本。'}</p>
                     ${generatedPaths.length
-                        ? `<div class="mix-result-list">${generatedPaths.map((pathValue) => `
-                            <div class="mix-result-item">
-                                <strong class="mix-result-name">${escapeHtml(getPathLeaf(pathValue) || '未命名草稿')}</strong>
-                                <span class="mix-result-path">${escapeHtml(pathValue)}</span>
+                        ? `<div class="resource-table-shell mix-result-table">
+                            <div class="resource-table-head mix-result-table-head">
+                                <span>草稿名称</span>
+                                <span>状态</span>
+                                <span>草稿路径</span>
                             </div>
-                        `).join('')}</div>`
+                            ${generatedPaths.map((pathValue) => `
+                                <article class="resource-table-row mix-result-table-row">
+                                    <div class="resource-table-cell"><strong title="${escapeHtml(getPathLeaf(pathValue) || '未命名草稿')}">${escapeHtml(getPathLeaf(pathValue) || '未命名草稿')}</strong></div>
+                                    <div class="resource-table-cell"><span class="resource-level-badge">本批新稿</span></div>
+                                    <div class="resource-table-cell export-path-cell" title="${escapeHtml(pathValue)}">${escapeHtml(compactPathLabel(pathValue))}</div>
+                                </article>
+                            `).join('')}
+                        </div>`
                         : '<p class="mix-result-summary">任务已完成，但当前返回里没有新草稿路径。</p>'}
                 </section>
             `);
@@ -241,12 +249,20 @@
                     <section class="mix-result-group">
                         <h4 class="mix-result-title">已自动清理旧批次 ${cleanedPaths.length} 个</h4>
                         <p class="mix-result-meta">只会清理由本工具生成的旧草稿，不会动你自己手工创建的草稿。</p>
-                        <div class="mix-result-list">${cleanedPaths.map((pathValue) => `
-                            <div class="mix-result-item">
-                                <strong class="mix-result-name">${escapeHtml(getPathLeaf(pathValue) || '旧草稿')}</strong>
-                                <span class="mix-result-path">${escapeHtml(pathValue)}</span>
+                        <div class="resource-table-shell mix-result-table">
+                            <div class="resource-table-head mix-result-table-head">
+                                <span>草稿名称</span>
+                                <span>状态</span>
+                                <span>草稿路径</span>
                             </div>
-                        `).join('')}</div>
+                            ${cleanedPaths.map((pathValue) => `
+                                <article class="resource-table-row mix-result-table-row">
+                                    <div class="resource-table-cell"><strong title="${escapeHtml(getPathLeaf(pathValue) || '旧草稿')}">${escapeHtml(getPathLeaf(pathValue) || '旧草稿')}</strong></div>
+                                    <div class="resource-table-cell"><span class="resource-level-badge">已清理</span></div>
+                                    <div class="resource-table-cell export-path-cell" title="${escapeHtml(pathValue)}">${escapeHtml(compactPathLabel(pathValue))}</div>
+                                </article>
+                            `).join('')}
+                        </div>
                     </section>
                 `);
             }
@@ -255,11 +271,18 @@
                 sections.push(`
                     <section class="mix-result-group">
                         <h4 class="mix-result-title">处理警告</h4>
-                        <div class="mix-result-list">${warnings.map((warning) => `
-                            <div class="mix-result-item">
-                                <span class="mix-result-path">${escapeHtml(warning)}</span>
+                        <div class="resource-table-shell mix-result-table">
+                            <div class="resource-table-head mix-result-table-head mix-result-warning-head">
+                                <span>类型</span>
+                                <span>内容</span>
                             </div>
-                        `).join('')}</div>
+                            ${warnings.map((warning) => `
+                                <article class="resource-table-row mix-result-warning-row">
+                                    <div class="resource-table-cell"><span class="resource-level-badge">警告</span></div>
+                                    <div class="resource-table-cell export-path-cell" title="${escapeHtml(warning)}">${escapeHtml(warning)}</div>
+                                </article>
+                            `).join('')}
+                        </div>
                     </section>
                 `);
             }
