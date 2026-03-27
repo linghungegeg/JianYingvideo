@@ -665,6 +665,60 @@
             font-size: 14px;
             margin: 0;
         }
+        .mix-run-note {
+            margin-top: 16px;
+            border-style: solid;
+            border-color: #d7e6f6;
+            background: linear-gradient(180deg, #f8fbff, #eef6ff);
+        }
+        .mix-generation-result {
+            margin-top: 16px;
+        }
+        .mix-result-group + .mix-result-group {
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px dashed #dbe4ef;
+        }
+        .mix-result-title {
+            margin: 0 0 8px;
+            font-size: 14px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .mix-result-meta {
+            margin: 0 0 8px;
+            color: #64748b;
+            font-size: 12px;
+        }
+        .mix-result-list {
+            display: grid;
+            gap: 8px;
+        }
+        .mix-result-item {
+            padding: 10px 12px;
+            border: 1px solid #dbe4ef;
+            border-radius: 12px;
+            background: #fff;
+        }
+        .mix-result-name {
+            display: block;
+            margin-bottom: 4px;
+            color: #0f172a;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        .mix-result-path {
+            display: block;
+            color: #475569;
+            font-size: 12px;
+            line-height: 1.6;
+            word-break: break-all;
+        }
+        .mix-result-summary {
+            margin: 0;
+            color: #334155;
+            font-size: 13px;
+        }
         .workspace-shell .effect-list {
             border: 1px dashed #cbd5e1;
             border-radius: 8px;

@@ -1631,7 +1631,7 @@ def generate_video_task(template_id, materials_root, texts_input, batch_count,
                 template_path=template_path,
                 task_id=task_id,
             )
-            update_task_meta({'progress': 'all completed'}, task_id=task_id)
+            update_task_meta({'progress': 'all completed', 'result': result}, task_id=task_id)
             if task:
                 task.status = 'finished'
                 db.session.commit()

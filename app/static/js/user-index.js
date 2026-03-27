@@ -195,6 +195,78 @@
                 .replace(/'/g, '&#39;');
         }
 
+        function getPathLeaf(pathValue) {
+            const raw = String(pathValue || '').trim().replace(/[\\/]+$/, '');
+            if (!raw) return '';
+            const parts = raw.split(/[\\/]+/);
+            return parts[parts.length - 1] || raw;
+        }
+
+        function getMixGenerationResultElement() {
+            return document.getElementById('mix_generation_result');
+        }
+
+        function renderMixGenerationResult(result = null, options = {}) {
+            const box = getMixGenerationResultElement();
+            if (!box) return;
+
+            if (!result || typeof result !== 'object') {
+                box.innerHTML = '生成完成后，这里会列出本批新草稿和自动清理结果。';
+                return;
+            }
+
+            const generatedPaths = Array.isArray(result.generated_paths) ? result.generated_paths.filter(Boolean) : [];
+            const cleanedPaths = Array.isArray(result.cleaned_paths) ? result.cleaned_paths.filter(Boolean) : [];
+            const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
+            const draftsFolder = String(options.draftsFolder || '').trim();
+            const sections = [];
+
+            sections.push(`
+                <section class="mix-result-group">
+                    <h4 class="mix-result-title">本批新草稿 ${generatedPaths.length} 个</h4>
+                    <p class="mix-result-meta">${draftsFolder ? `输出目录：${escapeHtml(draftsFolder)}` : '系统按当前草稿目录生成新的草稿副本。'}</p>
+                    ${generatedPaths.length
+                        ? `<div class="mix-result-list">${generatedPaths.map((pathValue) => `
+                            <div class="mix-result-item">
+                                <strong class="mix-result-name">${escapeHtml(getPathLeaf(pathValue) || '未命名草稿')}</strong>
+                                <span class="mix-result-path">${escapeHtml(pathValue)}</span>
+                            </div>
+                        `).join('')}</div>`
+                        : '<p class="mix-result-summary">任务已完成，但当前返回里没有新草稿路径。</p>'}
+                </section>
+            `);
+
+            if (cleanedPaths.length) {
+                sections.push(`
+                    <section class="mix-result-group">
+                        <h4 class="mix-result-title">已自动清理旧批次 ${cleanedPaths.length} 个</h4>
+                        <p class="mix-result-meta">只会清理由本工具生成的旧草稿，不会动你自己手工创建的草稿。</p>
+                        <div class="mix-result-list">${cleanedPaths.map((pathValue) => `
+                            <div class="mix-result-item">
+                                <strong class="mix-result-name">${escapeHtml(getPathLeaf(pathValue) || '旧草稿')}</strong>
+                                <span class="mix-result-path">${escapeHtml(pathValue)}</span>
+                            </div>
+                        `).join('')}</div>
+                    </section>
+                `);
+            }
+
+            if (warnings.length) {
+                sections.push(`
+                    <section class="mix-result-group">
+                        <h4 class="mix-result-title">处理警告</h4>
+                        <div class="mix-result-list">${warnings.map((warning) => `
+                            <div class="mix-result-item">
+                                <span class="mix-result-path">${escapeHtml(warning)}</span>
+                            </div>
+                        `).join('')}</div>
+                    </section>
+                `);
+            }
+
+            box.innerHTML = sections.join('');
+        }
+
         function buildDraftSectionHint(total, limit, noun) {
             if (total <= limit) return `共 ${total} ${noun}`;
             return `共 ${total} ${noun}，更多内容可展开`;
@@ -3079,6 +3151,7 @@
             document.getElementById('progress-area').style.display = 'block';
             document.getElementById('progress-fill').style.width = '0%';
             document.getElementById('progress-text').innerText = '提交任务中...';
+            renderMixGenerationResult(null);
 
             try {
                 const response = await authFetch('/api/generate-batch', {
@@ -5253,34 +5326,46 @@ async function renameUserMaterialProject() {
                     if (!response.ok) throw new Error(data.error || '查询失败');
 
                     const progress = data.progress || {};
+                    const progressInfo = progress && typeof progress === 'object' ? progress : {};
                     let percent = 0;
                     if (typeof progress === 'number') {
                         percent = progress;
-                    } else if (progress.progress) {
-                        percent = parseFloat(progress.progress) || 0;
+                    } else if (typeof progressInfo.progress === 'number') {
+                        percent = progressInfo.progress;
+                    } else if (typeof progressInfo.progress === 'string') {
+                        percent = parseFloat(progressInfo.progress) || 0;
                     }
+                    const progressLabel = progressInfo.indication
+                        || (typeof progressInfo.progress === 'string' ? progressInfo.progress : '')
+                        || '处理中...';
                     document.getElementById('progress-fill').style.width = `${percent}%`;
-                    document.getElementById('progress-text').innerText = progress.indication || '处理中...';
+                    document.getElementById('progress-text').innerText = progressLabel;
 
                     if (data.status === 'finished') {
                         clearInterval(pollInterval);
                         pollInterval = null;
                         document.getElementById('progress-text').innerText = '✅ 生成完成！';
-                        notify('批量生成已完成，请检查新草稿。', 'success');
-                        const summary = progress.effects_summary;
-                        if (summary && summary.warnings && summary.warnings.length) {
-                            const warnText = summary.warnings.map(w => `- ${w}`).join('<br>');
-                            document.getElementById('progress-text').innerHTML += `<br>⚠️ 效果警告：<br>${warnText}`;
-                        }
+                        const taskResult = progressInfo.result && typeof progressInfo.result === 'object' ? progressInfo.result : {};
+                        notify('批量生成已完成，请直接查看本批新草稿。', 'success');
                         document.getElementById('submitBtn').disabled = false;
-                        fetch('/api/drafts-folder')
-                            .then(res => res.json())
-                            .then(folderData => {
-                                if (folderData.folder) {
-                                    document.getElementById('progress-text').innerHTML += `<br>📂 草稿已保存至：${folderData.folder}`;
-                                }
-                            });
-                        await loadUserInfo();
+                        let draftsFolder = '';
+                        try {
+                            const folderResponse = await fetch('/api/drafts-folder');
+                            const folderData = await folderResponse.json();
+                            draftsFolder = folderData.folder || '';
+                            if (draftsFolder) {
+                                document.getElementById('progress-text').innerHTML += `<br>📂 草稿已保存至：${escapeHtml(draftsFolder)}`;
+                            }
+                        } catch (folderError) {
+                            console.warn('load drafts folder failed', folderError);
+                        }
+                        renderMixGenerationResult(taskResult, {draftsFolder});
+                        await Promise.all([
+                            loadUserInfo(),
+                            discoverDrafts().catch((discoverError) => {
+                                console.warn('discoverDrafts after batch failed', discoverError);
+                            })
+                        ]);
                     } else if (data.status === 'failed') {
                         clearInterval(pollInterval);
                         pollInterval = null;
