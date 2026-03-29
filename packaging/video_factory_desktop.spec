@@ -27,6 +27,7 @@ if runtime_tools_dir.exists():
     datas.append((str(runtime_tools_dir), "runtime_tools"))
 
 datas += collect_data_files("webview")
+datas += collect_data_files("pyJianYingDraft")
 binaries = collect_dynamic_libs("webview")
 
 hiddenimports = []
@@ -48,6 +49,7 @@ hiddenimports.extend([
     "webview",
 ])
 hiddenimports.extend(collect_submodules("webview"))
+hiddenimports.extend(collect_submodules("pyJianYingDraft"))
 
 
 a = Analysis(

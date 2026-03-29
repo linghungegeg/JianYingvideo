@@ -3,11 +3,14 @@ import json
 import logging
 import os
 import importlib
+import shutil
+import time
 import uuid
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from dotenv import load_dotenv
-from app.utils.runtime_paths import runtime_path
+from app.utils.runtime_paths import app_resource_path, runtime_path
 
 from app.utils.jianying_mcp.services.track_service import create_track_service
 from app.utils.jianying_mcp.services.video_service import (
@@ -139,6 +142,236 @@ class JianYingService:
                     manager.index_file_path = os.path.join(save_path, "global_index.json")
                     manager._ensure_index_file()
 
+    def _get_draft_scaffold_path(self) -> str:
+        candidate = str(app_resource_path("runtime_tools", "jianying_draft_scaffold"))
+        return candidate if os.path.isdir(candidate) else ""
+
+    def _copy_missing_entry(self, source_path: str, target_path: str) -> None:
+        if os.path.exists(target_path):
+            return
+        if os.path.isdir(source_path):
+            shutil.copytree(source_path, target_path)
+            return
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        shutil.copy2(source_path, target_path)
+
+    def _load_json_dict(self, path: str) -> dict:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+    def _write_json_dict(self, path: str, payload: dict) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload or {}, handle, ensure_ascii=False, indent=2)
+
+    def _candidate_root_meta_paths(self) -> list[str]:
+        local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return [
+            os.path.normpath(
+                os.path.join(
+                    local_app_data,
+                    "JianyingPro",
+                    "User Data",
+                    "Projects",
+                    "com.lveditor.draft",
+                    "root_meta_info.json",
+                )
+            )
+        ]
+
+    def _sync_exported_draft_meta(self, exported_dir: str, draft_content_path: str) -> dict:
+        meta_path = os.path.join(exported_dir, "draft_meta_info.json")
+        meta = self._load_json_dict(meta_path)
+        if not meta:
+            return {}
+
+        draft_name = os.path.basename(exported_dir.rstrip("\\/"))
+        draft_root_path = os.path.normpath(os.path.dirname(exported_dir))
+        draft_file_size = 0
+        draft_duration = 0
+        if os.path.isfile(draft_content_path):
+            try:
+                draft_file_size = int(os.path.getsize(draft_content_path) or 0)
+            except Exception:
+                draft_file_size = 0
+            draft_payload = self._load_json_dict(draft_content_path)
+            try:
+                draft_duration = int(draft_payload.get("duration") or 0)
+            except Exception:
+                draft_duration = 0
+
+        now_us = int(time.time() * 1_000_000)
+        draft_id = str(meta.get("draft_id") or "").strip() or str(uuid.uuid4()).upper()
+        meta["draft_id"] = draft_id
+        meta["draft_name"] = draft_name
+        meta["draft_fold_path"] = exported_dir.replace("\\", "/")
+        meta["draft_root_path"] = draft_root_path
+        meta["draft_json_file"] = draft_content_path.replace("\\", "/")
+        meta["draft_cover"] = "draft_cover.jpg"
+        meta["draft_need_rename_folder"] = False
+        meta["draft_is_invisible"] = False
+        meta["draft_timeline_materials_size_"] = draft_file_size
+        if draft_duration > 0:
+            meta["tm_duration"] = draft_duration
+        if not meta.get("tm_draft_create"):
+            meta["tm_draft_create"] = now_us
+        meta["tm_draft_modified"] = now_us
+        if not str(meta.get("draft_removable_storage_device") or "").strip():
+            drive, _tail = os.path.splitdrive(exported_dir)
+            meta["draft_removable_storage_device"] = drive or ""
+        self._write_json_dict(meta_path, meta)
+        return meta
+
+    def _build_root_meta_entry(self, meta: dict, exported_dir: str, draft_content_path: str) -> dict:
+        draft_file_size = int(meta.get("draft_timeline_materials_size_") or 0)
+        return {
+            "cloud_draft_cover": bool(meta.get("cloud_draft_cover", False)),
+            "cloud_draft_sync": bool(meta.get("cloud_draft_sync", False)),
+            "draft_cloud_last_action_download": bool(meta.get("draft_cloud_last_action_download", False)),
+            "draft_cloud_purchase_info": str(meta.get("draft_cloud_purchase_info") or ""),
+            "draft_cloud_template_id": str(meta.get("draft_cloud_template_id") or ""),
+            "draft_cloud_tutorial_info": str(meta.get("draft_cloud_tutorial_info") or ""),
+            "draft_cloud_videocut_purchase_info": str(meta.get("draft_cloud_videocut_purchase_info") or ""),
+            "draft_cover": os.path.join(exported_dir, "draft_cover.jpg").replace("\\", "/"),
+            "draft_fold_path": exported_dir.replace("\\", "/"),
+            "draft_id": str(meta.get("draft_id") or "").strip(),
+            "draft_is_ai_shorts": bool(meta.get("draft_is_ai_shorts", False)),
+            "draft_is_cloud_temp_draft": bool(meta.get("draft_is_cloud_temp_draft", False)),
+            "draft_is_invisible": bool(meta.get("draft_is_invisible", False)),
+            "draft_is_web_article_video": bool(meta.get("draft_is_web_article_video", False)),
+            "draft_json_file": draft_content_path.replace("\\", "/"),
+            "draft_name": str(meta.get("draft_name") or os.path.basename(exported_dir.rstrip("\\/"))),
+            "draft_new_version": str(meta.get("draft_new_version") or ""),
+            "draft_root_path": str(meta.get("draft_root_path") or os.path.dirname(exported_dir)),
+            "draft_timeline_materials_size": draft_file_size,
+            "draft_type": str(meta.get("draft_type") or ""),
+            "draft_web_article_video_enter_from": str(meta.get("draft_web_article_video_enter_from") or ""),
+            "streaming_edit_draft_ready": True,
+            "tm_draft_cloud_completed": meta.get("tm_draft_cloud_completed") or "",
+            "tm_draft_cloud_entry_id": int(meta.get("tm_draft_cloud_entry_id") or -1),
+            "tm_draft_cloud_modified": int(meta.get("tm_draft_cloud_modified") or 0),
+            "tm_draft_cloud_parent_entry_id": int(meta.get("tm_draft_cloud_parent_entry_id") or -1),
+            "tm_draft_cloud_space_id": int(meta.get("tm_draft_cloud_space_id") or -1),
+            "tm_draft_cloud_user_id": int(meta.get("tm_draft_cloud_user_id") or -1),
+            "tm_draft_create": int(meta.get("tm_draft_create") or 0),
+            "tm_draft_modified": int(meta.get("tm_draft_modified") or 0),
+            "tm_draft_removed": int(meta.get("tm_draft_removed") or 0),
+            "tm_duration": int(meta.get("tm_duration") or 0),
+        }
+
+    def _sync_root_meta_index(self, exported_dir: str, draft_content_path: str, meta: dict) -> None:
+        if not meta:
+            return
+        draft_id = str(meta.get("draft_id") or "").strip()
+        draft_fold_path = exported_dir.replace("\\", "/")
+        draft_json_file = draft_content_path.replace("\\", "/")
+        entry = self._build_root_meta_entry(meta, exported_dir, draft_content_path)
+        for root_meta_path in self._candidate_root_meta_paths():
+            payload = self._load_json_dict(root_meta_path)
+            entries = payload.get("all_draft_store") or []
+            if not isinstance(entries, list):
+                entries = []
+            filtered_entries = []
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                item_draft_id = str(item.get("draft_id") or "").strip()
+                item_fold_path = str(item.get("draft_fold_path") or "").strip().replace("\\", "/")
+                item_json_file = str(item.get("draft_json_file") or "").strip().replace("\\", "/")
+                if draft_id and item_draft_id == draft_id:
+                    continue
+                if item_fold_path and item_fold_path == draft_fold_path:
+                    continue
+                if item_json_file and item_json_file == draft_json_file:
+                    continue
+                filtered_entries.append(item)
+            filtered_entries.append(entry)
+            filtered_entries.sort(
+                key=lambda item: int(item.get("tm_draft_modified") or item.get("tm_draft_create") or 0),
+                reverse=True,
+            )
+            payload["all_draft_store"] = filtered_entries
+            payload["draft_ids"] = len(filtered_entries)
+            payload["root_path"] = str(payload.get("root_path") or os.path.dirname(root_meta_path)).replace("\\", "/")
+            self._write_json_dict(root_meta_path, payload)
+
+    def _ensure_export_scaffold(self, exported_dir: str, draft_content_path: str) -> None:
+        scaffold_root = self._get_draft_scaffold_path()
+        if not scaffold_root:
+            return
+
+        top_level_entries = [
+            "adjust_mask",
+            "common_attachment",
+            "materialResources",
+            "matting",
+            "qr_upload",
+            "Resources",
+            "smart_crop",
+            "subdraft",
+            "{01ecc63a-1a01-4cb1-9956-5b6889792879}",
+            "{9e8b9f6b-522e-4432-bf0b-54e4cfafd6fe}",
+            "{f65ab88d-5d29-4587-ad4a-75b9476d3447}",
+            "{f9ca7292-5597-4f99-b7b0-f3fe171abe69}",
+            "{fd4826c3-59a6-481d-8e62-ede163cf306d}",
+            "attachment_editing.json",
+            "attachment_pc_common.json",
+            "draft_biz_config.json",
+            "draft_settings",
+            "draft_virtual_store.json",
+            "performance_opt_info.json",
+            "template.json",
+            "timeline_layout.json",
+        ]
+        for name in top_level_entries:
+            source_path = os.path.join(scaffold_root, name)
+            if os.path.exists(source_path):
+                self._copy_missing_entry(source_path, os.path.join(exported_dir, name))
+
+        with open(draft_content_path, "rb") as handle:
+            draft_content_bytes = handle.read()
+
+        for mirror_name in ("draft_content.json.bak", "template-2.tmp"):
+            with open(os.path.join(exported_dir, mirror_name), "wb") as handle:
+                handle.write(draft_content_bytes)
+
+        scaffold_cover = os.path.join(scaffold_root, "draft_cover.jpg")
+        target_draft_cover = os.path.join(exported_dir, "draft_cover.jpg")
+        if not os.path.isfile(target_draft_cover) and os.path.isfile(scaffold_cover):
+            shutil.copy2(scaffold_cover, target_draft_cover)
+
+        target_cover = os.path.join(exported_dir, "cover.jpg")
+        if not os.path.isfile(target_cover):
+            if os.path.isfile(target_draft_cover):
+                shutil.copy2(target_draft_cover, target_cover)
+            elif os.path.isfile(scaffold_cover):
+                shutil.copy2(scaffold_cover, target_cover)
+
+        scaffold_timelines_root = os.path.join(scaffold_root, "Timelines")
+        target_timelines_root = os.path.join(exported_dir, "Timelines")
+        if os.path.isdir(scaffold_timelines_root):
+            self._copy_missing_entry(scaffold_timelines_root, target_timelines_root)
+            timeline_dirs = [
+                name
+                for name in os.listdir(target_timelines_root)
+                if os.path.isdir(os.path.join(target_timelines_root, name))
+            ]
+            if timeline_dirs:
+                timeline_dir = os.path.join(target_timelines_root, timeline_dirs[0])
+                for mirror_name in ("draft_content.json", "draft_content.json.bak", "template-2.tmp", "template.tmp"):
+                    with open(os.path.join(timeline_dir, mirror_name), "wb") as handle:
+                        handle.write(draft_content_bytes)
+                timeline_cover = os.path.join(timeline_dir, "draft_cover.jpg")
+                if not os.path.isfile(timeline_cover):
+                    if os.path.isfile(target_draft_cover):
+                        shutil.copy2(target_draft_cover, timeline_cover)
+                    elif os.path.isfile(scaffold_cover):
+                        shutil.copy2(scaffold_cover, timeline_cover)
+
     # -------------------------
     # Draft management
     # -------------------------
@@ -193,6 +426,101 @@ class JianYingService:
         result = exporter.export(draft_id)
         if not isinstance(result, dict):
             return ServiceResult(False, "export failed", code="export_failed")
+
+        exported_name = str(result.get("draft_name") or "").strip()
+        exported_root = str(result.get("output") or output_path or "").strip()
+        exported_dir = os.path.join(exported_root, exported_name) if exported_root and exported_name else ""
+        draft_content_path = os.path.join(exported_dir, "draft_content.json") if exported_dir else ""
+        export_logs = result.get("export_logs", []) or []
+        has_error_log = any(str((item or {}).get("level") or "").strip().lower() == "error" for item in export_logs if isinstance(item, dict))
+        if not exported_dir or not os.path.isdir(exported_dir) or not os.path.isfile(draft_content_path):
+            message = "export produced empty draft folder"
+            if has_error_log:
+                latest_error = next(
+                    (
+                        str((item or {}).get("message") or "").strip()
+                        for item in reversed(export_logs)
+                        if isinstance(item, dict) and str((item or {}).get("level") or "").strip().lower() == "error"
+                    ),
+                    "",
+                )
+                if latest_error:
+                    message = latest_error
+            return ServiceResult(
+                False,
+                message,
+                code="export_failed",
+                data={
+                    "draft_id": draft_id,
+                    "output": result.get("output"),
+                    "draft_name": result.get("draft_name"),
+                    "export_logs": export_logs,
+                    "summary": result.get("summary", {}),
+                },
+            )
+
+        agency_config_path = os.path.join(exported_dir, "draft_agency_config.json")
+        if not os.path.isfile(agency_config_path):
+            try:
+                with open(agency_config_path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "is_auto_agency_enabled": False,
+                            "is_auto_agency_popup": False,
+                            "is_single_agency_mode": False,
+                            "marterials": None,
+                            "use_converter": False,
+                            "video_resolution": 720,
+                        },
+                        f,
+                        ensure_ascii=False,
+                    )
+            except Exception as exc:
+                return ServiceResult(
+                    False,
+                    f"draft_agency_config write failed: {exc}",
+                    code="export_failed",
+                    data={
+                        "draft_id": draft_id,
+                        "output": result.get("output"),
+                        "draft_name": result.get("draft_name"),
+                        "export_logs": export_logs,
+                        "summary": result.get("summary", {}),
+                    },
+                )
+
+        try:
+            self._ensure_export_scaffold(exported_dir, draft_content_path)
+        except Exception as exc:
+            return ServiceResult(
+                False,
+                f"draft scaffold sync failed: {exc}",
+                code="export_failed",
+                data={
+                    "draft_id": draft_id,
+                    "output": result.get("output"),
+                    "draft_name": result.get("draft_name"),
+                    "export_logs": export_logs,
+                    "summary": result.get("summary", {}),
+                },
+            )
+
+        try:
+            updated_meta = self._sync_exported_draft_meta(exported_dir, draft_content_path)
+            self._sync_root_meta_index(exported_dir, draft_content_path, updated_meta)
+        except Exception as exc:
+            return ServiceResult(
+                False,
+                f"draft meta sync failed: {exc}",
+                code="export_failed",
+                data={
+                    "draft_id": draft_id,
+                    "output": result.get("output"),
+                    "draft_name": result.get("draft_name"),
+                    "export_logs": export_logs,
+                    "summary": result.get("summary", {}),
+                },
+            )
 
         return ServiceResult(
             True,

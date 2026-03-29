@@ -1,5 +1,6 @@
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from werkzeug.security import generate_password_hash
@@ -10,16 +11,21 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app import create_app
 from app.extensions import db
+from app.models.cdk_code import CdkCode
 from app.models.config import Config
 from app.models.template_model import TemplateModel
 from app.models.user import User
+from app.models.user_quota import UserQuota
+from app.models.user_token import UserToken
 from app.services.user_quota_service import adjust_quota, get_or_create_quota
 from app.views.api import _ensure_user_ref_code
 
-ADMIN_USER = os.getenv("VF_FULL_REG_ADMIN_USER", "codex_full_admin")
+_RUN_SUFFIX = uuid.uuid4().hex[:8]
+ADMIN_USER = os.getenv("VF_FULL_REG_ADMIN_USER", f"codex_full_admin_{_RUN_SUFFIX}")
 ADMIN_PASS = os.getenv("VF_FULL_REG_ADMIN_PASS", "Codex123!")
-NORMAL_USER = os.getenv("VF_FULL_REG_USER", "codex_full_user")
+NORMAL_USER = os.getenv("VF_FULL_REG_USER", f"codex_full_user_{_RUN_SUFFIX}")
 NORMAL_PASS = os.getenv("VF_FULL_REG_PASS", "Codex123!")
+_CLEANUP_USERS = not os.getenv("VF_FULL_REG_ADMIN_USER") and not os.getenv("VF_FULL_REG_USER")
 
 
 def ensure_user(username: str, password: str, role: str) -> User:
@@ -81,6 +87,33 @@ def open_checked(client, method, url, *, headers=None, json=None, data=None, exp
     return resp
 
 
+def _snapshot_license_settings():
+    keys = (
+        "license_offline_hours",
+        "license_transfer_cooldown_hours",
+        "license_code_length",
+        "license_points_ratio",
+        "manga_generate_cost",
+        "daily_checkin_reward",
+    )
+    snapshot = {}
+    for key in keys:
+        row = Config.query.filter_by(key=key).first()
+        snapshot[key] = int(row.value) if row and str(row.value or "").strip() else 0
+    return snapshot
+
+
+def _cleanup_users(usernames):
+    users = User.query.filter(User.username.in_(list(usernames))).all()
+    if not users:
+        return
+    user_ids = [user.id for user in users]
+    UserToken.query.filter(UserToken.user_id.in_(user_ids)).delete(synchronize_session=False)
+    UserQuota.query.filter(UserQuota.user_id.in_(user_ids)).delete(synchronize_session=False)
+    User.query.filter(User.id.in_(user_ids)).delete(synchronize_session=False)
+    db.session.commit()
+
+
 def main():
     app = create_app()
     with app.app_context():
@@ -92,10 +125,12 @@ def main():
         template = pick_template()
         item = Config.query.filter_by(key="drafts_folder").first()
         drafts_folder = item.value if item and item.value else ""
+        original_license_settings = _snapshot_license_settings()
 
     client = app.test_client()
     admin_headers = auth_headers(client, ADMIN_USER, ADMIN_PASS)
     user_headers = auth_headers(client, NORMAL_USER, NORMAL_PASS)
+    created_codes = []
 
     # user page routes
     for url in ("/", "/user", "/user/home", "/user/logs", "/user/settings", "/user/generate", "/admin", "/admin/"):
@@ -162,7 +197,7 @@ def main():
     else:
         print("[WARN] no template found, skipped draft-specific checks")
 
-    # validation-path checks: should fail gracefully, not 500
+    # validation-path checks
     open_checked(client, "POST", "/api/openclaw/test", headers=user_headers, json={}, expected_statuses=(400,))
     open_checked(client, "POST", "/api/split", headers=user_headers, json={}, expected_statuses=(400,))
     open_checked(client, "POST", "/api/export/drafts", headers=user_headers, json={}, expected_statuses=(400,))
@@ -178,7 +213,7 @@ def main():
     open_checked(client, "POST", "/api/manga/batch/apply-effects", headers=user_headers, json={}, expected_statuses=(400,))
     open_checked(client, "POST", "/api/manga/batch/export", headers=user_headers, json={}, expected_statuses=(400,))
 
-    # admin APIs
+    # admin APIs and cleanup-aware write checks
     open_checked(client, "GET", "/api/admin/manga/stats", headers=admin_headers)
     open_checked(client, "GET", "/api/admin/license-settings", headers=admin_headers)
     open_checked(client, "GET", "/api/admin/cdk/list", headers=admin_headers)
@@ -186,34 +221,50 @@ def main():
     open_checked(client, "GET", f"/api/admin/users/search?kw={NORMAL_USER}", headers=admin_headers)
     open_checked(client, "GET", "/api/admin/logs", headers=admin_headers)
 
-    # admin write paths
-    open_checked(
-        client,
-        "POST",
-        "/api/admin/license-settings",
-        headers=admin_headers,
-        json={
-            "license_offline_hours": 72,
-            "license_transfer_cooldown_hours": 24,
-            "license_code_length": 16,
-            "license_points_ratio": 1,
-            "manga_generate_cost": 1,
-            "daily_checkin_reward": 1,
-        },
-        expected_statuses=(200,),
-    )
-    open_checked(
-        client,
-        "POST",
-        "/api/admin/cdk/batch",
-        headers=admin_headers,
-        json={"card_type": "回归测试卡", "duration_days": 1, "quantity": 1},
-        expected_statuses=(200,),
-    )
+    try:
+        open_checked(
+            client,
+            "POST",
+            "/api/admin/license-settings",
+            headers=admin_headers,
+            json={
+                "license_offline_hours": 72,
+                "license_transfer_cooldown_hours": 24,
+                "license_code_length": 16,
+                "license_points_ratio": 1,
+                "manga_generate_cost": 1,
+                "daily_checkin_reward": 1,
+            },
+            expected_statuses=(200,),
+        )
+        cdk_resp = open_checked(
+            client,
+            "POST",
+            "/api/admin/cdk/batch",
+            headers=admin_headers,
+            json={"card_type": f"full_reg_{uuid.uuid4().hex[:6]}", "duration_days": 1, "quantity": 1},
+            expected_statuses=(200,),
+        )
+        created_codes.extend((cdk_resp.get_json(silent=True) or {}).get("codes") or [])
 
-    # privilege checks
-    open_checked(client, "GET", "/api/admin/license-settings", headers=user_headers, expected_statuses=(403,))
-    open_checked(client, "GET", "/api/admin/logs", headers=user_headers, expected_statuses=(403,))
+        open_checked(client, "GET", "/api/admin/license-settings", headers=user_headers, expected_statuses=(403,))
+        open_checked(client, "GET", "/api/admin/logs", headers=user_headers, expected_statuses=(403,))
+    finally:
+        open_checked(
+            client,
+            "POST",
+            "/api/admin/license-settings",
+            headers=admin_headers,
+            json=original_license_settings,
+            expected_statuses=(200,),
+        )
+        if created_codes:
+            with app.app_context():
+                CdkCode.query.filter(CdkCode.code.in_(created_codes)).delete(synchronize_session=False)
+                db.session.commit()
+        if _CLEANUP_USERS:
+            with app.app_context():
+                _cleanup_users({ADMIN_USER, NORMAL_USER})
 
     print("OK full feature regression passed")
 

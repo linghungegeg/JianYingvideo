@@ -1,6 +1,8 @@
 ﻿        let currentDraftPath = '';
         let currentDraftInfoPath = '';
         let materialsConfig = [];
+        let materialSlotMeta = [];
+        let currentMaterialLayout = null;
         let currentDraftVersion = 'all';
         let textsConfig = [];
         let currentMixStrategy = 'group';
@@ -51,6 +53,13 @@
             IntroType: '片头',
             OutroType: '片尾'
         };
+        const DUO_CATEGORY_LABELS = {
+            video_effects: '视频特效',
+            transitions: '转场',
+            face_effects: '人像优化',
+            stickers: '贴纸',
+            text_templates: '文字模板'
+        };
 
         const ACCOUNT_TUTORIAL_ENTRIES = [
             {title: '智能助手', keywords: '智能助手 命令中心 创建素材目录 分区 混剪 导出 草稿', body: '直接输入一句需求，助手会先告诉你准备执行什么，再决定是否继续。适合快速创建素材目录、跳转到指定混剪模式，或者导出当前草稿。'},
@@ -76,6 +85,22 @@
         const workspaceSensitiveSettingKeys = ['net_provider', 'net_base_url', 'net_token'];
         let workspaceSettingsConfigCache = null;
         let siteSettingsCache = readInitialSiteSettings();
+        const announcementDismissKey = 'vf_announcement_dismissed_today';
+        let announcementState = {
+            items: [],
+            index: 0,
+            sessionShownKey: ''
+        };
+        let licenseCardTypesRequestSeq = 0;
+
+        function inferMaterialTypeFromLabel(label = '') {
+            const raw = String(label || '').trim().toLowerCase();
+            if (!raw) return '';
+            if (/(音频|音乐|配乐|旁白|bgm|audio|voice|sound)/.test(raw)) return 'audio';
+            if (/(图片|图像|封面|海报|photo|image|poster|cover|png|jpg|jpeg|webp|gif|bmp)/.test(raw)) return 'image';
+            if (/(视频|片段|镜头|画面|video|clip|movie|mov|mp4|mkv|avi)/.test(raw)) return 'video';
+            return '';
+        }
 
         function readInitialSiteSettings() {
             const node = document.getElementById('siteSettingsPayload');
@@ -447,14 +472,7 @@
                             <span>适合分区混剪时按片头、主体、片尾这类顺序逐段整理文案。</span>
                         </div>
                     </div>
-                    <div class="tool-result">先按分区分别整理，再批量写回对应文字槽。也支持多行粘贴或文件导入。</div>
-                    <div class="inline-actions">
-                        <button class="effect-add" type="button" onclick="applyPartitionBatchTextTemplate()">按分区批量导入</button>
-                    </div>
-                    <div class="form-group">
-                        <label for="partition_text_batch_input">分区批量输入</label>
-                        <textarea id="partition_text_batch_input" rows="4" placeholder="格式示例：片头: 第一段文字\n片中: 第二段文字\n片尾: 第三段文字"></textarea>
-                    </div>
+                    <div class="tool-result">直接按分区分别填写，提交时会按当前分区顺序写回对应文字槽。</div>
                     <div class="partition-text-grid">${cards}</div>
                 </div>
             `;
@@ -485,28 +503,6 @@
             }
             fillTextInputsFromLines(lines);
             notify(`已导入 ${lines.length} 段文字。`, 'success');
-        }
-
-        function applyPartitionBatchTextTemplate() {
-            const raw = document.getElementById('partition_text_batch_input')?.value || '';
-            const rows = String(raw || '').replace(/\uFEFF/g, '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-            if (!rows.length) {
-                notify('请先输入分区文字。', 'warn');
-                return;
-            }
-            const textareas = Array.from(document.querySelectorAll('[id^="partition_text_"]'));
-            rows.forEach((row) => {
-                const parts = row.split(/[:：]/);
-                if (parts.length < 2) return;
-                const key = parts.shift().trim();
-                const value = parts.join(':').trim();
-                const target = textareas.find((item) => {
-                    const label = item.closest('.partition-text-card')?.querySelector('label')?.textContent?.trim() || '';
-                    return label === key;
-                });
-                if (target && value) target.value = value;
-            });
-            notify('已按分区写入批量文字。', 'success');
         }
 
         async function importTextTemplateFile() {
@@ -645,6 +641,108 @@
                 return;
             }
             box.innerHTML = list.map((item, index) => `<button class="recent-folder-chip" type="button" onclick="useRecentMaterialFolder(${index})" title="${item}">${item}</button>`).join('');
+        }
+
+        function getMaterialTypeLabel(materialType = '') {
+            if (materialType === 'image') return '图片';
+            if (materialType === 'video') return '视频';
+            if (materialType === 'audio') return '音频';
+            return '不限类型';
+        }
+
+        function inferLayoutFolderMaterialType(folder, index, layout = {}) {
+            const strategy = layout.strategy || getSelectedReplaceStrategy();
+            if (strategy === 'mix') {
+                const selectedTypes = getSelectedReplaceTypes();
+                return selectedTypes.length === 1 ? selectedTypes[0] : '';
+            }
+            const inferred = inferMaterialTypeFromLabel(folder?.label || '');
+            if (inferred) return inferred;
+            const meta = Array.isArray(materialSlotMeta) ? materialSlotMeta[index] : null;
+            const metaType = meta && typeof meta === 'object' ? String(meta.type || '').trim().toLowerCase() : '';
+            return ['image', 'video', 'audio'].includes(metaType) ? metaType : '';
+        }
+
+        function hydrateMaterialLayout(layout = {}) {
+            const folders = Array.isArray(layout.folders) ? layout.folders : [];
+            return {
+                ...layout,
+                folders: folders.map((folder, index) => ({
+                    ...folder,
+                    material_type: folder?.material_type || inferLayoutFolderMaterialType(folder, index, layout),
+                    file_count: Number(folder?.file_count || 0)
+                }))
+            };
+        }
+
+        function clearMaterialLayoutList() {
+            currentMaterialLayout = null;
+            const box = document.getElementById('materialLayoutList');
+            if (box) box.innerHTML = '';
+        }
+
+        function renderMaterialLayoutList(layout = null) {
+            const box = document.getElementById('materialLayoutList');
+            if (!box) return;
+            const folders = Array.isArray(layout?.folders) ? layout.folders : [];
+            if (!folders.length) {
+                box.innerHTML = '';
+                return;
+            }
+            box.innerHTML = folders.map((folder, index) => {
+                const materialType = folder.material_type || '';
+                const count = Number(folder.file_count || 0);
+                const folderLabel = folder.label || `目录 ${index + 1}`;
+                const fullPath = String(folder.path || '');
+                return `
+                    <article class="material-layout-card">
+                        <strong title="${escapeHtml(folderLabel)}">${escapeHtml(compactPathLabel(folderLabel, 26))}</strong>
+                        <div class="material-layout-chip">${escapeHtml(getMaterialTypeLabel(materialType))}</div>
+                        <div class="material-layout-meta">
+                            <span>已放素材：${count} 个</span>
+                            <span title="${escapeHtml(fullPath)}">${escapeHtml(compactPathLabel(fullPath, 42))}</span>
+                        </div>
+                        <div class="material-layout-actions">
+                            <button class="primary-btn" type="button" onclick="fillMaterialLayoutFolder(${index})">放素材</button>
+                        </div>
+                    </article>
+                `;
+            }).join('');
+        }
+
+        async function fillMaterialLayoutFolder(index) {
+            const layout = currentMaterialLayout;
+            const folder = Array.isArray(layout?.folders) ? layout.folders[index] : null;
+            const statusEl = document.getElementById('materialLayoutStatus');
+            if (!folder?.path) {
+                notify('当前目录不存在，请先重新创建目录。', 'warn');
+                return;
+            }
+            try {
+                const filePaths = await requestBrowseFiles(folder.material_type || 'all');
+                if (!filePaths.length) return;
+                if (statusEl) statusEl.textContent = `正在放入素材：${folder.label || folder.path}`;
+                const res = await authFetch('/api/materials/fill-folder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        target_folder: folder.path,
+                        file_paths: filePaths,
+                        material_type: folder.material_type || 'all'
+                    })
+                });
+                const data = await parseJsonResponse(res, '放素材失败');
+                if (!res.ok || !data.ok) {
+                    throw new Error(data.error || '放素材失败');
+                }
+                folder.file_count = Number(data.file_count || folder.file_count || 0);
+                renderMaterialLayoutList(layout);
+                if (statusEl) statusEl.textContent = `${folder.label || '目录'} 已放入 ${data.copied || 0} 个素材。`;
+                notify(`已放入 ${data.copied || 0} 个素材。`, 'success');
+            } catch (error) {
+                if (statusEl) statusEl.textContent = `放素材失败：${error.message || error}`;
+                notify(error.message || '放素材失败', 'warn');
+            }
         }
 
         function isLocalRuntimeClient() {
@@ -786,13 +884,137 @@
             modal.setAttribute('aria-hidden', 'true');
         }
 
+        function getAnnouncementTodayKey() {
+            const now = new Date();
+            const y = now.getFullYear();
+            const m = String(now.getMonth() + 1).padStart(2, '0');
+            const d = String(now.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        }
+
+        function readAnnouncementDismissState() {
+            try {
+                const raw = window.localStorage.getItem(announcementDismissKey);
+                const parsed = raw ? JSON.parse(raw) : {};
+                return parsed && typeof parsed === 'object' ? parsed : {};
+            } catch (error) {
+                return {};
+            }
+        }
+
+        function writeAnnouncementDismissState(itemId) {
+            window.localStorage.setItem(announcementDismissKey, JSON.stringify({
+                date: getAnnouncementTodayKey(),
+                id: Number(itemId || 0)
+            }));
+        }
+
+        function isAnnouncementDismissedToday(itemId) {
+            const saved = readAnnouncementDismissState();
+            return saved.date === getAnnouncementTodayKey() && Number(saved.id || 0) === Number(itemId || 0);
+        }
+
+        function closeAnnouncementModal() {
+            const modal = document.getElementById('announcementModal');
+            if (!modal) return;
+            modal.classList.remove('open');
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+        }
+
+        function renderAnnouncementModal() {
+            const item = Array.isArray(announcementState.items) ? announcementState.items[announcementState.index] : null;
+            const titleEl = document.getElementById('announcementTitle');
+            const metaEl = document.getElementById('announcementMeta');
+            const contentEl = document.getElementById('announcementContent');
+            const pagerEl = document.getElementById('announcementPager');
+            const prevBtn = document.getElementById('announcementPrevBtn');
+            const nextBtn = document.getElementById('announcementNextBtn');
+            const suppressCheck = document.getElementById('announcementSuppressToday');
+            if (!item || !titleEl || !metaEl || !contentEl) return;
+            titleEl.textContent = item.title || '公告';
+            metaEl.textContent = item.published_at ? new Date(item.published_at).toLocaleDateString() : '最新';
+            contentEl.textContent = item.content || '';
+            if (pagerEl) pagerEl.textContent = `${announcementState.index + 1} / ${announcementState.items.length}`;
+            if (prevBtn) prevBtn.disabled = announcementState.index <= 0;
+            if (nextBtn) nextBtn.disabled = announcementState.index >= announcementState.items.length - 1;
+            if (suppressCheck) suppressCheck.checked = isAnnouncementDismissedToday(item.id);
+        }
+
+        function openAnnouncementModal(index = 0) {
+            const modal = document.getElementById('announcementModal');
+            if (!modal) return;
+            announcementState.index = Math.max(0, Math.min(index, (announcementState.items.length || 1) - 1));
+            renderAnnouncementModal();
+            modal.classList.add('open');
+            modal.style.display = 'flex';
+            modal.setAttribute('aria-hidden', 'false');
+        }
+
+        function stepAnnouncement(offset) {
+            const nextIndex = announcementState.index + Number(offset || 0);
+            if (nextIndex < 0 || nextIndex >= announcementState.items.length) return;
+            announcementState.index = nextIndex;
+            renderAnnouncementModal();
+        }
+
+        function toggleAnnouncementTodaySuppressed() {
+            const item = announcementState.items[announcementState.index];
+            const suppressCheck = document.getElementById('announcementSuppressToday');
+            if (!item || !suppressCheck) return;
+            if (suppressCheck.checked) {
+                writeAnnouncementDismissState(item.id);
+            } else {
+                window.localStorage.removeItem(announcementDismissKey);
+            }
+        }
+
+        async function maybeShowAnnouncementModal() {
+            if (!currentUserInfo?.id) return;
+            try {
+                const res = await authFetch('/api/announcements');
+                const data = await parseJsonResponse(res, '公告读取失败');
+                if (!res.ok || !data.ok) return;
+                const items = Array.isArray(data.items) ? data.items : [];
+                if (!items.length) return;
+                announcementState.items = items;
+                announcementState.index = 0;
+                const latest = items[0];
+                const sessionKey = `${currentUserInfo.id}:${latest.id}:${getAnnouncementTodayKey()}`;
+                if (announcementState.sessionShownKey === sessionKey) return;
+                announcementState.sessionShownKey = sessionKey;
+                if (isAnnouncementDismissedToday(latest.id)) return;
+                openAnnouncementModal(0);
+            } catch (error) {
+                console.warn('announcement modal skipped', error);
+            }
+        }
+
         function renderContactEntries() {
             const box = document.getElementById('accountContactList');
             if (!box) return;
             const items = Array.isArray(siteSettingsCache.contact_entries) ? siteSettingsCache.contact_entries : [];
+            box.classList.add('account-contact-shell');
             box.innerHTML = items.length
-                ? items.map((item) => `<article class="resource-post-card is-owned"><div class="resource-post-head"><span class="resource-level-badge">官方渠道</span></div><div class="resource-detail-grid resource-detail-grid-wide"><div class="resource-detail-field"><span>联系方式 / 群号</span><strong>${escapeHtml(item)}</strong></div></div></article>`).join('')
+                ? `
+                    <div class="resource-table-shell contact-entry-table">
+                        <div class="resource-table-head">
+                            <span>类型</span>
+                            <span>联系方式 / 群号</span>
+                        </div>
+                        ${items.map((item) => `
+                            <article class="resource-table-row">
+                                <div class="resource-table-cell"><span class="resource-level-badge">官方渠道</span></div>
+                                <div class="resource-table-cell"><strong>${escapeHtml(item)}</strong></div>
+                            </article>
+                        `).join('')}
+                    </div>
+                `
                 : '<div class="tool-result">管理员暂未配置联系渠道。</div>';
+        }
+
+        function getDuoCategoryLabel(category = '') {
+            return DUO_CATEGORY_LABELS[category] || category || 'Duo 素材';
         }
 
         async function loadRuntimeFeatures() {
@@ -933,19 +1155,22 @@
         async function loadLicenseCardTypes() {
             const box = document.getElementById('accountCardTypeList');
             if (!box) return;
-            const vipSection = document.getElementById('account-vip-section');
-            const usagePolicyBox = document.getElementById('accountUsagePolicyList');
-            if (vipSection && usagePolicyBox && box.previousElementSibling !== usagePolicyBox) {
-                vipSection.insertBefore(box, usagePolicyBox);
-            }
             box.textContent = '正在读取卡类型说明。';
+            const requestSeq = ++licenseCardTypesRequestSeq;
+            let timeoutId = 0;
             try {
-                const res = await fetch('/api/license/card-types');
-                const data = await res.json();
+                const controller = new AbortController();
+                timeoutId = window.setTimeout(() => controller.abort(), 10000);
+                const res = await authFetch(`/api/license/card-types?_t=${Date.now()}`, {
+                    headers: {'Accept': 'application/json'},
+                    signal: controller.signal
+                });
+                const data = await parseJsonResponse(res, '读取失败');
+                if (requestSeq !== licenseCardTypesRequestSeq) return;
                 if (!res.ok || !data.ok) throw new Error(data.error || '读取失败');
                 const items = Array.isArray(data.items) ? data.items : [];
                 if (!items.length) {
-                    box.textContent = '当前还没有可展示的卡类型说明。';
+                    box.textContent = '当前没有卡类型说明。';
                     return;
                 }
                 box.innerHTML = `
@@ -969,7 +1194,11 @@
                     </div>
                 `;
             } catch (error) {
-                box.textContent = `卡类型说明读取失败：${error.message || error}`;
+                if (requestSeq !== licenseCardTypesRequestSeq) return;
+                const message = error?.name === 'AbortError' ? '读取超时，请稍后重试。' : (error.message || error);
+                box.textContent = `卡类型读取失败：${message}`;
+            } finally {
+                if (timeoutId) window.clearTimeout(timeoutId);
             }
         }
 
@@ -1371,11 +1600,6 @@
                     replaceTypeInputs.forEach((input) => {
                         input.disabled = false;
                     });
-                    if (!replaceTypeInputs.some((input) => input.checked)) {
-                        replaceTypeInputs.forEach((input) => {
-                            input.checked = input.value === 'image' || input.value === 'video';
-                        });
-                    }
                 }
             }
 
@@ -1547,13 +1771,24 @@
                     vipBadge.style.background = user.is_vip ? '#e8f1ff' : '#eef3f8';
                     vipBadge.style.color = user.is_vip ? '#1557d6' : '#475569';
                 }
+                const cardTypeBox = document.getElementById('accountCardTypeList');
+                if (cardTypeBox) cardTypeBox.textContent = '正在读取卡类型说明。';
                 renderInviteOverview(user.invite || null);
                 loadLicenseStatus();
                 loadLicenseCardTypes();
+                loadMangaTemplates().catch(() => {});
+                loadMangaHistory().catch(() => {});
+                loadSiteSettings().catch(() => {});
                 loadPointsOverview();
                 fillResourceMembership();
                 loadResourceExchangeMyPosts();
                 closeAuthModal();
+                window.setTimeout(() => {
+                    maybeShowAnnouncementModal();
+                }, 120);
+                window.setTimeout(() => {
+                    if (currentUserInfo) loadLicenseCardTypes();
+                }, 0);
             } else {
                 accountOverview = null;
                 if (authPanel) authPanel.style.display = 'block';
@@ -1571,8 +1806,12 @@
                 renderInviteOverview(null);
                 fillResourceMembership();
                 renderResourceMyPosts([]);
+                announcementState.sessionShownKey = '';
+                closeAnnouncementModal();
                 const cardTypeBox = document.getElementById('accountCardTypeList');
                 if (cardTypeBox) cardTypeBox.textContent = '登录后查看卡类型说明。';
+                loadMangaTemplates().catch(() => {});
+                loadMangaHistory().catch(() => {});
             }
             toggleProtectedUI(!!user);
             renderCommercialSummary();
@@ -1604,6 +1843,7 @@
         function renderPointsOverview() {
             const overview = accountOverview || {};
             const checkedIn = !!overview.checked_in_today;
+            const isVipUser = !!(currentUserInfo?.is_vip || overview.quota?.is_vip);
             const statusText = document.getElementById('checkinStatusText');
             const streakEl = document.getElementById('checkinStreak');
             const rewardEl = document.getElementById('checkinRewardValue');
@@ -1615,7 +1855,7 @@
             if (streakEl) streakEl.textContent = overview.streak_days ?? 0;
             if (rewardEl) rewardEl.textContent = overview.checkin_reward ?? 0;
             if (gainEl) gainEl.textContent = overview.today_gain ?? 0;
-            if (costEl) costEl.textContent = Math.abs(Number(overview.today_cost || 0));
+            if (costEl) costEl.textContent = isVipUser ? '0' : Math.abs(Number(overview.today_cost || 0));
             if (checkinBtn) {
                 checkinBtn.disabled = !currentUserInfo || checkedIn;
                 checkinBtn.textContent = checkedIn ? '今日已签到' : '立即签到';
@@ -1846,6 +2086,19 @@
                 throw new Error(data.error || '文件选择失败');
             }
             return data.file || '';
+        }
+
+        async function requestBrowseFiles(materialType = 'all') {
+            const response = await fetch('/api/browse-files', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({material_type: materialType || 'all'})
+            });
+            const data = await parseJsonResponse(response, '文件选择失败');
+            if (!response.ok || data.ok === false) {
+                throw new Error(data.error || '文件选择失败');
+            }
+            return Array.isArray(data.files) ? data.files : [];
         }
 
         const effectsState = {
@@ -2379,10 +2632,13 @@
             `;
         }
 
-        function compactPathLabel(path = '') {
+        function compactPathLabel(path = '', maxLength = 72) {
             const clean = String(path || '');
-            if (clean.length <= 72) return clean;
-            return `${clean.slice(0, 28)} ... ${clean.slice(-32)}`;
+            const max = Math.max(24, Number(maxLength || 72));
+            if (clean.length <= max) return clean;
+            const head = Math.max(10, Math.floor((max - 5) / 2));
+            const tail = Math.max(10, max - 5 - head);
+            return `${clean.slice(0, head)} ... ${clean.slice(-tail)}`;
         }
 
         function removeSplitDraftAt(index) {
@@ -2643,8 +2899,10 @@
             currentDraftInfoPath = '';
             currentDraftVersion = getDraftElement('version')?.value || 'all';
             materialsConfig = [];
+            materialSlotMeta = [];
             textsConfig = [];
             draftTrackMeta = [];
+            clearMaterialLayoutList();
             const dom = getDraftDom();
             if (dom.materialsArea) dom.materialsArea.style.display = 'none';
             if (dom.materialsList) dom.materialsList.innerHTML = '';
@@ -2702,6 +2960,7 @@
                 currentDraftInfoPath = draftPath;
                 currentDraftVersion = getDraftElement('version')?.value || inferDraftVersion(draftPath);
                 materialsConfig = data.materials || [];
+                materialSlotMeta = Array.isArray(data.material_items) ? data.material_items : [];
                 textsConfig = data.texts || [];
                 draftTrackMeta = data.tracks || [];
                 updateDuoTrackOptions(data.tracks || [], data.segment_counts || {});
@@ -2821,11 +3080,14 @@
                     pushRecentMaterialFolder(layout.root);
                     setWorkspaceSettings({last_materials_root: layout.root});
                 }
+                currentMaterialLayout = hydrateMaterialLayout(layout);
+                renderMaterialLayoutList(currentMaterialLayout);
                 const folderNames = Array.isArray(layout.folders) ? layout.folders.map((item) => item.label || item.path).join(' / ') : '';
                 if (statusEl) statusEl.textContent = layout.root ? `目录已创建：${layout.root}${folderNames ? `\n${folderNames}` : ''}` : '目录已创建';
                 updatePrimaryActionState();
                 notify('素材目录已按草稿创建。', 'success');
             } catch (e) {
+                clearMaterialLayoutList();
                 if (statusEl) statusEl.textContent = `创建失败：${e.message || e}`;
                 notify(e.message || '创建素材目录失败', 'warn');
             }
@@ -3198,8 +3460,8 @@
         async function loadResourceTypes() {
             const fallbackTypes = Object.keys(EFFECT_TYPE_LABELS || {});
             try {
-                const res = await fetch('/api/effects/types');
-                const data = await res.json();
+                const res = await authFetch('/api/effects/types');
+                const data = await parseJsonResponse(res, '资源类型读取失败');
                 const sel = document.getElementById('effect_type');
                 if (!sel) return;
                 const types = Array.isArray(data.types) && data.types.length ? data.types : fallbackTypes;
@@ -3228,12 +3490,12 @@
                 notify('请先选择资源类型。', 'warn');
                 return;
             }
-            const res = await fetch('/api/effects/list', {
+            const res = await authFetch('/api/effects/list', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({effect_type: effectType, keyword, limit, is_vip: isVip})
             });
-            const data = await res.json();
+            const data = await parseJsonResponse(res, '资源搜索失败');
             resourceCache = data.effects || [];
             renderResourceResults(resourceCache);
         }
@@ -3262,18 +3524,69 @@
                 || '';
         }
 
+        function pickPreviewUrl(value) {
+            if (!value) return '';
+            if (typeof value === 'string') {
+                return value.trim();
+            }
+            if (Array.isArray(value)) {
+                for (const entry of value) {
+                    const candidate = pickPreviewUrl(entry);
+                    if (candidate) return candidate;
+                }
+                return '';
+            }
+            if (typeof value !== 'object') {
+                return '';
+            }
+            const fields = [
+                'preview_url', 'previewUrl', 'preview',
+                'cover_url', 'coverUrl', 'cover',
+                'thumbnail_url', 'thumbnailUrl', 'thumbnail',
+                'thumb_url', 'thumbUrl', 'thumb',
+                'poster_url', 'posterUrl', 'poster',
+                'snapshot_url', 'snapshotUrl', 'snapshot',
+                'icon_url', 'iconUrl', 'icon',
+                'image_url', 'imageUrl', 'image',
+                'url', 'uri', 'src'
+            ];
+            for (const field of fields) {
+                const candidate = pickPreviewUrl(value[field]);
+                if (candidate) return candidate;
+            }
+            return '';
+        }
+
         function getResourcePreviewUrl(item = {}) {
             const meta = item?.meta && typeof item.meta === 'object' ? item.meta : {};
-            return item?.preview_url
-                || item?.preview
-                || item?.cover_url
-                || item?.cover
-                || item?.url
-                || meta?.preview_url
-                || meta?.cover_url
-                || meta?.cover
-                || meta?.url
-                || '';
+            return pickPreviewUrl([
+                item?.preview_url,
+                item?.preview,
+                item?.cover_url,
+                item?.cover,
+                item?.thumbnail_url,
+                item?.thumbnail,
+                item?.thumb_url,
+                item?.thumb,
+                item?.poster_url,
+                item?.poster,
+                item?.snapshot_url,
+                item?.snapshot,
+                item?.icon_url,
+                item?.icon,
+                item?.image_url,
+                item?.image,
+                item?.url,
+                item?.uri,
+                item?.src,
+                item?.images,
+                item?.image_list,
+                item?.covers,
+                item?.resource,
+                item?.material,
+                item?.extra,
+                meta
+            ]);
         }
 
         function renderResourceResults(items) {
@@ -3304,7 +3617,7 @@
                             <article class="resource-table-row resource-search-row">
                                 <div class="resource-table-cell duo-preview-cell">${previewUrl
                                     ? `<img class="resource-browser-thumb" src="${previewUrl}" alt="${escapeHtml(name)}">`
-                                    : '<div class="resource-browser-thumb resource-browser-thumb-empty">资源</div>'}</div>
+                                    : '<div class="resource-browser-thumb resource-browser-thumb-empty" title="当前官方资源元数据不含预览图">无预览</div>'}</div>
                                 <div class="resource-table-cell resource-search-name"><strong>${escapeHtml(name)}</strong></div>
                                 <div class="resource-table-cell"><span>${escapeHtml(identifier)}</span></div>
                                 <div class="resource-table-cell"><span>${escapeHtml(category)}</span></div>
@@ -3346,7 +3659,7 @@
         async function loadDuoCategories() {
             const fallbackCategories = ['video_effects', 'transitions', 'face_effects', 'stickers', 'text_templates'];
             try {
-                const res = await fetch('/api/duo/resources/categories');
+                const res = await authFetch('/api/duo/resources/categories');
                 const data = await parseJsonResponse(res, 'Duo 分类读取失败');
                 const sel = document.getElementById('duo_category');
                 if (sel) {
@@ -3357,7 +3670,7 @@
                     const previousValue = sel.value || '';
                     const allLabel = total > 0 ? `全部分类（${total}）` : '全部分类';
                     sel.innerHTML = [`<option value="">${escapeHtml(allLabel)}</option>`]
-                        .concat(categories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`))
+                        .concat(categories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(getDuoCategoryLabel(category))}</option>`))
                         .join('');
                     sel.value = previousValue && categories.includes(previousValue) ? previousValue : '';
                 }
@@ -3365,7 +3678,7 @@
                 const sel = document.getElementById('duo_category');
                 if (sel) {
                     sel.innerHTML = ['<option value="">全部分类</option>']
-                        .concat(fallbackCategories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`))
+                        .concat(fallbackCategories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(getDuoCategoryLabel(category))}</option>`))
                         .join('');
                 }
             }
@@ -3394,7 +3707,7 @@
                 if (pager) pager.innerText = `共 ${cached.total} 条素材，当前第 ${page} 页`;
                 return;
             }
-            const res = await fetch('/api/duo/resources/search', {
+            const res = await authFetch('/api/duo/resources/search', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({category: category || null, keyword, limit, offset})
@@ -3429,7 +3742,8 @@
                         const preview = previewUrl
                             ? `<img class="resource-browser-thumb" src="${previewUrl}" alt="${escapeHtml(item.name || 'Duo 素材')}">`
                             : '<div class="resource-browser-thumb resource-browser-thumb-empty">Duo</div>';
-                        const category = document.getElementById('duo_category')?.value || item.category || 'Duo 素材';
+                        const categoryValue = document.getElementById('duo_category')?.value || item.category || '';
+                        const category = getDuoCategoryLabel(categoryValue);
                         const identifier = item.id || item.resource_id || item.effect_id || '-';
                         const chips = buildResourceMetaChips(item, [category])
                             .filter((chip) => chip !== category && chip !== `编号 ${identifier}` && chip !== `资源ID ${identifier}` && chip !== `效果ID ${identifier}`);
@@ -3471,12 +3785,12 @@
         async function refreshDuoCache() {
             const info = document.getElementById('duo_cache_info');
             const path = document.getElementById('duo_resource_path')?.value?.trim();
-            const res = await fetch('/api/duo/cache/refresh', {
+            const res = await authFetch('/api/duo/cache/refresh', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({resource_path: path})
             });
-            const data = await res.json();
+            const data = await parseJsonResponse(res, '资源索引更新失败');
             if (info) info.innerText = data.ok ? '资源索引已更新，可重新搜索最新素材。' : (data.error || '更新失败');
             duoPageCache = {};
             loadDuoCacheStatus();
@@ -3485,8 +3799,8 @@
         async function loadDuoCacheStatus() {
             const info = document.getElementById('duo_cache_info');
             try {
-                const res = await fetch('/api/duo/cache/status');
-                const data = await res.json();
+                const res = await authFetch('/api/duo/cache/status');
+                const data = await parseJsonResponse(res, '资源索引状态读取失败');
                 if (info) info.innerText = data.exists ? `本地素材索引可用，共 ${data.resource_count || 0} 条素材。` : '暂未发现可用的本地素材索引。';
             } catch (e) {}
         }
@@ -3679,9 +3993,13 @@
             openBtns.forEach((btn) => btn.addEventListener('click', openAuthModal));
             document.querySelectorAll('[data-close-auth="true"]').forEach((el) => el.addEventListener('click', closeAuthModal));
             document.querySelectorAll('[data-close-agreement="true"]').forEach((el) => el.addEventListener('click', closeAgreementModal));
+            document.querySelectorAll('[data-close-announcement="true"]').forEach((el) => el.addEventListener('click', closeAnnouncementModal));
             document.querySelectorAll('[data-agreement-open]').forEach((el) => {
                 el.addEventListener('click', () => openAgreementModal(el.getAttribute('data-agreement-open') || 'user'));
             });
+            document.getElementById('announcementPrevBtn')?.addEventListener('click', () => stepAnnouncement(-1));
+            document.getElementById('announcementNextBtn')?.addEventListener('click', () => stepAnnouncement(1));
+            document.getElementById('announcementSuppressToday')?.addEventListener('change', toggleAnnouncementTodaySuppressed);
             document.querySelectorAll('[data-auth-switch]').forEach((el) => {
                 el.addEventListener('click', () => {
                     const target = el.getAttribute('data-auth-switch');
@@ -4546,9 +4864,6 @@ async function renameUserMaterialProject() {
             document.querySelectorAll('input[name="replace_type"]').forEach((input) => {
                 input.addEventListener('change', syncMixReplaceControls);
             });
-            document.querySelectorAll('input[name="replace_type"]').forEach((input) => {
-                input.checked = false;
-            });
             document.getElementById('partition_text_mode')?.addEventListener('change', syncPartitionTextStrategy);
             updateMixModeUI();
         }
@@ -4824,13 +5139,21 @@ async function renameUserMaterialProject() {
 
         function reorderAccountSections() {
             const panel = document.getElementById('panel-account');
+            const panelBody = document.getElementById('userPanel') || panel;
             const profile = document.getElementById('account-profile-section');
             const vip = document.getElementById('account-vip-section');
             const nav = document.querySelector('.sidebar-group[data-group="account"] .sidebar-submenu');
             const navProfile = nav?.querySelector('[data-hard-section="account-profile-section"]');
             const navVip = nav?.querySelector('[data-hard-section="account-vip-section"]');
-            if (panel && profile && vip && vip.nextElementSibling !== profile) {
-                panel.insertBefore(vip, profile);
+            if (
+                panelBody
+                && profile
+                && vip
+                && profile.parentElement === panelBody
+                && vip.parentElement === panelBody
+                && vip.nextElementSibling !== profile
+            ) {
+                panelBody.insertBefore(vip, profile);
             }
             if (nav && navProfile && navVip && navVip.nextElementSibling !== navProfile) {
                 nav.insertBefore(navVip, navProfile);
@@ -4990,6 +5313,12 @@ async function renameUserMaterialProject() {
             panel.querySelectorAll('.hard-section').forEach((node) => {
                 node.style.display = node.id === sectionId ? '' : 'none';
             });
+            if (panelId === 'panel-account' && sectionId === 'account-vip-section' && getToken()) {
+                loadLicenseCardTypes();
+            }
+            if (panelId === 'panel-account' && sectionId === 'account-contact-section') {
+                loadSiteSettings().catch(() => {});
+            }
         }
 
         function showWorkspacePanel(panelId, focusId = '', options = {}) {
@@ -5476,27 +5805,39 @@ function renderAssistantLogs(items = []) {
         box.innerHTML = '<div class="tool-result">登录后可以查看最近的助手记录。</div>';
         return;
     }
-    box.innerHTML = items.map((item) => {
-        const payload = item.payload || {};
-        const summary = payload.command || payload.summary || payload.response?.summary || '-';
-        const timeText = item.created_at ? new Date(item.created_at).toLocaleString() : '-';
-        return `
-            <article class="assistant-log-card">
-                <div class="assistant-log-head">
-                    <span class="assistant-preview-chip">${escapeHtml(formatAssistantStageLabel(item.stage || '-'))}</span>
-                    <span>${escapeHtml(timeText)}</span>
-                </div>
-                <p>${escapeHtml(summary)}</p>
-            </article>
-        `;
-    }).join('');
+    box.innerHTML = `
+        <div class="resource-table-shell assistant-log-table">
+            <div class="resource-table-head">
+                <span>状态</span>
+                <span>时间</span>
+                <span>内容</span>
+            </div>
+            ${items.map((item) => {
+                const payload = item.payload || {};
+                const summary = payload.command || payload.summary || payload.response?.summary || '-';
+                const timeText = item.created_at ? new Date(item.created_at).toLocaleString() : '-';
+                return `
+                    <article class="resource-table-row">
+                        <div class="resource-table-cell"><span class="resource-level-badge">${escapeHtml(formatAssistantStageLabel(item.stage || '-'))}</span></div>
+                        <div class="resource-table-cell"><span>${escapeHtml(timeText)}</span></div>
+                        <div class="resource-table-cell assistant-log-summary"><div><strong>${escapeHtml(summary)}</strong><span>${escapeHtml(describeAssistantClientAction(payload.response?.client_action || payload.client_action || {}))}</span></div></div>
+                    </article>
+                `;
+            }).join('')}
+        </div>
+    `;
 }
 
 function formatAssistantStageLabel(stage) {
     const mapping = {
         preview: '已预览',
         execute: '已执行',
-        error: '异常'
+        error: '异常',
+        materials_fill_folder: '放素材',
+        materials_layout: '创建目录',
+        create_material_layout: '创建目录',
+        material_layout_created: '目录已创建',
+        fill_text_template: '文字模板'
     };
     return mapping[stage] || stage || '记录';
 }
@@ -6201,6 +6542,9 @@ async function startMangaGenerate() {
         }
         setMangaStatus(data.message || '生成完成');
         await loadMangaHistory();
+        await discoverDrafts(getCurrentDraftShell(document.getElementById('panel-materials')), false, true).catch((discoverError) => {
+            console.warn('discoverDrafts after manga failed', discoverError);
+        });
     } catch (e) {
         setMangaStatus(e.name === 'AbortError' ? '已取消' : (e.message || '生成失败'));
     } finally {
@@ -6219,18 +6563,18 @@ function cancelMangaGenerate() {
 function renderMangaDraftResult(result = {}) {
     const box = document.getElementById('mangaDraftResult');
     if (!box) return;
-    if (!result || (!result.draft_path && !result.workspace && !result.scenes)) {
-        box.innerHTML = '生成成功后，这里会显示剪映草稿、场景目录和分镜摘要。';
-        return;
-    }
-    const workspace = result.workspace || {};
-    const scenes = Array.isArray(result.scenes) ? result.scenes : [];
-    box.innerHTML = [
-        `<div><strong>草稿名称：</strong>${escapeHtml(result.draft_name || '-')}</div>`,
-        `<div><strong>剪映草稿：</strong>${escapeHtml(result.draft_path || '-')}</div>`,
-        `<div><strong>场景目录：</strong>${escapeHtml(workspace.materials_root || '-')}</div>`,
-        `<div><strong>分镜说明：</strong>${escapeHtml(workspace.script_path || '-')}</div>`,
-        `<div><strong>场景数量：</strong>${escapeHtml(String(result.scene_count || scenes.length || 0))} / <strong>总时长：</strong>${escapeHtml(String(result.total_duration || 0))} 秒</div>`,
+            if (!result || (!result.draft_path && !result.workspace && !result.scenes)) {
+                box.innerHTML = '生成成功后，这里会显示剪映草稿、场景目录和分镜摘要。';
+                return;
+            }
+            const workspace = result.workspace || {};
+            const scenes = Array.isArray(result.scenes) ? result.scenes : [];
+            box.innerHTML = [
+        `<div class="manga-result-item"><strong>草稿名称</strong><span class="manga-result-value">${escapeHtml(result.draft_name || '-')}</span></div>`,
+        `<div class="manga-result-item"><strong>剪映草稿</strong><span class="manga-result-value">${escapeHtml(result.draft_path || '-')}</span></div>`,
+        `<div class="manga-result-item"><strong>场景目录</strong><span class="manga-result-value">${escapeHtml(workspace.materials_root || '-')}</span></div>`,
+        `<div class="manga-result-item"><strong>分镜说明</strong><span class="manga-result-value">${escapeHtml(workspace.script_path || '-')}</span></div>`,
+        `<div class="manga-result-item"><strong>场景数量 / 总时长</strong><span class="manga-result-value">${escapeHtml(String(result.scene_count || scenes.length || 0))} / ${escapeHtml(String(result.total_duration || 0))} 秒</span></div>`,
         scenes.length ? `<div class="manga-scene-preview">${scenes.slice(0, 6).map((item) => `<span>${escapeHtml(`${item.index}. ${item.text}`)}</span>`).join('')}</div>` : ''
     ].join('');
 }
@@ -6240,6 +6584,7 @@ function fillMangaFormFromParams(params = {}, autoRun = false) {
     if (document.getElementById('manga_script')) document.getElementById('manga_script').value = params.script || '';
     if (document.getElementById('manga_scene_duration') && params.scene_duration) document.getElementById('manga_scene_duration').value = params.scene_duration;
     if (document.getElementById('manga_aspect') && params.aspect) document.getElementById('manga_aspect').value = params.aspect;
+    if (!autoRun) setMangaStatus('已带入模板，可直接生成。');
     if (autoRun) startMangaGenerate();
 }
 

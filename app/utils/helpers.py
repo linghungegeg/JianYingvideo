@@ -181,6 +181,34 @@ def set_drafts_folder(path):
     set_config('drafts_folder', path)
 
 
+def pick_preferred_draft_root(fallback_path: str = "", *, prefer_configured: bool = True) -> str:
+    configured = str(get_drafts_folder() or "").strip()
+    configured_norm = os.path.normpath(configured) if configured else ""
+    if prefer_configured and configured_norm and os.path.isdir(configured_norm):
+        return configured_norm
+
+    recent_drafts = list_local_drafts(limit=60, force_refresh=True)
+    for item in recent_drafts:
+        candidate = os.path.normpath(str((item or {}).get("root") or "").strip())
+        if not candidate or candidate == configured_norm:
+            continue
+        if os.path.isdir(candidate):
+            return candidate
+
+    for item in discover_draft_roots(force_refresh=True):
+        candidate = os.path.normpath(str((item or {}).get("path") or "").strip())
+        if not candidate or candidate == configured_norm:
+            continue
+        if os.path.isdir(candidate):
+            return candidate
+
+    if configured_norm:
+        return configured_norm
+
+    fallback = str(fallback_path or "").strip()
+    return os.path.normpath(fallback) if fallback else ""
+
+
 def _existing_drive_roots() -> list[Path]:
     roots = []
     for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":

@@ -10,9 +10,15 @@ if PROJECT_ROOT not in sys.path:
 
 from app import create_app
 from app.extensions import db
-from app.models import User
+from app.models.resource_exchange_post import ResourceExchangePost
+from app.models.user import User
+from app.models.user_quota import UserQuota
+from app.models.user_token import UserToken
 import app.views.api as api_mod
 from app.services.user_quota_service import adjust_quota
+
+REMOTE_USER_ID = int(uuid.uuid4().int % 1000000) + 1000000
+REMOTE_USERNAME = f"remote_user_{uuid.uuid4().hex[:8]}"
 
 
 class DummyResponse:
@@ -33,34 +39,53 @@ def expect(condition, message):
         raise SystemExit(message)
 
 
+def cleanup_remote_user():
+    user = User.query.filter_by(id=REMOTE_USER_ID).first()
+    if not user:
+        return
+    UserToken.query.filter_by(user_id=REMOTE_USER_ID).delete(synchronize_session=False)
+    UserQuota.query.filter_by(user_id=REMOTE_USER_ID).delete(synchronize_session=False)
+    ResourceExchangePost.query.filter_by(user_id=REMOTE_USER_ID).delete(synchronize_session=False)
+    db.session.delete(user)
+    db.session.commit()
+
+
 def fake_remote(path, method="GET", headers=None, json_data=None, data=None, timeout=15):
     if path == "/api/user/info":
-        return DummyResponse({
-            "ok": True,
-            "user": {
-                "id": 7,
-                "username": "remote_user",
-                "email": "remote@test.local",
-                "role": "user",
-            },
-        })
+        return DummyResponse(
+            {
+                "ok": True,
+                "user": {
+                    "id": REMOTE_USER_ID,
+                    "username": REMOTE_USERNAME,
+                    "email": f"{REMOTE_USERNAME}@test.local",
+                    "role": "user",
+                },
+            }
+        )
     if path == "/api/site-settings":
-        return DummyResponse({
-            "ok": True,
-            "settings": {"official_site_url": "https://www.zysj.site"},
-        })
+        return DummyResponse(
+            {
+                "ok": True,
+                "settings": {"official_site_url": "https://www.zysj.site"},
+            }
+        )
     if path == "/api/desktop/task-claim":
-        return DummyResponse({
-            "ok": True,
-            "task_id": (json_data or {}).get("task_id"),
-            "quota_reserved": True,
-        })
+        return DummyResponse(
+            {
+                "ok": True,
+                "task_id": (json_data or {}).get("task_id"),
+                "quota_reserved": True,
+            }
+        )
     if path == "/api/desktop/task-complete":
-        return DummyResponse({
-            "ok": True,
-            "task_id": (json_data or {}).get("task_id"),
-            "success": bool((json_data or {}).get("success")),
-        })
+        return DummyResponse(
+            {
+                "ok": True,
+                "task_id": (json_data or {}).get("task_id"),
+                "success": bool((json_data or {}).get("success")),
+            }
+        )
     raise AssertionError(f"unexpected remote path: {path}")
 
 
@@ -70,40 +95,44 @@ def main():
 
     with patch.object(api_mod, "call_remote_api", side_effect=fake_remote):
         app = create_app()
-        with app.app_context():
-            db.create_all()
-            user = User.query.get(7)
-            if not user:
-                user = User(id=7, username="remote_user", password_hash="remote-check")
-                db.session.add(user)
-                db.session.commit()
-            adjust_quota(7, remaining=5)
-        client = app.test_client()
-        auth = {"Authorization": "Bearer remote-token"}
-        task_id = f"remote_auth_check_{uuid.uuid4().hex}"
+        try:
+            with app.app_context():
+                db.create_all()
+                user = User.query.get(REMOTE_USER_ID)
+                if not user:
+                    user = User(id=REMOTE_USER_ID, username=REMOTE_USERNAME, password_hash="remote-check")
+                    db.session.add(user)
+                    db.session.commit()
+                adjust_quota(REMOTE_USER_ID, remaining=5)
+            client = app.test_client()
+            auth = {"Authorization": "Bearer remote-token"}
+            task_id = f"remote_auth_check_{uuid.uuid4().hex}"
 
-        resp = client.get("/user")
-        expect(resp.status_code == 200, f"/user returned {resp.status_code}")
+            resp = client.get("/user")
+            expect(resp.status_code == 200, f"/user returned {resp.status_code}")
 
-        resp = client.get("/api/site-settings")
-        expect(resp.status_code == 200, f"/api/site-settings returned {resp.status_code}")
+            resp = client.get("/api/site-settings")
+            expect(resp.status_code == 200, f"/api/site-settings returned {resp.status_code}")
 
-        resp = client.get("/api/user/config", headers=auth)
-        expect(resp.status_code == 200, f"/api/user/config returned {resp.status_code}")
+            resp = client.get("/api/user/config", headers=auth)
+            expect(resp.status_code == 200, f"/api/user/config returned {resp.status_code}")
 
-        resp = client.post(
-            "/api/desktop/task-claim",
-            headers=auth,
-            json={"task_id": task_id, "action_key": "generate_batch", "quota_amount": 1},
-        )
-        expect(resp.status_code == 200, f"/api/desktop/task-claim returned {resp.status_code}")
+            resp = client.post(
+                "/api/desktop/task-claim",
+                headers=auth,
+                json={"task_id": task_id, "action_key": "generate_batch", "quota_amount": 1},
+            )
+            expect(resp.status_code == 200, f"/api/desktop/task-claim returned {resp.status_code}")
 
-        resp = client.post(
-            "/api/desktop/task-complete",
-            headers=auth,
-            json={"task_id": task_id, "success": True},
-        )
-        expect(resp.status_code == 200, f"/api/desktop/task-complete returned {resp.status_code}")
+            resp = client.post(
+                "/api/desktop/task-complete",
+                headers=auth,
+                json={"task_id": task_id, "success": True},
+            )
+            expect(resp.status_code == 200, f"/api/desktop/task-complete returned {resp.status_code}")
+        finally:
+            with app.app_context():
+                cleanup_remote_user()
 
     print("remote-auth-mode simulated checks passed")
 

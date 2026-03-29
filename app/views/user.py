@@ -1,4 +1,5 @@
 from functools import wraps
+from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, make_response, redirect, render_template, session
 
@@ -27,7 +28,13 @@ def login_required(func):
 
 @user_bp.route("/")
 def dashboard():
-    return redirect("/user")
+    response = make_response(
+        render_template("user/landing.html", site_settings=get_site_settings())
+    )
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @user_bp.route("/user")
@@ -42,6 +49,13 @@ def user_home():
 @user_bp.route("/download")
 def download_redirect():
     url = (get_site_settings().get("download_url") or "").strip()
+    if url:
+        if url.startswith("//"):
+            url = f"https:{url}"
+        else:
+            parsed = urlparse(url)
+            if not parsed.scheme and not url.startswith("/"):
+                url = f"https://{url.lstrip('/')}"
     return redirect(url or "/user")
 
 

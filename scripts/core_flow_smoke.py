@@ -39,10 +39,22 @@ def ensure_user():
 def ensure_drafts_folder():
     os.makedirs(LOCAL_DRAFTS_DIR, exist_ok=True)
     item = Config.query.filter_by(key="drafts_folder").first()
+    original_value = item.value if item else ""
     if not item:
         item = Config(key="drafts_folder", value=LOCAL_DRAFTS_DIR)
     else:
         item.value = LOCAL_DRAFTS_DIR
+    db.session.add(item)
+    db.session.commit()
+    return original_value
+
+
+def restore_drafts_folder(original_value):
+    item = Config.query.filter_by(key="drafts_folder").first()
+    if not item:
+        item = Config(key="drafts_folder", value=original_value or "")
+    else:
+        item.value = original_value or ""
     db.session.add(item)
     db.session.commit()
 
@@ -67,44 +79,47 @@ def main():
     with app.app_context():
         user = ensure_user()
         user_id = user.id
-        ensure_drafts_folder()
-        template, template_path = pick_template()
-        if not template_path:
-            raise SystemExit(
-                "No valid template_path found in template_models. "
-                "Set VF_SMOKE_TEMPLATE_PATH to a real draft path and rerun."
+        original_drafts_folder = ensure_drafts_folder()
+        try:
+            template, template_path = pick_template()
+            if not template_path:
+                raise SystemExit(
+                    "No valid template_path found in template_models. "
+                    "Set VF_SMOKE_TEMPLATE_PATH to a real draft path and rerun."
+                )
+            template_id = template.id if template else "override"
+
+            quota_before = get_or_create_quota(user_id)
+            if quota_before.remaining < 1:
+                quota_before = adjust_quota(user_id, remaining=1)
+            before_remaining = quota_before.remaining
+            before_total = quota_before.total_generated
+
+            client = app.test_client()
+            login_resp = client.post(
+                "/api/auth/login",
+                json={"account": USERNAME, "password": PASSWORD, "accepted_agreements": True},
             )
-        template_id = template.id if template else "override"
+            if login_resp.status_code != 200:
+                raise SystemExit(f"Login failed: {login_resp.status_code} {login_resp.get_data(as_text=True)}")
 
-        quota_before = get_or_create_quota(user_id)
-        if quota_before.remaining < 1:
-            quota_before = adjust_quota(user_id, remaining=1)
-        before_remaining = quota_before.remaining
-        before_total = quota_before.total_generated
-
-        client = app.test_client()
-        login_resp = client.post(
-            "/api/auth/login",
-            json={"account": USERNAME, "password": PASSWORD, "accepted_agreements": True},
-        )
-        if login_resp.status_code != 200:
-            raise SystemExit(f"Login failed: {login_resp.status_code} {login_resp.get_data(as_text=True)}")
-
-        token = login_resp.get_json()["token"]
-        headers = {"Authorization": f"Bearer {token}"}
-        payload = {
-            "draft_path": template_path,
-            "materials_root": None,
-            "texts_input": [],
-            "batch_count": 1,
-            "replace_materials": False,
-            "replace_texts": False,
-            "export_enabled": False,
-        }
-        enqueue_resp = client.post("/api/generate-batch", json=payload, headers=headers)
-        if enqueue_resp.status_code != 200:
-            raise SystemExit(f"Enqueue failed: {enqueue_resp.status_code} {enqueue_resp.get_data(as_text=True)}")
-        job_id = enqueue_resp.get_json()["job_id"]
+            token = login_resp.get_json()["token"]
+            headers = {"Authorization": f"Bearer {token}"}
+            payload = {
+                "draft_path": template_path,
+                "materials_root": None,
+                "texts_input": [],
+                "batch_count": 1,
+                "replace_materials": False,
+                "replace_texts": False,
+                "export_enabled": False,
+            }
+            enqueue_resp = client.post("/api/generate-batch", json=payload, headers=headers)
+            if enqueue_resp.status_code != 200:
+                raise SystemExit(f"Enqueue failed: {enqueue_resp.status_code} {enqueue_resp.get_data(as_text=True)}")
+            job_id = enqueue_resp.get_json()["job_id"]
+        finally:
+            restore_drafts_folder(original_drafts_folder)
 
     import time
     final_payload = None

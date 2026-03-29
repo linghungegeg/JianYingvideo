@@ -250,7 +250,7 @@ def resolve_icon_path(icon_path: str, logo_path: str, output_root: Path) -> str:
         return ""
 
     if source_path.suffix.lower() == ".ico":
-        return str(source_path)
+        return str(source_path.resolve())
 
     if source_path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp"}:
         return ""
@@ -265,7 +265,7 @@ def resolve_icon_path(icon_path: str, logo_path: str, output_root: Path) -> str:
     else:
         image = image.copy()
     image.save(target_path, format="ICO", sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
-    return str(target_path)
+    return str(target_path.resolve())
 
 
 def build_pyinstaller(

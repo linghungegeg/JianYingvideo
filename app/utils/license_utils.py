@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 import os
 import secrets
 import string
@@ -40,13 +41,19 @@ def sign_payload(payload: Dict[str, Any]) -> str:
 
 def get_license_settings() -> Dict[str, int]:
     offline_hours = int(get_config("license_offline_hours", "24") or 24)
-    transfer_cooldown = int(get_config("license_transfer_cooldown_hours", "24") or 24)
+    transfer_cooldown_minutes = get_config("license_transfer_cooldown_minutes", "")
+    if str(transfer_cooldown_minutes or "").strip():
+        transfer_cooldown = int(transfer_cooldown_minutes or 0)
+    else:
+        legacy_hours = int(get_config("license_transfer_cooldown_hours", "24") or 24)
+        transfer_cooldown = max(0, legacy_hours * 60)
     code_length = int(get_config("license_code_length", "20") or 20)
     points_ratio = int(get_config("license_points_ratio", "100") or 100)
     daily_checkin_reward = int(get_config("daily_checkin_reward", "1") or 1)
     return {
         "offline_hours": offline_hours,
-        "transfer_cooldown_hours": transfer_cooldown,
+        "transfer_cooldown_minutes": transfer_cooldown,
+        "transfer_cooldown_hours": int(math.ceil(transfer_cooldown / 60.0)) if transfer_cooldown > 0 else 0,
         "code_length": code_length,
         "points_ratio": points_ratio,
         "daily_checkin_reward": daily_checkin_reward,

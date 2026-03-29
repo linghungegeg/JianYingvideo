@@ -1,5 +1,8 @@
+import atexit
 import json
+import os
 import time
+import uuid
 from pathlib import Path
 import sys
 
@@ -13,19 +16,26 @@ from werkzeug.security import generate_password_hash
 
 from app import create_app
 from app.extensions import db
+from app.models.resource_exchange_post import ResourceExchangePost
 from app.models.user import User
+from app.models.user_quota import UserQuota
+from app.models.user_token import UserToken
 from app.services.user_quota_service import adjust_quota, get_or_create_quota
 from app.views.api import _ensure_user_ref_code
 
 
 BASE_URL = "http://127.0.0.1:5000"
 EDGE_CDP = "http://127.0.0.1:9222"
-REGULAR_USER = "codex_reg_user"
+_RUN_SUFFIX = uuid.uuid4().hex[:8]
+REGULAR_USER = os.getenv("VF_E2E_USER", f"codex_reg_user_{_RUN_SUFFIX}")
 REGULAR_PASS = "Codex123!"
-ADMIN_USER = "codex_reg_admin"
+ADMIN_USER = os.getenv("VF_E2E_ADMIN", f"codex_reg_admin_{_RUN_SUFFIX}")
 ADMIN_PASS = "Codex123!"
 MATERIALS_DIR = r"E:\JianYingApi\VideoFactory\user_data\stage5_mix_materials"
 MANGA_IMAGE = r"E:\JianYingApi\VideoFactory\user_data\dev_drafts\task_024c7651\cover.png"
+_CLEANUP_BASE_USERS = not os.getenv("VF_E2E_USER") and not os.getenv("VF_E2E_ADMIN")
+_GENERATED_USER_CLEANUP = ""
+_RESOURCE_POST_CLEANUP = ""
 
 
 def ensure_browser_regression_accounts():
@@ -53,6 +63,40 @@ def ensure_browser_regression_accounts():
         db.session.add(admin)
         db.session.commit()
         _ensure_user_ref_code(admin, commit=True)
+
+
+def cleanup_browser_regression_accounts(extra_usernames=None, resource_post_name=""):
+    usernames = {REGULAR_USER, ADMIN_USER}
+    for item in extra_usernames or []:
+        if item:
+            usernames.add(item)
+    users = User.query.filter(User.username.in_(list(usernames))).all()
+    user_ids = [user.id for user in users]
+    if user_ids:
+        UserToken.query.filter(UserToken.user_id.in_(user_ids)).delete(synchronize_session=False)
+        UserQuota.query.filter(UserQuota.user_id.in_(user_ids)).delete(synchronize_session=False)
+        ResourceExchangePost.query.filter(ResourceExchangePost.user_id.in_(user_ids)).delete(synchronize_session=False)
+    if resource_post_name:
+        ResourceExchangePost.query.filter_by(project_name=resource_post_name).delete(synchronize_session=False)
+    if user_ids:
+        User.query.filter(User.id.in_(user_ids)).delete(synchronize_session=False)
+    if user_ids or resource_post_name:
+        db.session.commit()
+
+
+def _cleanup_registered_browser_data():
+    app = create_app()
+    with app.app_context():
+        cleanup_usernames = [_GENERATED_USER_CLEANUP] if _GENERATED_USER_CLEANUP else []
+        if _CLEANUP_BASE_USERS:
+            cleanup_usernames.extend([REGULAR_USER, ADMIN_USER])
+        cleanup_browser_regression_accounts(
+            extra_usernames=cleanup_usernames,
+            resource_post_name=_RESOURCE_POST_CLEANUP,
+        )
+
+
+atexit.register(_cleanup_registered_browser_data)
 
 
 class Reporter:
@@ -221,7 +265,9 @@ def preview_assistant(page, command, expected_snippets):
 
 
 def register_user(page, reporter):
+    global _GENERATED_USER_CLEANUP
     reporter.generated_user = f"e2e_{int(time.time())}"
+    _GENERATED_USER_CLEANUP = reporter.generated_user
     page.goto(f"{BASE_URL}/user", wait_until="domcontentloaded")
     page.wait_for_load_state("networkidle")
     page.locator('.auth-tab[data-tab="register"]').click()
@@ -994,6 +1040,7 @@ def test_account_tutorial(page, reporter):
 
 
 def test_resource_exchange(page, reporter):
+    global _RESOURCE_POST_CLEANUP
     try:
         open_group(page, "资源互换")
         open_link(page, "资源大厅")
@@ -1009,6 +1056,7 @@ def test_resource_exchange(page, reporter):
         open_link(page, "互换发布")
         project_name = f"互换{int(time.time())}"[:15]
         reporter.resource_post_name = project_name
+        _RESOURCE_POST_CLEANUP = project_name
         page.locator("#resourceProjectName").fill(project_name)
         page.locator("#resourceProjectIntro").fill("剪映项目资源互换")
         page.locator("#resourceContact").fill(f"vx_{int(time.time())}")

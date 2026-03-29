@@ -207,6 +207,65 @@ def _candidate_root_meta_paths() -> list[str]:
     return deduped
 
 
+def _candidate_jianying_frame_thumbnail_dirs() -> list[str]:
+    home = Path.home()
+    local_app_data = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
+    candidates = [
+        local_app_data / "JianyingPro" / "User Data" / "Cache" / "frameThumbnail",
+    ]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        norm = os.path.normpath(str(item))
+        lowered = norm.lower()
+        if not norm or lowered in seen:
+            continue
+        seen.add(lowered)
+        deduped.append(norm)
+    return deduped
+
+
+def _clear_directory_children(path_value: str) -> dict:
+    path_text = os.path.normpath(str(path_value or "").strip())
+    result = {
+        "path": path_text,
+        "exists": os.path.isdir(path_text),
+        "deleted": 0,
+        "failed": [],
+    }
+    if not result["exists"]:
+        return result
+    try:
+        children = os.listdir(path_text)
+    except Exception as exc:
+        result["failed"].append({"target": path_text, "error": str(exc)})
+        return result
+
+    for child_name in children:
+        child_path = os.path.join(path_text, child_name)
+        try:
+            if os.path.isdir(child_path) and not os.path.islink(child_path):
+                shutil.rmtree(child_path)
+            else:
+                os.remove(child_path)
+            result["deleted"] += 1
+        except Exception as exc:
+            result["failed"].append({"target": child_path, "error": str(exc)})
+    return result
+
+
+def _clear_jianying_frame_thumbnail_cache() -> dict:
+    reports = [_clear_directory_children(path) for path in _candidate_jianying_frame_thumbnail_dirs()]
+    deleted_entries = sum(int(item.get("deleted") or 0) for item in reports)
+    failed_entries = sum(len(item.get("failed") or []) for item in reports)
+    return {
+        "ok": failed_entries == 0,
+        "deleted_entries": deleted_entries,
+        "failed_entries": failed_entries,
+        "paths": reports,
+    }
+
+
 def _norm_abs(path_value: str) -> str:
     return os.path.normcase(os.path.normpath(os.path.abspath(str(path_value or "").strip())))
 
@@ -1729,6 +1788,38 @@ def _write_visual_cover_image(source_path: str, target_path: str, timestamp_us: 
     return result.returncode == 0 and os.path.isfile(target) and os.path.getsize(target) > 0
 
 
+def _iter_draft_cover_targets(cloned_draft_path: str) -> list[str]:
+    targets = [
+        os.path.join(cloned_draft_path, "draft_cover.jpg"),
+        os.path.join(cloned_draft_path, "cover.jpg"),
+    ]
+    timelines_root = os.path.join(cloned_draft_path, "Timelines")
+    if os.path.isdir(timelines_root):
+        for timeline_name in os.listdir(timelines_root):
+            timeline_dir = os.path.join(timelines_root, timeline_name)
+            if os.path.isdir(timeline_dir):
+                targets.append(os.path.join(timeline_dir, "draft_cover.jpg"))
+    return _merge_unique_paths(targets)
+
+
+def _sync_cover_targets(primary_path: str, cloned_draft_path: str) -> int:
+    if not primary_path or not os.path.isfile(primary_path):
+        return 0
+    synced = 0
+    primary_norm = os.path.normcase(os.path.normpath(primary_path))
+    for target_path in _iter_draft_cover_targets(cloned_draft_path):
+        target_norm = os.path.normcase(os.path.normpath(target_path))
+        if target_norm == primary_norm:
+            continue
+        try:
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            shutil.copy2(primary_path, target_path)
+            synced += 1
+        except Exception:
+            continue
+    return synced
+
+
 def _build_nested_cover_relative_path(current_payload: dict) -> str:
     existing = str(current_payload.get("static_cover_image_path") or "").strip().replace("\\", "/")
     if existing and not os.path.isabs(existing):
@@ -1832,10 +1923,12 @@ def _refresh_draft_cover_from_visuals(payload: dict, cloned_draft_path: str) -> 
             with Image.open(src) as img:
                 rgb = img.convert("RGB")
                 rgb.save(target_path, format="JPEG", quality=90)
+            _sync_cover_targets(target_path, cloned_draft_path)
             return True
         except Exception:
             try:
                 shutil.copy2(src, target_path)
+                _sync_cover_targets(target_path, cloned_draft_path)
                 return True
             except Exception:
                 continue
@@ -1863,6 +1956,7 @@ def _refresh_draft_cover_from_visuals(payload: dict, cloned_draft_path: str) -> 
             **_quiet_subprocess_kwargs(),
         )
         if result.returncode == 0 and os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
+            _sync_cover_targets(target_path, cloned_draft_path)
             return True
     return False
 
@@ -1935,5 +2029,6 @@ def replace_official_draft(
     else:
         summary["diagnostics"]["write_mode"] = "info_path_with_main_timeline_mirror_plus_draft_content_plus_plain_targets"
     summary["written_paths"] = list(written_paths)
+    summary["diagnostics"]["frame_thumbnail_cache_cleared"] = _clear_jianying_frame_thumbnail_cache()
 
     return summary

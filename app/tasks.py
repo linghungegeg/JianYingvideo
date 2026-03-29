@@ -29,7 +29,7 @@ from app.services.jianying.local_draft_service import (
     resolve_active_draft_payload as _service_resolve_active_draft_payload,
 )
 from app.services.jianying.official_draft_replace_service import replace_official_draft
-from app.utils.helpers import get_drafts_folder
+from app.utils.helpers import get_drafts_folder, pick_preferred_draft_root
 from app.utils.ffmpeg_utils import find_ffmpeg
 from app.utils.remote_service import call_remote_api
 
@@ -315,16 +315,17 @@ def _resolve_generated_drafts_root(template_path, export_path=None):
     if explicit:
         return explicit
 
-    configured = str(get_drafts_folder() or "").strip()
-    if configured:
-        return configured
-
     normalized_template_path = normalize_draft_project_path(template_path)
-    if not normalized_template_path:
-        return ""
+    if normalized_template_path:
+        parent = os.path.dirname(normalized_template_path.rstrip("\\/"))
+        fallback_root = parent or normalized_template_path
+    else:
+        fallback_root = ""
 
-    parent = os.path.dirname(normalized_template_path.rstrip("\\/"))
-    return parent or normalized_template_path
+    preferred = pick_preferred_draft_root(fallback_root)
+    if preferred:
+        return preferred
+    return fallback_root
 
 def _pick_from_list(files, mode, seed_index):
     if not files:

@@ -15,6 +15,7 @@ from .manga_generation_log import MangaGenerationLog
 from .resource_exchange_post import ResourceExchangePost
 from .user_quota_log import UserQuotaLog
 from .config import Config
+from .official_announcement import OfficialAnnouncement
 
 __all__ = [
     'User',
@@ -34,4 +35,5 @@ __all__ = [
     'ResourceExchangePost',
     'UserQuotaLog',
     'Config',
+    'OfficialAnnouncement',
 ]

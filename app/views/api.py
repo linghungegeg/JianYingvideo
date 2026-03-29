@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import uuid
 import threading
@@ -29,6 +29,7 @@ from app.utils.helpers import (
     get_site_settings,
     get_material_folder,
     get_drafts_folder,
+    pick_preferred_draft_root,
     discover_draft_roots,
     list_local_drafts,
     load_user_config,
@@ -60,6 +61,7 @@ from app.models.manga_generation_log import MangaGenerationLog
 from app.models.resource_exchange_post import ResourceExchangePost
 from app.models.user_quota_log import UserQuotaLog
 from app.models.user_quota import UserQuota
+from app.models.official_announcement import OfficialAnnouncement
 from app.utils.auth_token import extract_bearer_token, issue_token, validate_token
 from app.services.user_quota_service import get_or_create_quota, quota_to_dict, deduct_quota
 from app.utils.license_utils import generate_cdk_code, sign_payload, get_license_settings
@@ -192,6 +194,7 @@ _REMOTE_PROXY_EXACTS = {
     "/api/user/info",
     "/api/user/points/overview",
     "/api/user/checkin",
+    "/api/announcements",
 }
 _LOCAL_ONLY_PREFIXES = (
     "/api/runtime/",
@@ -231,7 +234,18 @@ def _desktop_dialog_unavailable_response():
     ), 400
 
 
-def _run_desktop_window_dialog(dialog_kind: str) -> Optional[str]:
+def _webview_file_types(material_type: str = "all") -> tuple[str, ...]:
+    material_type = str(material_type or "").strip().lower()
+    if material_type == "image":
+        return ("所有文件 (*.*)",)
+    if material_type == "video":
+        return ("视频文件 (*.mp4;*.mov;*.avi;*.mkv;*.flv;*.wmv;*.m4v)", "所有文件 (*.*)")
+    if material_type == "audio":
+        return ("音频文件 (*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac)", "所有文件 (*.*)")
+    return ("所有文件 (*.*)",)
+
+
+def _run_desktop_window_dialog(dialog_kind: str, *, allow_multiple: bool = False, material_type: str = "all"):
     window = get_active_window()
     if window is None:
         return None
@@ -240,15 +254,22 @@ def _run_desktop_window_dialog(dialog_kind: str) -> Optional[str]:
         import webview
 
         dialog_type = webview.FileDialog.FOLDER if dialog_kind == "folder" else webview.FileDialog.OPEN
-        result = window.create_file_dialog(dialog_type=dialog_type)
+        result = window.create_file_dialog(
+            dialog_type=dialog_type,
+            allow_multiple=allow_multiple,
+            file_types=_webview_file_types(material_type) if dialog_kind == "file" else (),
+        )
     except Exception:
         logging.exception("desktop window dialog failed: %s", dialog_kind)
         return None
 
     if not result:
-        return ""
+        return [] if allow_multiple else ""
     if isinstance(result, (list, tuple)):
-        return str(result[0] or "").strip()
+        values = [str(item).strip() for item in result if str(item).strip()]
+        if allow_multiple:
+            return values
+        return values[0] if values else ""
     return str(result or "").strip()
 
 
@@ -295,6 +316,7 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             errors="ignore",
             check=False,
             timeout=120,
+            **_quiet_subprocess_kwargs(),
         )
     except Exception:
         logging.exception("windows dialog failed: %s", dialog_kind)
@@ -308,41 +330,165 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 def _select_local_directory():
     if get_active_window() is not None:
         return _run_desktop_window_dialog("folder")
-    selected = _run_windows_dialog("folder")
-    if selected is not None:
-        return selected
     try:
         import tkinter as tk
         from tkinter import filedialog
     except Exception:
-        return None
+        tk = None
+        filedialog = None
 
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        return filedialog.askdirectory()
-    finally:
-        root.destroy()
+    if tk and filedialog:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            return filedialog.askdirectory()
+        finally:
+            root.destroy()
+
+    selected = _run_windows_dialog("folder")
+    if selected is not None:
+        return selected
+    return None
 
 
 def _select_local_file():
     if get_active_window() is not None:
         return _run_desktop_window_dialog("file")
-    selected = _run_windows_dialog("file")
-    if selected is not None:
-        return selected
     try:
         import tkinter as tk
         from tkinter import filedialog
     except Exception:
-        return None
+        tk = None
+        filedialog = None
 
-    root = tk.Tk()
-    root.withdraw()
+    if tk and filedialog:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            return filedialog.askopenfilename()
+        finally:
+            root.destroy()
+
+    selected = _run_windows_dialog("file")
+    if selected is not None:
+        return selected
+    return None
+
+
+def _windows_file_dialog_filter(material_type: str) -> str:
+    material_type = str(material_type or "").strip().lower()
+    if material_type == "image":
+        return "所有文件|*.*"
+    if material_type == "video":
+        return "视频文件|*.mp4;*.mov;*.avi;*.mkv;*.flv;*.wmv;*.m4v|所有文件|*.*"
+    if material_type == "audio":
+        return "音频文件|*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac|所有文件|*.*"
+    return "所有文件|*.*"
+
+
+def _select_local_files(material_type: str = "all") -> Optional[list[str]]:
+    if get_active_window() is not None:
+        selected = _run_desktop_window_dialog("file", allow_multiple=True, material_type=material_type)
+        if selected is not None:
+            if isinstance(selected, (list, tuple)):
+                return [str(item).strip() for item in selected if str(item).strip()]
+            return [str(selected).strip()] if str(selected).strip() else []
+
     try:
-        return filedialog.askopenfilename()
-    finally:
-        root.destroy()
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception:
+        tk = None
+        filedialog = None
+
+    filetypes = [("所有文件", "*.*")]
+    material_type = str(material_type or "").strip().lower()
+    if material_type == "image":
+        filetypes = [("所有文件", "*.*")]
+    elif material_type == "video":
+        filetypes = [("视频文件", "*.mp4 *.mov *.avi *.mkv *.flv *.wmv *.m4v"), ("所有文件", "*.*")]
+    elif material_type == "audio":
+        filetypes = [("音频文件", "*.mp3 *.wav *.m4a *.aac *.ogg *.flac"), ("所有文件", "*.*")]
+
+    if tk and filedialog:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            result = filedialog.askopenfilenames(filetypes=filetypes)
+            if isinstance(result, str):
+                result = root.tk.splitlist(result)
+            return [str(item).strip() for item in (result or []) if str(item).strip()]
+        finally:
+            root.destroy()
+
+    if platform.system().lower() == "windows":
+        filter_spec = _windows_file_dialog_filter(material_type).replace("'", "''")
+        script = f"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Multiselect = $true
+$dialog.Filter = '{filter_spec}'
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
+    $dialog.FileNames | ForEach-Object {{ Write-Output $_ }}
+}}
+""".strip()
+        try:
+            completed = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-STA",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                check=False,
+                timeout=120,
+                **_quiet_subprocess_kwargs(),
+            )
+            if completed.returncode == 0:
+                return [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+        except Exception:
+            logging.exception("windows multi-file dialog failed")
+    return None
+
+
+def _is_supported_image_file(path: str) -> bool:
+    if not path or not os.path.isfile(path):
+        return False
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _IMAGE_EXTS:
+        return True
+    try:
+        from PIL import Image, UnidentifiedImageError
+
+        with Image.open(path) as img:
+            img.verify()
+        return True
+    except (UnidentifiedImageError, OSError, ValueError):
+        return False
+    except Exception:
+        return False
+
+
+def _matches_material_type(source_path: str, material_type: str) -> bool:
+    normalized = str(material_type or "all").strip().lower()
+    if normalized in {"", "all"}:
+        return True
+    ext = os.path.splitext(source_path)[1].lower()
+    if normalized == "image":
+        return _is_supported_image_file(source_path)
+    if normalized == "video":
+        return ext in _VIDEO_EXTS
+    if normalized == "audio":
+        return ext in _AUDIO_EXTS
+    return True
 
 
 def _raw_runtime_flags():
@@ -426,6 +572,11 @@ def _clamp_int(value, default: int = 0, minimum: int = 0, maximum: Optional[int]
     return number
 
 
+def _format_wait_minutes(remaining_seconds: float) -> str:
+    minutes = max(1, math.ceil(max(0.0, float(remaining_seconds or 0.0)) / 60.0))
+    return f"请等待 {minutes} 分钟"
+
+
 def _get_default_user_quota_value() -> int:
     raw = get_config("default_user_quota", str(current_app.config.get("DEFAULT_USER_QUOTA", 0)))
     return _clamp_int(raw or current_app.config.get("DEFAULT_USER_QUOTA", 0) or 0, 0, 0, None)
@@ -460,6 +611,22 @@ def _require_local_runtime_same_origin():
     if referer and not referer.startswith(f"{request_origin}/"):
         return jsonify({'ok': False, 'error': 'cross-origin local runtime request blocked'}), 403
     return None
+
+
+def _quiet_subprocess_kwargs() -> dict:
+    kwargs = {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    use_show_window = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    show_window_hidden = getattr(subprocess, "SW_HIDE", 0)
+    if startupinfo_cls and use_show_window:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= use_show_window
+        startupinfo.wShowWindow = show_window_hidden
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
 
 
 def _normalize_http_service_url(value: str, *, allow_localhost: bool = True) -> str:
@@ -703,9 +870,16 @@ def _remote_online_status(force_refresh: bool = False) -> dict:
             "server_time": _now().isoformat(),
         }
     else:
-        probe_url = f"{official_origin.rstrip('/')}/api/runtime-features"
+        probe_reason = ""
+        probe_error = ""
+        status = None
         try:
-            response = requests.get(probe_url, timeout=3)
+            response = call_remote_api(
+                "/api/runtime-features",
+                method="GET",
+                headers=dict(request.headers),
+                timeout=8,
+            )
             data = response.json() if response.headers.get("content-type", "").lower().find("application/json") >= 0 else {}
             ok = bool(response.ok and isinstance(data, dict) and data.get("ok"))
             status = {
@@ -717,15 +891,55 @@ def _remote_online_status(force_refresh: bool = False) -> dict:
             }
             if isinstance(data, dict):
                 status["remote_server_time"] = data.get("server_time")
+            probe_reason = str(status.get("reason") or "")
+            if not ok:
+                probe_error = str(data.get("error") or data.get("message") or "").strip() if isinstance(data, dict) else ""
         except Exception as exc:
+            probe_reason = "remote_probe_error"
+            probe_error = str(exc)
+
+        if not status or not status.get("ok"):
+            token = extract_bearer_token(request)
+            if token:
+                try:
+                    auth_response = call_remote_api(
+                        "/api/user/info",
+                        method="GET",
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=8,
+                    )
+                    auth_data = auth_response.json() if auth_response.headers.get("content-type", "").lower().find("application/json") >= 0 else {}
+                    auth_ok = bool(auth_response.ok and isinstance(auth_data, dict) and auth_data.get("ok"))
+                    if auth_ok:
+                        status = {
+                            "enabled": True,
+                            "ok": True,
+                            "reason": "remote_auth_probe_ok",
+                            "official_origin": official_origin,
+                            "server_time": _now().isoformat(),
+                        }
+                except Exception as auth_exc:
+                    if not probe_error:
+                        probe_error = str(auth_exc)
+
+        if not status:
             status = {
                 "enabled": True,
                 "ok": False,
-                "reason": "remote_probe_error",
+                "reason": probe_reason or "remote_probe_error",
                 "official_origin": official_origin,
                 "server_time": _now().isoformat(),
-                "error": str(exc),
             }
+            if probe_error:
+                status["error"] = probe_error
+
+        if not status.get("ok"):
+            logging.warning(
+                "remote online probe failed: reason=%s official_origin=%s error=%s",
+                str(status.get("reason") or probe_reason or ""),
+                official_origin,
+                probe_error[:200] if probe_error else "",
+            )
 
     _remote_online_guard_cache["checked_at"] = now_ts
     _remote_online_guard_cache["status"] = dict(status)
@@ -1126,8 +1340,6 @@ def _ensure_manga_placeholder_video(user_id: int, width: int, height: int, durat
     if os.path.exists(output_path):
         return output_path
 
-    import subprocess
-
     cmd = [
         ffmpeg,
         "-y",
@@ -1142,7 +1354,13 @@ def _ensure_manga_placeholder_video(user_id: int, width: int, height: int, durat
         output_path,
     ]
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **_quiet_subprocess_kwargs(),
+        )
     except Exception as exc:
         raise ValueError(f"生成 AI 漫剧占位片段失败: {exc}") from exc
     return output_path
@@ -1239,7 +1457,10 @@ def _read_assistant_logs(user_id: int, limit: int = 20) -> list[dict]:
 
 
 def _safe_folder_name(name: str, fallback: str) -> str:
-    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", str(name or "").strip()).strip(" .")
+    raw = str(name or "")
+    raw = re.sub(r"[\r\n\t]+", " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", raw).strip(" .")
     return cleaned or fallback
 
 def _generate_ref_code() -> str:
@@ -1290,6 +1511,15 @@ def _build_user_profile_payload(user: User, quota: Optional[UserQuota] = None) -
         "invite": invite_overview,
         **quota_payload,
     }
+
+
+def _quota_has_unlimited_access(quota: Optional[UserQuota]) -> bool:
+    if quota is None:
+        return False
+    try:
+        return bool(quota_to_dict(quota).get("is_vip"))
+    except Exception:
+        return False
 
 
 def _build_user_invite_overview(user: Union[User, int, None]) -> dict:
@@ -1440,7 +1670,11 @@ def _build_material_layout(base_root: str, draft_name: str, strategy: str, slots
             folder_name = _safe_folder_name(f"{index:02d}_{label}", f"{index:02d}")
         folder_path = os.path.join(target_root, folder_name)
         os.makedirs(folder_path, exist_ok=True)
-        created.append({"label": label, "path": folder_path})
+        try:
+            file_count = len([name for name in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, name))])
+        except Exception:
+            file_count = 0
+        created.append({"label": label, "path": folder_path, "file_count": file_count})
 
     return {
         "root": target_root,
@@ -1599,16 +1833,17 @@ def _resolve_draft_output_root(draft_path: str, output_dir: str | None = None) -
     if explicit:
         return explicit
 
-    configured = str(get_drafts_folder() or "").strip()
-    if configured:
-        return configured
-
     normalized_draft_path = _normalize_draft_project_path(draft_path)
-    if not normalized_draft_path:
-        return ""
+    if normalized_draft_path:
+        parent = os.path.dirname(normalized_draft_path.rstrip("\\/"))
+        fallback_root = parent or normalized_draft_path
+    else:
+        fallback_root = ""
 
-    parent = os.path.dirname(normalized_draft_path.rstrip("\\/"))
-    return parent or normalized_draft_path
+    preferred = pick_preferred_draft_root(fallback_root)
+    if preferred:
+        return preferred
+    return fallback_root
 
 
 def _resolve_draft_media_source_path(draft_path: str, raw_path: str) -> str:
@@ -2381,6 +2616,7 @@ def _filter_replaceable_template_materials(
 def _extract_template_info(template_path):
     template_path = _normalize_draft_project_path(template_path)
     materials = []
+    material_items = []
     texts = []
     data, err = _load_draft_content(template_path)
     if err or not isinstance(data, dict):
@@ -2393,7 +2629,7 @@ def _extract_template_info(template_path):
                 len(meta_materials),
                 meta_materials[:10]
             )
-            return meta_materials, texts, None
+            return meta_materials, [{'label': item, 'type': ''} for item in meta_materials], texts, None
         scan_materials = _scan_material_files(template_path)
         if scan_materials:
             draft_logger.info(
@@ -2401,11 +2637,12 @@ def _extract_template_info(template_path):
                 len(scan_materials),
                 scan_materials[:10]
             )
-            return scan_materials, texts, None
-        return materials, texts, err
+            return scan_materials, [{'label': item, 'type': ''} for item in scan_materials], texts, None
+        return materials, material_items, texts, err
 
     data = _resolve_active_draft_payload(data)
     mats = data.get('materials', {})
+    type_map = {'videos': 'video', 'images': 'image', 'audios': 'audio'}
     for media_type in ('videos', 'images', 'audios'):
         for item in mats.get(media_type, []) or []:
             if not isinstance(item, dict):
@@ -2430,6 +2667,10 @@ def _extract_template_info(template_path):
                     name = os.path.basename(name)
             if name and name not in materials:
                 materials.append(name)
+                material_items.append({
+                    'label': name,
+                    'type': type_map.get(media_type, ''),
+                })
 
     for item in mats.get('texts', []) or []:
         if not isinstance(item, dict):
@@ -2455,7 +2696,7 @@ def _extract_template_info(template_path):
         len(texts),
         sample
     )
-    return materials, texts, None
+    return materials, material_items, texts, None
 
 
 def _list_media_files_for_strategy(root_path, replace_type='both'):
@@ -2937,6 +3178,10 @@ def browse_folder_thread():
 def browse_file_thread():
     return _select_local_file()
 
+
+def browse_files_thread(material_type: str = "all"):
+    return _select_local_files(material_type)
+
 @api_bp.route('/browse-folder', methods=['POST'])
 def browse_folder():
     folder = browse_folder_thread()
@@ -2964,6 +3209,16 @@ def browse_file():
     if file_path is None:
         return _desktop_dialog_unavailable_response()
     return jsonify({'ok': True, 'file': file_path or ''})
+
+
+@api_bp.route('/browse-files', methods=['POST'])
+def browse_files():
+    data = request.get_json(silent=True) or {}
+    material_type = (data.get('material_type') or 'all').strip().lower()
+    file_paths = browse_files_thread(material_type)
+    if file_paths is None:
+        return _desktop_dialog_unavailable_response()
+    return jsonify({'ok': True, 'files': file_paths})
 
 @api_bp.route('/net-assets/start', methods=['POST'])
 def net_assets_start():
@@ -3043,7 +3298,7 @@ def draft_inspect_api():
     if not draft_path:
         return jsonify({'ok': False, 'error': '缺少草稿路径'}), 400
     draft_logger.info("draft_inspect: request path=%s", draft_path)
-    materials, texts, err1 = _extract_template_info(draft_path)
+    materials, material_items, texts, err1 = _extract_template_info(draft_path)
     tracks, seg_map, err2 = _extract_template_tracks(draft_path)
     if err1 or err2:
         if materials or texts:
@@ -3054,6 +3309,7 @@ def draft_inspect_api():
     return jsonify({
         'ok': True,
         'materials': materials,
+        'material_items': material_items,
         'texts': texts,
         'tracks': tracks,
         'segment_counts': seg_map
@@ -3503,6 +3759,36 @@ def site_settings():
         settings = get_site_settings()
         return jsonify({'ok': True, 'success': True, 'settings': settings, **settings})
     return jsonify(get_site_settings())
+
+
+def _announcement_to_payload(item: OfficialAnnouncement) -> dict:
+    return {
+        'id': item.id,
+        'title': item.title or '',
+        'content': item.content or '',
+        'is_published': bool(item.is_published),
+        'published_at': item.published_at.isoformat() if item.published_at else None,
+        'created_at': item.created_at.isoformat() if item.created_at else None,
+        'updated_at': item.updated_at.isoformat() if item.updated_at else None,
+    }
+
+
+@api_bp.route('/announcements', methods=['GET'])
+def public_announcements():
+    items = (
+        OfficialAnnouncement.query
+        .filter_by(is_published=True)
+        .order_by(
+            func.coalesce(OfficialAnnouncement.published_at, OfficialAnnouncement.created_at).desc(),
+            OfficialAnnouncement.id.desc(),
+        )
+        .limit(20)
+        .all()
+    )
+    return jsonify({
+        'ok': True,
+        'items': [_announcement_to_payload(item) for item in items],
+    })
 
 
 @api_bp.route('/runtime/online-status', methods=['GET'])
@@ -4028,7 +4314,6 @@ def _bind_device_to_code(
     auto_commit: bool = True,
 ):
     settings = get_license_settings()
-    cooldown_hours = settings["transfer_cooldown_hours"]
     now = _now()
     active_bindings = LicenseBinding.query.filter_by(code_id=cdk.id, active=True).all()
 
@@ -4053,19 +4338,7 @@ def _bind_device_to_code(
             return True, None
 
     if len(active_bindings) >= (cdk.device_limit or 1):
-        if (cdk.transfer_times_left or 0) <= 0:
-            return False, "设备数量已达上限"
-        if cdk.last_transfer_at:
-            elapsed = (now - cdk.last_transfer_at).total_seconds() / 3600
-            if elapsed < cooldown_hours:
-                return False, f"请等待 {int(cooldown_hours - elapsed)} 小时"
-        oldest = sorted(active_bindings, key=lambda x: x.bound_at or x.last_seen_at)[0]
-        oldest.active = False
-        oldest.unbound_at = now
-        db.session.add(oldest)
-        cdk.transfer_times_left = max(0, (cdk.transfer_times_left or 0) - 1)
-        cdk.last_transfer_at = now
-        db.session.add(cdk)
+        return False, "设备数量已满，请先解绑旧设备"
 
     binding = LicenseBinding(
         code_id=cdk.id,
@@ -4281,9 +4554,23 @@ def license_deactivate():
     if not binding:
         audit_security_event("license_deactivate_unbound_device", level="warning", request_obj=request, user_id=user.id, details={"code": code})
         return jsonify({'ok': False, 'error': '设备未绑定'}), 400
+    settings = get_license_settings()
+    cooldown_minutes = int(settings.get("transfer_cooldown_minutes", 0) or 0)
+    if (cdk.transfer_times or 0) > 0 and (cdk.transfer_times_left or 0) <= 0:
+        return jsonify({'ok': False, 'error': '转移次数已用完'}), 400
+    if cooldown_minutes > 0 and cdk.last_transfer_at:
+        elapsed_seconds = (_now() - cdk.last_transfer_at).total_seconds()
+        remaining_seconds = cooldown_minutes * 60 - elapsed_seconds
+        if remaining_seconds > 0:
+            return jsonify({'ok': False, 'error': _format_wait_minutes(remaining_seconds)}), 400
     binding.active = False
-    binding.unbound_at = _now()
+    now = _now()
+    binding.unbound_at = now
     db.session.add(binding)
+    if (cdk.transfer_times or 0) > 0:
+        cdk.transfer_times_left = max(0, (cdk.transfer_times_left or 0) - 1)
+    cdk.last_transfer_at = now
+    db.session.add(cdk)
     db.session.commit()
     audit_security_event("license_deactivate_success", request_obj=request, user_id=user.id, details={"code": code})
     return jsonify({'ok': True})
@@ -4382,6 +4669,84 @@ def admin_quota_summary():
     })
 
 
+@api_bp.route('/admin/announcements', methods=['GET', 'POST'])
+def admin_announcements():
+    user, err = get_auth_user(require_admin=True)
+    if err:
+        return err
+    _ = user
+
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        announcement_id = data.get('id')
+        title = str(data.get('title') or '').strip()
+        content = str(data.get('content') or '').strip()
+        is_published = bool(data.get('is_published', True))
+        if not title:
+            return jsonify({'ok': False, 'error': '公告标题不能为空'}), 400
+        if not content:
+            return jsonify({'ok': False, 'error': '公告内容不能为空'}), 400
+
+        item = None
+        if announcement_id not in (None, '', 0, '0'):
+            item = OfficialAnnouncement.query.get(int(announcement_id))
+            if not item:
+                return jsonify({'ok': False, 'error': '公告不存在'}), 404
+        if not item:
+            item = OfficialAnnouncement()
+            db.session.add(item)
+
+        item.title = title
+        item.content = content
+        item.is_published = is_published
+        now = _now()
+        if is_published and not item.published_at:
+            item.published_at = now
+        elif is_published and data.get('touch_publish_time'):
+            item.published_at = now
+        elif not is_published:
+            item.published_at = None
+        db.session.add(item)
+        db.session.commit()
+
+        items = (
+            OfficialAnnouncement.query
+            .order_by(func.coalesce(OfficialAnnouncement.published_at, OfficialAnnouncement.created_at).desc(), OfficialAnnouncement.id.desc())
+            .limit(50)
+            .all()
+        )
+        return jsonify({
+            'ok': True,
+            'item': _announcement_to_payload(item),
+            'items': [_announcement_to_payload(row) for row in items],
+        })
+
+    items = (
+        OfficialAnnouncement.query
+        .order_by(func.coalesce(OfficialAnnouncement.published_at, OfficialAnnouncement.created_at).desc(), OfficialAnnouncement.id.desc())
+        .limit(50)
+        .all()
+    )
+    return jsonify({
+        'ok': True,
+        'items': [_announcement_to_payload(item) for item in items],
+    })
+
+
+@api_bp.route('/admin/announcements/<int:announcement_id>', methods=['DELETE'])
+def admin_announcement_delete(announcement_id: int):
+    user, err = get_auth_user(require_admin=True)
+    if err:
+        return err
+    _ = user
+    item = OfficialAnnouncement.query.get(announcement_id)
+    if not item:
+        return jsonify({'ok': False, 'error': '公告不存在'}), 404
+    db.session.delete(item)
+    db.session.commit()
+    return jsonify({'ok': True, 'id': announcement_id})
+
+
 @api_bp.route('/admin/license-settings', methods=['GET', 'POST'])
 def admin_license_settings():
     user, err = get_auth_user(require_admin=True)
@@ -4389,9 +4754,12 @@ def admin_license_settings():
         return err
     if request.method == 'POST':
         data = request.get_json() or {}
+        legacy_cooldown_hours = data.get("license_transfer_cooldown_hours")
+        if "license_transfer_cooldown_minutes" not in data and legacy_cooldown_hours is not None:
+            data["license_transfer_cooldown_minutes"] = _clamp_int(legacy_cooldown_hours, 0, 0, None) * 60
         for key in (
             "license_offline_hours",
-            "license_transfer_cooldown_hours",
+            "license_transfer_cooldown_minutes",
             "license_code_length",
             "license_points_ratio",
             "manga_generate_cost",
@@ -4406,6 +4774,9 @@ def admin_license_settings():
                     raw_value = _clamp_int(raw_value, _get_default_user_quota_value(), 0, None)
                 elif key in ("invite_referrer_reward", "invite_invitee_reward"):
                     raw_value = _clamp_int(raw_value, 0, 0, _MAX_INVITE_REWARD_PERCENT)
+                elif key == "license_transfer_cooldown_minutes":
+                    raw_value = _clamp_int(raw_value, 0, 0, None)
+                    set_config("license_transfer_cooldown_hours", str(int(raw_value // 60) if raw_value else 0))
                 set_config(key, str(raw_value))
     settings = get_license_settings()
     settings['manga_generate_cost'] = int(get_config('manga_generate_cost', '1') or 1)
@@ -4417,6 +4788,23 @@ def admin_license_settings():
 
 @api_bp.route('/license/card-types', methods=['GET'])
 def license_card_types():
+    if remote_auth_mode_enabled() and bool(_get_official_site_origin()):
+        try:
+            response = call_remote_api("/api/license/card-types", method="GET", headers=dict(request.headers), timeout=15)
+            try:
+                data = response.json()
+            except Exception:
+                data = None
+            if response.ok and isinstance(data, dict) and data.get("ok") is True:
+                return jsonify(data), int(response.status_code or 200)
+            logging.warning(
+                "license card types remote fallback to local: status=%s body=%s",
+                int(response.status_code or 0),
+                (response.text or "")[:200],
+            )
+        except Exception as exc:
+            logging.warning("license card types remote fetch failed, fallback to local: %s", exc)
+
     rows = (
         db.session.query(
             CdkCode.card_type,
@@ -4430,17 +4818,35 @@ def license_card_types():
         .order_by(func.max(CdkCode.duration_days).asc(), CdkCode.card_type.asc())
         .all()
     )
-    items = [
-        {
-            'card_type': row.card_type or '',
-            'duration_days': int(row.duration_days or 0),
-            'device_limit': int(row.device_limit or 1),
-            'transfer_times': int(row.transfer_times or 0),
-            'bonus_points': int(row.bonus_points or 0),
+    items_map = {}
+    for template in CdkTemplate.query.order_by(CdkTemplate.updated_at.desc(), CdkTemplate.id.desc()).all():
+        card_type = (template.name or '').strip()
+        if not card_type:
+            continue
+        items_map[card_type] = {
+            'card_type': card_type,
+            'duration_days': int(template.duration_days or 0),
+            'device_limit': int(template.device_limit or 1),
+            'transfer_times': int(template.transfer_times or 0),
+            'bonus_points': int(template.bonus_points or 0),
         }
-        for row in rows
-        if (row.card_type or '').strip()
-    ]
+    for row in rows:
+        card_type = (row.card_type or '').strip()
+        if not card_type:
+            continue
+        current = items_map.get(card_type) or {
+            'card_type': card_type,
+            'duration_days': 0,
+            'device_limit': 1,
+            'transfer_times': 0,
+            'bonus_points': 0,
+        }
+        current['duration_days'] = max(int(current.get('duration_days') or 0), int(row.duration_days or 0))
+        current['device_limit'] = max(int(current.get('device_limit') or 1), int(row.device_limit or 1))
+        current['transfer_times'] = max(int(current.get('transfer_times') or 0), int(row.transfer_times or 0))
+        current['bonus_points'] = max(int(current.get('bonus_points') or 0), int(row.bonus_points or 0))
+        items_map[card_type] = current
+    items = sorted(items_map.values(), key=lambda item: (int(item.get('duration_days') or 0), str(item.get('card_type') or '')))
     return jsonify({'ok': True, 'items': items})
 
 
@@ -5317,6 +5723,58 @@ def materials_create_layout():
     return jsonify({'ok': True, 'layout': layout})
 
 
+@api_bp.route('/materials/fill-folder', methods=['POST'])
+def materials_fill_folder():
+    user, err = get_auth_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    target_folder = os.path.abspath((data.get('target_folder') or '').strip())
+    file_paths = [str(item).strip() for item in (data.get('file_paths') or []) if str(item).strip()]
+    material_type = (data.get('material_type') or 'all').strip().lower()
+
+    if not target_folder:
+        return jsonify({'ok': False, 'error': '缺少目标目录'}), 400
+    if not os.path.isdir(target_folder):
+        return jsonify({'ok': False, 'error': '目标目录不存在'}), 400
+    if not file_paths:
+        return jsonify({'ok': False, 'error': '请先选择素材文件'}), 400
+
+    copied = 0
+    copied_files = []
+    for raw_path in file_paths:
+        source_path = os.path.abspath(raw_path)
+        if not os.path.isfile(source_path):
+            continue
+        if not _matches_material_type(source_path, material_type):
+            continue
+        target_path = os.path.join(target_folder, os.path.basename(source_path))
+        shutil.copy2(source_path, target_path)
+        copied += 1
+        copied_files.append(target_path)
+
+    if copied <= 0:
+        return jsonify({'ok': False, 'error': '没有可复制的素材，请检查素材类型是否匹配'}), 400
+
+    try:
+        file_count = len([name for name in os.listdir(target_folder) if os.path.isfile(os.path.join(target_folder, name))])
+    except Exception:
+        file_count = copied
+
+    _append_assistant_log(user.id, 'materials_fill_folder', {
+        'target_folder': target_folder,
+        'material_type': material_type,
+        'copied': copied,
+        'file_paths': copied_files[:30],
+    })
+    return jsonify({
+        'ok': True,
+        'target_folder': target_folder,
+        'copied': copied,
+        'file_count': file_count,
+    })
+
+
 @api_bp.route('/assistant/logs', methods=['GET'])
 def assistant_logs():
     user, err = get_auth_user()
@@ -5514,7 +5972,7 @@ def _run_export_drafts(user):
             return remote_claim_error
     else:
         quota = get_or_create_quota(user.id)
-        if (quota.remaining or 0) < 1:
+        if not _quota_has_unlimited_access(quota) and (quota.remaining or 0) < 1:
             return jsonify({'ok': False, 'error': 'quota exhausted', **quota_to_dict(quota)}), 403
 
     data = request.get_json(silent=True) or {}
@@ -5611,7 +6069,7 @@ def _run_export_drafts(user):
             )
 
     quota_payload = {}
-    if success_count > 0 and quota is not None:
+    if success_count > 0 and quota is not None and not _quota_has_unlimited_access(quota):
         quota.remaining = max(0, int(quota.remaining or 0) - 1)
         db.session.add(quota)
         db.session.add(UserQuotaLog(
@@ -6525,7 +6983,8 @@ def _build_manga_draft_result(user: User, data: dict) -> dict:
     if not scenes:
         raise ValueError("请先填写脚本，至少准备 1 个场景。")
 
-    output_dir = (payload.get("output_dir") or "").strip() or (get_drafts_folder() or "").strip()
+    explicit_output_dir = (payload.get("output_dir") or "").strip()
+    output_dir = explicit_output_dir or pick_preferred_draft_root()
     if not output_dir:
         output_dir = os.path.join(get_user_data_dir(user.id), "manga_exports")
     os.makedirs(output_dir, exist_ok=True)
@@ -6599,8 +7058,9 @@ def _build_manga_draft_result(user: User, data: dict) -> dict:
         raise ValueError(export_resp.message or "导出 AI 漫剧草稿失败")
 
     export_data = export_resp.data or {}
-    draft_path = str(export_data.get("output") or "").strip()
+    draft_root = str(export_data.get("output") or output_dir).strip()
     exported_name = str(export_data.get("draft_name") or draft_name).strip() or draft_name
+    draft_path = os.path.join(draft_root, exported_name) if draft_root else exported_name
     return {
         "project_id": project_id,
         "project_name": project_name,
@@ -6680,7 +7140,7 @@ def ai_manga_generate_draft():
             return remote_claim_error
     else:
         quota = get_or_create_quota(user.id)
-        if quota.remaining < cost:
+        if not _quota_has_unlimited_access(quota) and quota.remaining < cost:
             return jsonify({'ok': False, 'error': '额度不足，无法继续生成 AI 漫剧草稿。', **quota_to_dict(quota)}), 403
 
     data = request.get_json(silent=True) or {}
@@ -6714,7 +7174,7 @@ def ai_manga_generate_draft():
         )
         db.session.add(log)
 
-        if quota is not None:
+        if quota is not None and not _quota_has_unlimited_access(quota):
             quota.remaining = max(0, (quota.remaining or 0) - cost)
             quota.total_generated = (quota.total_generated or 0) + cost
             db.session.add(quota)
@@ -6792,7 +7252,7 @@ def ai_manga_generate():
             return remote_claim_error
     else:
         quota = get_or_create_quota(user.id)
-        if quota.remaining < cost:
+        if not _quota_has_unlimited_access(quota) and quota.remaining < cost:
             return jsonify({'ok': False, 'error': '额度不足，无法生成', **quota_to_dict(quota)}), 403
 
     client = OpenClawClient(base_url, token)
@@ -6943,7 +7403,7 @@ def ai_manga_generate():
         )
         db.session.add(log)
 
-        if quota is not None:
+        if quota is not None and not _quota_has_unlimited_access(quota):
             quota.remaining = max(0, (quota.remaining or 0) - cost)
             quota.total_generated = (quota.total_generated or 0) + cost
             db.session.add(quota)
