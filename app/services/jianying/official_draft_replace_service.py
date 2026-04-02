@@ -24,6 +24,7 @@ _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
 _AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 _GG_ASSISTANT_SOFTWARE_KEY = "gg-jy-assistant"
 _OFFICIAL_READER_RUNTIME_DIRNAME = "official_reader"
+OFFICIAL_DRAFT_FIX_REVISION = "official-draft-fix-20260403-regression-guard"
 
 
 def _quiet_subprocess_kwargs() -> dict:
@@ -756,10 +757,13 @@ def _map_template_draft_absolute_to_materials(path_value: str) -> str:
     rel_parts = parts[1:]
     if not rel_parts:
         return raw
-    if rel_parts[0].lower() == "materials":
+    head = rel_parts[0].lower()
+    if head == "materials":
         return "/".join(rel_parts)
-    if rel_parts[0].lower() in {"video", "image", "audio", "retouch_cover"}:
-        return "materials/" + "/".join(rel_parts)
+    # Official template caches are more stable when these direct roots keep
+    # JianYing's original layout instead of being forced back under materials/*.
+    if head in {"video", "image", "audio", "retouch_cover", "beat"}:
+        return "/".join(rel_parts)
     return raw
 
 
@@ -812,8 +816,23 @@ def _rebase_source_internal_paths(payload: dict, source_root: str, cloned_draft_
         if rebased != value:
             obj[key] = rebased
             changed += 1
-            if os.path.isabs(str(value or "").strip()) and str(rebased or "").strip().replace("\\", "/").startswith("materials/"):
-                asset_copy_pairs.append((str(value or "").strip(), str(rebased or "").strip().replace("\\", "/")))
+            rebased_rel = str(rebased or "").strip().replace("\\", "/")
+            if os.path.isabs(str(value or "").strip()) and rebased_rel and not os.path.isabs(rebased_rel):
+                asset_copy_pairs.append((str(value or "").strip(), rebased_rel))
+
+    def rebase_nested_path_fields(node) -> None:
+        if isinstance(node, dict):
+            for key, value in list(node.items()):
+                if isinstance(value, (dict, list)):
+                    rebase_nested_path_fields(value)
+                    continue
+                if not isinstance(value, str):
+                    continue
+                if key == "path" or key in {"file_path", "material_path", "beats_path", "audio_file_path"} or key.endswith("_path"):
+                    rebase_field(node, key)
+        elif isinstance(node, list):
+            for item in node:
+                rebase_nested_path_fields(item)
 
     for current_payload in _iter_draft_payloads(payload):
         if not isinstance(current_payload, dict):
@@ -849,8 +868,9 @@ def _rebase_source_internal_paths(payload: dict, source_root: str, cloned_draft_
                         if rebased != value:
                             item[key] = rebased
                             changed += 1
-                            if os.path.isabs(str(value or "").strip()) and str(rebased or "").strip().replace("\\", "/").startswith("materials/"):
-                                asset_copy_pairs.append((str(value or "").strip(), str(rebased or "").strip().replace("\\", "/")))
+                            rebased_rel = str(rebased or "").strip().replace("\\", "/")
+                            if os.path.isabs(str(value or "").strip()) and rebased_rel and not os.path.isabs(rebased_rel):
+                                asset_copy_pairs.append((str(value or "").strip(), rebased_rel))
 
         for draft_item in materials.get("drafts") or []:
             if not isinstance(draft_item, dict):
@@ -863,8 +883,11 @@ def _rebase_source_internal_paths(payload: dict, source_root: str, cloned_draft_
                     if rebased != value:
                         draft_item[key] = rebased
                         changed += 1
-                        if os.path.isabs(str(value or "").strip()) and str(rebased or "").strip().replace("\\", "/").startswith("materials/"):
-                            asset_copy_pairs.append((str(value or "").strip(), str(rebased or "").strip().replace("\\", "/")))
+                        rebased_rel = str(rebased or "").strip().replace("\\", "/")
+                        if os.path.isabs(str(value or "").strip()) and rebased_rel and not os.path.isabs(rebased_rel):
+                            asset_copy_pairs.append((str(value or "").strip(), rebased_rel))
+
+        rebase_nested_path_fields(current_payload)
 
     # Ensure rebased materials/* paths are physically present in cloned draft.
     dedup: set[tuple[str, str]] = set()
@@ -886,11 +909,32 @@ def _rebase_source_internal_paths(payload: dict, source_root: str, cloned_draft_
     return changed
 
 
-def _hydrate_missing_materials_from_payload_roots(payload: dict, cloned_draft_path: str) -> int:
+def _candidate_jianying_cache_music_roots() -> list[str]:
+    roots: list[str] = []
+    local_appdata = str(os.environ.get("LOCALAPPDATA") or "").strip()
+    if local_appdata:
+        roots.append(os.path.join(local_appdata, "JianyingPro", "User Data", "Cache", "music"))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in roots:
+        norm = _normalize_abs_path(item)
+        if not norm or norm in seen or not os.path.isdir(item):
+            continue
+        seen.add(norm)
+        deduped.append(item)
+    return deduped
+
+
+def _hydrate_missing_materials_from_payload_roots(payload: dict, cloned_draft_path: str, source_root: str = "") -> int:
     copied = 0
     seen_pairs: set[tuple[str, str]] = set()
+    source_root_text = str(source_root or "").strip()
+    source_root_dirs: list[str] = []
+    if source_root_text and os.path.isdir(source_root_text):
+        source_root_dirs.append(source_root_text)
+    cache_music_roots = _candidate_jianying_cache_music_roots()
 
-    def try_copy_from_payload_root(payload_root: str, rel_path: str, item: dict | None = None, media_type: str = "") -> None:
+    def try_copy_from_payload_root(payload_root: str, rel_path: str) -> None:
         nonlocal copied
         if not payload_root or not rel_path:
             return
@@ -902,20 +946,21 @@ def _hydrate_missing_materials_from_payload_roots(payload: dict, cloned_draft_pa
         tail = rel_norm
         if tail.lower().startswith("materials/"):
             tail = tail.split("/", 1)[1] if "/" in tail else ""
-        basename = os.path.basename(rel_norm)
-        candidates = [
-            os.path.join(payload_root, rel_norm.replace("/", os.sep)),
-            os.path.join(payload_root, tail.replace("/", os.sep)) if tail else "",
-        ]
-        if media_type == "videos" and basename and "_water_mark" in basename.lower():
-            candidates.append(os.path.join(payload_root, "video", "cover", basename))
-        if media_type == "audios" and isinstance(item, dict):
-            for key in ("effect_id", "music_id", "local_material_id", "resource_id"):
-                value = str(item.get(key) or "").strip()
-                if not value:
-                    continue
-                ext = os.path.splitext(basename)[1] or ".mp3"
-                candidates.append(os.path.join(payload_root, "audio", f"{value}{ext}"))
+
+        candidates = []
+        for base_root in [payload_root, *source_root_dirs]:
+            if not base_root:
+                continue
+            candidates.append(os.path.join(base_root, rel_norm.replace("/", os.sep)))
+            if tail:
+                candidates.append(os.path.join(base_root, tail.replace("/", os.sep)))
+
+        lower_rel = rel_norm.lower()
+        if lower_rel.startswith("materials/audio/"):
+            file_name = os.path.basename(rel_norm)
+            for cache_root in cache_music_roots:
+                candidates.append(os.path.join(cache_root, file_name))
+
         for src_abs in candidates:
             if not src_abs or not os.path.isfile(src_abs):
                 continue
@@ -931,23 +976,46 @@ def _hydrate_missing_materials_from_payload_roots(payload: dict, cloned_draft_pa
                 pass
             return
 
+    def _iter_relative_path_values(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, (dict, list)):
+                    yield from _iter_relative_path_values(value)
+                    continue
+                if not isinstance(value, str):
+                    continue
+                text = value.strip()
+                if not text or os.path.isabs(text) or "://" in text:
+                    continue
+                if key == "path" or key in {"file_path", "material_path", "beats_path", "audio_file_path"} or key.endswith("_path"):
+                    yield text
+        elif isinstance(node, list):
+            for item in node:
+                yield from _iter_relative_path_values(item)
+
     for current_payload in _iter_draft_payloads(payload):
         if not isinstance(current_payload, dict):
             continue
         payload_root = str(current_payload.get("path") or "").strip()
-        if not (payload_root and os.path.isabs(payload_root) and os.path.isdir(payload_root)):
+        candidate_roots = []
+        if payload_root and os.path.isabs(payload_root) and os.path.isdir(payload_root):
+            candidate_roots.append(payload_root)
+        candidate_roots.extend(source_root_dirs)
+        if not candidate_roots:
             continue
 
         static_cover = str(current_payload.get("static_cover_image_path") or "").strip()
         if static_cover and not os.path.isabs(static_cover):
-            try_copy_from_payload_root(payload_root, static_cover)
+            for root_candidate in candidate_roots:
+                try_copy_from_payload_root(root_candidate, static_cover)
 
         retouch_cover = current_payload.get("retouch_cover")
         if isinstance(retouch_cover, dict):
             for key in ("retouch_path", "image_path"):
                 value = str(retouch_cover.get(key) or "").strip()
                 if value and not os.path.isabs(value):
-                    try_copy_from_payload_root(payload_root, value)
+                    for root_candidate in candidate_roots:
+                        try_copy_from_payload_root(root_candidate, value)
 
         materials = current_payload.get("materials")
         if not isinstance(materials, dict):
@@ -959,7 +1027,14 @@ def _hydrate_missing_materials_from_payload_roots(payload: dict, cloned_draft_pa
                 for key in ("path", "file_path", "material_path"):
                     value = str(item.get(key) or "").strip()
                     if value and not os.path.isabs(value):
-                        try_copy_from_payload_root(payload_root, value, item=item, media_type=media_type)
+                        for root_candidate in candidate_roots:
+                            try_copy_from_payload_root(root_candidate, value)
+        for item in materials.get("beats") or []:
+            if not isinstance(item, dict):
+                continue
+            for value in _iter_relative_path_values(item):
+                for root_candidate in candidate_roots:
+                    try_copy_from_payload_root(root_candidate, value)
     return copied
 
 
@@ -1888,6 +1963,37 @@ def _sync_cover_targets(primary_path: str, cloned_draft_path: str) -> int:
     return synced
 
 
+def _ensure_placeholder_cover_aliases(cloned_draft_path: str) -> dict:
+    video_cover_root = os.path.join(cloned_draft_path, "video", "cover")
+    materials_video_root = os.path.join(cloned_draft_path, "materials", "video")
+    report = {
+        "copied": 0,
+        "aliases": [],
+    }
+    if not os.path.isdir(video_cover_root):
+        return report
+
+    for root, _, files in os.walk(video_cover_root):
+        for filename in files:
+            if "_water_mark" not in filename.lower():
+                continue
+            source_path = os.path.join(root, filename)
+            target_path = os.path.join(materials_video_root, filename)
+            if os.path.exists(target_path):
+                continue
+            try:
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                shutil.copy2(source_path, target_path)
+                report["copied"] += 1
+                report["aliases"].append({
+                    "source": source_path,
+                    "target": target_path,
+                })
+            except Exception:
+                continue
+    return report
+
+
 def _build_nested_cover_relative_path(current_payload: dict) -> str:
     existing = str(current_payload.get("static_cover_image_path") or "").strip().replace("\\", "/")
     if existing and not os.path.isabs(existing):
@@ -2036,6 +2142,7 @@ def replace_official_draft(
     material_replacements=None,
     output_root: Optional[str] = None,
 ):
+    fix_revision = OFFICIAL_DRAFT_FIX_REVISION
     material_replacements = _normalize_material_replacement_map(material_replacements)
     source_info_path, source_info_diag = _resolve_source_info_path_from_root_meta(template_path)
     normalized_template_path = normalize_draft_project_path(template_path) or template_path
@@ -2064,6 +2171,7 @@ def replace_official_draft(
         "warnings": [],
         "diagnostics": diagnostics or {},
     }
+    summary["diagnostics"]["fix_revision"] = fix_revision
     summary["diagnostics"]["source_info_path"] = source_info_path
     summary["diagnostics"]["source_primary_path"] = source_primary_path
     summary["diagnostics"]["source_read_path"] = source_read_path
@@ -2084,6 +2192,7 @@ def replace_official_draft(
     summary["diagnostics"]["hydrated_payload_materials"] = _hydrate_missing_materials_from_payload_roots(
         working_payload,
         cloned_draft_path,
+        source_draft_root,
     )
     summary["diagnostics"]["sanitized_missing_cover_paths"] = _sanitize_missing_cover_paths(
         working_payload,
@@ -2094,6 +2203,7 @@ def replace_official_draft(
         cloned_draft_path,
     )
     summary["diagnostics"]["cover_refreshed"] = _refresh_draft_cover_from_visuals(working_payload, cloned_draft_path)
+    summary["diagnostics"]["placeholder_cover_aliases"] = _ensure_placeholder_cover_aliases(cloned_draft_path)
 
     if not summary["text_replaced"] and texts_input:
         summary["warnings"].append("no text material matched")

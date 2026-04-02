@@ -1,10 +1,13 @@
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from shutil import which
 from urllib.parse import urlparse
@@ -206,7 +209,9 @@ def stage_runtime_files(
     env_values: dict,
     logo_path: str,
     installer_script: Path,
+    app_name: str,
     exe_name: str,
+    build_metadata: dict,
 ) -> None:
     for dir_name in RUNTIME_DIR_NAMES:
         (dist_root / dir_name).mkdir(parents=True, exist_ok=True)
@@ -224,18 +229,80 @@ def stage_runtime_files(
             shutil.copy2(source, branding_dir / source.name)
 
     manifest = {
-        "app_name": dist_root.name,
+        "app_name": app_name,
         "exe_name": f"{exe_name}.exe",
         "official_site_url": env_values.get("VF_OFFICIAL_SITE_URL", "https://www.zysj.site"),
         "start_path": env_values.get("VF_START_PATH", "/user"),
         "preset": str(preset_path),
         "runtime_dirs": RUNTIME_DIR_NAMES,
         "installer_script": str(installer_script),
+        "build": build_metadata,
     }
     (dist_root / "installer_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def safe_git_output(args: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8",
+        )
+    except Exception:
+        return ""
+    return result.stdout.strip()
+
+
+def compute_file_sha256(path: Path) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def extract_official_draft_fix_revision(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+    patterns = [
+        r'OFFICIAL_DRAFT_FIX_REVISION\s*=\s*"([^"]+)"',
+        r"OFFICIAL_DRAFT_FIX_REVISION\s*=\s*'([^']+)'",
+        r'fix_revision"\s*:\s*"([^"]+)"',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return str(match.group(1) or "").strip()
+    return ""
+
+
+def build_release_metadata(preset_path: Path, installer_script: Path) -> dict:
+    official_service = ROOT_DIR / "app" / "services" / "jianying" / "official_draft_replace_service.py"
+    git_status = safe_git_output(["status", "--short"])
+    return {
+        "built_at_utc": datetime.now(timezone.utc).isoformat(),
+        "git_commit": safe_git_output(["rev-parse", "HEAD"]),
+        "git_commit_short": safe_git_output(["rev-parse", "--short", "HEAD"]),
+        "git_branch": safe_git_output(["rev-parse", "--abbrev-ref", "HEAD"]),
+        "git_dirty": bool(git_status),
+        "preset_name": preset_path.name,
+        "installer_script_name": installer_script.name,
+        "official_draft_service_path": str(official_service),
+        "official_draft_service_sha256": compute_file_sha256(official_service),
+        "official_draft_fix_revision": extract_official_draft_fix_revision(official_service),
+    }
 
 
 def resolve_icon_path(icon_path: str, logo_path: str, output_root: Path) -> str:
@@ -335,6 +402,12 @@ def main() -> None:
     parser.add_argument("--obfuscate", action="store_true", help="build from a PyArmor-obfuscated workspace")
     parser.add_argument("--skip-precheck", action="store_true", help="skip scripts/prepackage_check.py")
     parser.add_argument("--skip-build", action="store_true", help="skip PyInstaller build and only stage installer assets")
+    parser.add_argument(
+        "--official-draft-template",
+        action="append",
+        default=[],
+        help="absolute path to an official draft template to include in prepackage regression; may be repeated",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print resolved config and exit")
     args = parser.parse_args()
 
@@ -382,7 +455,10 @@ def main() -> None:
             raise SystemExit(f"构建已拦截：当前 preset 仍含占位值。{joined}")
 
     if not args.skip_precheck:
-        run_command([sys.executable, str(ROOT_DIR / "scripts" / "prepackage_check.py")], env=env, cwd=ROOT_DIR)
+        precheck_command = [sys.executable, str(ROOT_DIR / "scripts" / "prepackage_check.py")]
+        for template_path in args.official_draft_template:
+            precheck_command.extend(["--official-draft-template", template_path])
+        run_command(precheck_command, env=env, cwd=ROOT_DIR)
 
     if not args.skip_build:
         ensure_clean_dir(dist_parent)
@@ -417,13 +493,16 @@ def main() -> None:
         app_name=args.name,
         exe_name=args.exe_name,
     )
+    build_metadata = build_release_metadata(preset_path, installer_script)
     stage_runtime_files(
         dist_root=dist_root,
         preset_path=preset_path,
         env_values=env_values,
         logo_path=args.logo,
         installer_script=installer_script,
+        app_name=args.name,
         exe_name=args.exe_name,
+        build_metadata=build_metadata,
     )
 
     print("")

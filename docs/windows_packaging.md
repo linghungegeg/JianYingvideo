@@ -29,6 +29,14 @@ Ship VideoFactory as an installer-first Windows desktop package:
 venv\Scripts\python.exe scripts\prepackage_check.py
 ```
 
+If the release touches official draft generation, add template regression:
+
+```powershell
+venv\Scripts\python.exe scripts\prepackage_check.py `
+  --official-draft-template "E:\jycaogao\JianyingPro Drafts\4月3日" `
+  --official-draft-template "E:\jycaogao\JianyingPro Drafts\4月3日 (1)"
+```
+
 5. Build the desktop onedir bundle:
 
 ```powershell
@@ -36,7 +44,9 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py `
   --preset env.presets\desktop_full.env.example `
   --name VideoFactory `
   --icon C:\path\to\icon.ico `
-  --logo C:\path\to\logo.png
+  --logo C:\path\to\logo.png `
+  --official-draft-template "E:\jycaogao\JianyingPro Drafts\4月3日" `
+  --official-draft-template "E:\jycaogao\JianyingPro Drafts\4月3日 (1)"
 ```
 
 6. Output:
@@ -61,6 +71,8 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py `
   - `duo_cache`
   - `mcp_cache`
 - `installer_manifest.json`
+  - now includes git commit / branch / dirty state / build timestamp
+  - now includes official draft service SHA256 and fix revision for build tracing
 
 ## Security Position
 
@@ -72,3 +84,9 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py `
 - installer must not ship a MySQL `root` account connection string
 
 If the desktop package still needs direct database credentials to run, that means the current client/server boundary is not fully closed for release yet.
+
+## Recommended Guardrails
+
+- Follow [`docs/release_playbook.md`](/E:/JianYingApi/VideoFactory/docs/release_playbook.md)
+- Treat official draft changes as high-risk and ship them separately
+- Keep at least two fixed official draft templates as release blockers

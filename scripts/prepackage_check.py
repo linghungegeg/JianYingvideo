@@ -110,13 +110,16 @@ def check_packaging_files():
     return ok
 
 
-def run_python_script(script_name):
+def run_python_script(script_name, extra_args=None):
     script_path = SCRIPTS_DIR / script_name
     if not script_path.exists():
         return record(f"script/{script_name}", False, "missing")
 
     print(f"[RUN] {script_name}")
-    result = subprocess.run([sys.executable, str(script_path)], cwd=ROOT_DIR)
+    command = [sys.executable, str(script_path)]
+    if extra_args:
+        command.extend(extra_args)
+    result = subprocess.run(command, cwd=ROOT_DIR)
     return record(f"script/{script_name}", result.returncode == 0, f"exit={result.returncode}")
 
 
@@ -127,6 +130,12 @@ def main():
         "--with-admin-browser-regression",
         action="store_true",
         help="also run scripts/admin_user_browser_regression.py",
+    )
+    parser.add_argument(
+        "--official-draft-template",
+        action="append",
+        default=[],
+        help="absolute path to an official draft template for release regression; may be repeated",
     )
     args = parser.parse_args()
 
@@ -150,6 +159,12 @@ def main():
     remote_auth_mode = str(os.getenv("VF_REMOTE_AUTH_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
     if not args.skip_final_regression:
         checks.append(run_python_script("remote_auth_mode_check.py" if remote_auth_mode else "final_regression.py"))
+
+    if args.official_draft_template:
+        extra_args = []
+        for template_path in args.official_draft_template:
+            extra_args.extend(["--template", template_path])
+        checks.append(run_python_script("official_draft_regression.py", extra_args=extra_args))
 
     if args.with_admin_browser_regression:
         checks.append(run_python_script("admin_user_browser_regression.py"))
