@@ -29,6 +29,8 @@
         let accountOverview = null;
         let activeDraftShell = null;
         let assistantPreviewState = null;
+        let storyboardItemsCache = [];
+        let storyboardSourceTextCache = '';
         let resourceExchangeState = {
             page: 1,
             pages: 1,
@@ -66,6 +68,7 @@
             {title: '批量混剪', keywords: '批量混剪 按组精准替换 混剪裂变替换 分区混剪裂变 槽位拼接混剪', body: '先选参考草稿，再按当前模式准备素材目录或文字内容。前三种模式会保持每次每槽位使用 1 个素材，槽位拼接混剪则会在单个槽位内连续拼接多段视频。'},
             {title: 'AI 成片', keywords: 'AI 成片 即梦 火山 TTS AI 文案 AI账号管理', body: '先在“软件设置 -> AI账号管理”里维护好账号，再回到本页执行图生视频、语音合成或文案生成。页面里只保留真正会影响出片的参数。'},
             {title: 'AI 漫剧', keywords: 'AI 漫剧 草稿 分镜 脚本 场景目录', body: 'AI 漫剧会直接生成剪映草稿、场景素材目录和分镜说明。你可以先拿到完整草稿结构，再按自己的节奏补图、补视频和细化镜头。'},
+            {title: '漫剧助手', keywords: '漫剧助手 SRT 分镜 生图 文案转SRT', body: '这条链路只做“文案整理成 SRT 分镜”和“按句生图”，不会改官方草稿。建议先在这里把对白、人物和画面提示词整理顺，再去做正式草稿。'},
             {title: '批量效果', keywords: '批量效果 Duo 资源 贴纸 转场', body: '选好草稿后，可以直接搜索你想要的效果或素材，再一键加入当前草稿。日常先用分类、关键词和常用预设就够了，不需要一开始就碰高级参数。'},
             {title: '批量分割', keywords: '批量分割 文件分割 草稿处理 批量查看', body: '既可以对文件按时长、镜头或字幕做分割，也可以批量查看草稿结构，提前排查内容问题，再决定是否导出或继续加工。'},
             {title: '片段微调', keywords: '片段微调 节奏变速 画面校正 摇晃关键帧', body: '适合在出片前做最后一轮细节调整，例如节奏变速、画面校正、镜像、摇晃关键帧和局部修饰。'},
@@ -6094,6 +6097,8 @@ async function loadAiKeys() {
         mapAiKeyOptions('ai_jimeng_key', 'jimeng');
         mapAiKeyOptions('ai_volc_key', 'volc');
         mapAiKeyOptions('ai_openai_key', 'openai');
+        mapAiKeyOptions('storyboard_text_key', 'openai');
+        mapAiKeyOptions('storyboard_image_key', 'openai');
         setAiAccountMessage('请先登录后再读取 AI 账号。', 'warn');
         return;
     }
@@ -6112,6 +6117,8 @@ async function loadAiKeys() {
     mapAiKeyOptions('ai_jimeng_key', 'jimeng');
     mapAiKeyOptions('ai_volc_key', 'volc');
     mapAiKeyOptions('ai_openai_key', 'openai');
+    mapAiKeyOptions('storyboard_text_key', 'openai');
+    mapAiKeyOptions('storyboard_image_key', 'openai');
 }
 
 function resetAiKeyForm() {
@@ -6330,6 +6337,343 @@ function fillTextPanelFromAi() {
     if (!text) return;
     const firstInput = document.querySelector('#texts_area textarea[id^="text_"], #texts_area input[type="text"]');
     if (firstInput) firstInput.value = text;
+}
+
+const STORYBOARD_SHOT_TYPE_LABELS = {
+    scene: '场景镜头',
+    character: '人物镜头',
+    dialogue: '对白镜头',
+    action: '动作镜头'
+};
+
+function normalizeStoryboardCharacters(value) {
+    const raw = Array.isArray(value) ? value.join('、') : String(value || '');
+    const parts = raw
+        .split(/[\n,，、\/|；;]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    return Array.from(new Set(parts));
+}
+
+function cleanupStoryboardText(value) {
+    return String(value || '').replace(/\r/g, '').replace(/\u3000/g, ' ').trim();
+}
+
+function detectStoryboardShotType(value, fallbackText = '') {
+    const raw = `${value || ''} ${fallbackText || ''}`.toLowerCase();
+    if (/dialogue|对白|对话|说话|开口|回答|问道|说道|问她|问他|“|”|"|'/.test(raw)) return 'dialogue';
+    if (/action|动作|奔跑|冲向|推开|拿起|转身|抬头|挥手|走向|扑向|打斗|拥抱/.test(raw)) return 'action';
+    if (/character|人物|特写|近景|半身|正脸|肖像/.test(raw)) return 'character';
+    return 'scene';
+}
+
+function normalizeStoryboardItem(item, index) {
+    const scene = cleanupStoryboardText(item?.scene || item?.summary || item?.description || '');
+    const dialogue = cleanupStoryboardText(item?.dialogue || item?.quoted_dialogue || item?.subtitle || '');
+    const visualAction = cleanupStoryboardText(item?.visual_action || item?.action || '');
+    const setting = cleanupStoryboardText(item?.setting || item?.location || '');
+    const camera = cleanupStoryboardText(item?.camera || item?.shot || '');
+    const emotion = cleanupStoryboardText(item?.emotion || '');
+    const speaker = cleanupStoryboardText(item?.speaker || '');
+    const characters = normalizeStoryboardCharacters(item?.characters || speaker);
+    const shotType = detectStoryboardShotType(item?.shot_type || item?.type || '', `${scene} ${dialogue} ${visualAction} ${camera}`);
+    const imagePromptText = cleanupStoryboardText(item?.image_prompt_text || [
+        characters.length ? `人物：${characters.join('、')}` : '',
+        setting ? `场景：${setting}` : '',
+        scene ? `画面：${scene}` : '',
+        visualAction ? `动作：${visualAction}` : '',
+        emotion ? `情绪：${emotion}` : '',
+        camera ? `镜头：${camera}` : '',
+        dialogue ? '保留说话状态和对白氛围，不要做成纯风景。' : ''
+    ].filter(Boolean).join('，'));
+    return {
+        index: Number(item?.index || index || 1),
+        scene,
+        dialogue,
+        visual_action: visualAction,
+        setting,
+        camera,
+        emotion,
+        speaker,
+        characters,
+        shot_type: shotType,
+        image_prompt_text: imagePromptText
+    };
+}
+
+function extractJsonBlock(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return '';
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenceMatch && fenceMatch[1]) return fenceMatch[1].trim();
+    return text;
+}
+
+function parseStoryboardItemsFromText(rawText) {
+    const text = extractJsonBlock(rawText);
+    if (!text) return [];
+    const tryParse = (payload) => {
+        if (Array.isArray(payload)) return payload;
+        if (payload && typeof payload === 'object') {
+            if (Array.isArray(payload.items)) return payload.items;
+            if (Array.isArray(payload.shots)) return payload.shots;
+            if (Array.isArray(payload.storyboard)) return payload.storyboard;
+        }
+        return null;
+    };
+    try {
+        const parsed = JSON.parse(text);
+        const items = tryParse(parsed);
+        if (items) return items.map((item, idx) => normalizeStoryboardItem(item, idx + 1)).filter((item) => item.scene || item.dialogue || item.visual_action || item.setting);
+    } catch (e) {
+        // ignore and use fallback parsing below
+    }
+    return text
+        .split(/\n{2,}/)
+        .map((chunk) => cleanupStoryboardText(chunk))
+        .filter(Boolean)
+        .map((chunk, idx) => normalizeStoryboardItem({dialogue: chunk, scene: chunk}, idx + 1));
+}
+
+function formatStoryboardTime(seconds) {
+    const totalMs = Math.max(0, Math.round(Number(seconds || 0) * 1000));
+    const ms = totalMs % 1000;
+    const totalSeconds = Math.floor(totalMs / 1000);
+    const sec = totalSeconds % 60;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const min = totalMinutes % 60;
+    const hour = Math.floor(totalMinutes / 60);
+    return `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+}
+
+function buildStoryboardSrtText(items, durationSeconds = 3) {
+    let cursor = 0;
+    return items.map((entry, idx) => {
+        const item = normalizeStoryboardItem(entry, idx + 1);
+        const duration = Math.max(1, Number(durationSeconds || 3));
+        const start = formatStoryboardTime(cursor);
+        const end = formatStoryboardTime(cursor + duration);
+        cursor += duration;
+        const text = cleanupStoryboardText(item.dialogue || item.scene || item.visual_action || item.setting || `镜头 ${idx + 1}`);
+        return `${idx + 1}\n${start} --> ${end}\n${text}`;
+    }).join('\n\n');
+}
+
+function renderStoryboardSentenceList(items) {
+    const box = document.getElementById('storyboard_sentence_list');
+    if (!box) return;
+    if (!Array.isArray(items) || !items.length) {
+        box.innerHTML = '<div class="tool-result">生成 SRT 后，这里会按条显示分镜卡片。</div>';
+        return;
+    }
+    box.innerHTML = items.map((entry, idx) => {
+        const item = normalizeStoryboardItem(entry, idx + 1);
+        const meta = [
+            item.setting ? `场景：${item.setting}` : '',
+            item.camera ? `镜头：${item.camera}` : '',
+            item.emotion ? `情绪：${item.emotion}` : '',
+            item.speaker ? `说话人：${item.speaker}` : ''
+        ].filter(Boolean).join(' ｜ ');
+        const characterTags = item.characters.map((name) => `<span class="storyboard-character-badge">${escapeHtml(name)}</span>`).join('');
+        return `
+            <article class="storyboard-sentence-card">
+                <div class="storyboard-sentence-head">
+                    <strong>镜头 ${item.index || idx + 1}</strong>
+                    <span class="storyboard-shot-badge">${escapeHtml(STORYBOARD_SHOT_TYPE_LABELS[item.shot_type] || STORYBOARD_SHOT_TYPE_LABELS.scene)}</span>
+                </div>
+                <div class="storyboard-sentence-text">${escapeHtml(item.dialogue || item.scene || item.visual_action || '暂无文本')}</div>
+                ${item.scene && item.scene !== item.dialogue ? `<div class="storyboard-sentence-text">画面：${escapeHtml(item.scene)}</div>` : ''}
+                ${item.visual_action ? `<div class="storyboard-sentence-text">动作：${escapeHtml(item.visual_action)}</div>` : ''}
+                ${meta ? `<div class="storyboard-sentence-text">${escapeHtml(meta)}</div>` : ''}
+                ${characterTags ? `<div class="storyboard-sentence-meta">${characterTags}</div>` : ''}
+                <div class="storyboard-sentence-actions">
+                    <button class="effect-add" type="button" onclick="useStoryboardSentenceForImage(${item.index || idx + 1})">用于生图</button>
+                </div>
+            </article>
+        `;
+    }).join('');
+}
+
+function buildStoryboardPrompt(sourceText, durationSeconds) {
+    return [
+        '请把下面文案整理成适合短视频漫剧的结构化分镜。',
+        '只返回 JSON，不要解释，不要 Markdown 代码块。',
+        '返回格式：{"items":[{"index":1,"scene":"","dialogue":"","visual_action":"","setting":"","camera":"","emotion":"","speaker":"","characters":[],"shot_type":"scene"}]}',
+        'shot_type 只能是：scene、character、dialogue、action。',
+        `默认每条字幕时长大约 ${Number(durationSeconds || 3)} 秒，但你不需要输出时间轴。`,
+        '要求：对白镜头要尽量保留说话人；有人物时把人物名放进 characters；画面描述只写能看见的内容。',
+        '',
+        sourceText
+    ].join('\n');
+}
+
+function setStoryboardImagePrompt(value, item = null) {
+    const input = document.getElementById('ai_storyboard_image_prompt');
+    if (!input) return;
+    input.value = value || '';
+    if (item && typeof item === 'object') {
+        input.dataset.storyboardItem = JSON.stringify(item);
+        input.dataset.storyboardImagePrompt = value || '';
+    } else {
+        delete input.dataset.storyboardItem;
+        delete input.dataset.storyboardImagePrompt;
+    }
+}
+
+function useStoryboardSentenceForImage(index) {
+    const target = Number(index || 0);
+    const item = storyboardItemsCache.find((entry) => Number(entry.index || 0) === target);
+    if (!item) return;
+    setStoryboardImagePrompt(item.image_prompt_text || item.scene || item.dialogue || '', item);
+    document.getElementById('ai_storyboard_image_status').textContent = `已带入镜头 ${target} 的生图提示词。`;
+}
+
+async function pollAiTaskUntilDone(taskId, statusEl) {
+    const target = typeof statusEl === 'string' ? document.getElementById(statusEl) : statusEl;
+    for (let count = 0; count < 120; count += 1) {
+        const res = await authFetch(`/api/ai/task/${taskId}`);
+        const data = await res.json();
+        if (!res.ok || data.ok === false) throw new Error(data.error || '查询失败');
+        const task = data.task || {};
+        if (task.status === 'success') {
+            if (target) target.textContent = '生成完成';
+            return task;
+        }
+        if (task.status === 'failed') {
+            throw new Error(task.error_msg || '执行失败');
+        }
+        if (target) target.textContent = `正在生成分镜... ${count + 1}`;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    throw new Error('任务超时');
+}
+
+async function generateStoryboardSrt() {
+    const sourceText = cleanupStoryboardText(document.getElementById('storyboard_source_text')?.value || '');
+    const keyId = parseInt(document.getElementById('storyboard_text_key')?.value || '0', 10);
+    const durationSeconds = parseFloat(document.getElementById('storyboard_duration_seconds')?.value || '3');
+    const status = document.getElementById('storyboard_status');
+    const result = document.getElementById('storyboard_result');
+    if (!keyId || !sourceText) {
+        if (status) status.textContent = '请先选择脚本账号并粘贴文案。';
+        return;
+    }
+    if (status) status.textContent = '正在提交分镜任务...';
+    if (result) result.value = '';
+    storyboardItemsCache = [];
+    storyboardSourceTextCache = sourceText;
+    renderStoryboardSentenceList([]);
+    const res = await authFetch('/api/ai/generate/text', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            key_id: keyId,
+            prompt: buildStoryboardPrompt(sourceText, durationSeconds),
+            temperature: 0.3,
+            max_tokens: 2400
+        })
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+        if (status) status.textContent = data.error || '分镜提交失败';
+        return;
+    }
+    try {
+        const task = await pollAiTaskUntilDone(data.task_id, status);
+        const items = parseStoryboardItemsFromText(task.result_text || '');
+        if (!items.length) throw new Error('没有解析出可用分镜');
+        storyboardItemsCache = items.map((item, idx) => normalizeStoryboardItem(item, idx + 1));
+        if (result) result.value = buildStoryboardSrtText(storyboardItemsCache, durationSeconds);
+        renderStoryboardSentenceList(storyboardItemsCache);
+        if (status) status.textContent = `已生成 ${storyboardItemsCache.length} 条分镜。`;
+        if (storyboardItemsCache[0]) useStoryboardSentenceForImage(storyboardItemsCache[0].index);
+    } catch (e) {
+        if (status) status.textContent = e.message || '生成失败';
+    }
+}
+
+function downloadStoryboardSrt() {
+    const text = document.getElementById('storyboard_result')?.value?.trim() || '';
+    const status = document.getElementById('storyboard_status');
+    if (!text) {
+        if (status) status.textContent = '请先生成 SRT。';
+        return;
+    }
+    const blob = new Blob([text], {type: 'text/plain;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `storyboard_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}.srt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    if (status) status.textContent = 'SRT 已下载。';
+}
+
+async function fetchLatestUserMaterial(type = 'image') {
+    const res = await authFetch(`/api/user/materials?type=${encodeURIComponent(type)}`);
+    const data = await res.json();
+    if (!res.ok || data.ok === false) throw new Error(data.error || '素材列表读取失败');
+    return Array.isArray(data.items) ? data.items : [];
+}
+
+async function startAiStoryboardImage() {
+    const promptInput = document.getElementById('ai_storyboard_image_prompt');
+    const keyId = parseInt(document.getElementById('storyboard_image_key')?.value || '0', 10);
+    const size = document.getElementById('storyboard_image_size')?.value || '1024x1024';
+    const status = document.getElementById('ai_storyboard_image_status');
+    const result = document.getElementById('ai_storyboard_image_result');
+    const prompt = cleanupStoryboardText(promptInput?.value || '');
+    if (!keyId || !prompt) {
+        if (status) status.textContent = '请先选择生图账号并准备提示词。';
+        return;
+    }
+    let previousLatestId = 0;
+    try {
+        const previousItems = await fetchLatestUserMaterial('image');
+        previousLatestId = Number(previousItems[0]?.id || 0);
+    } catch (e) {
+        previousLatestId = 0;
+    }
+    if (status) status.textContent = '正在生图，请稍候...';
+    if (result) result.textContent = '正在生成图片...';
+    const res = await authFetch('/api/ai/generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            key_id: keyId,
+            task_type: 'image',
+            prompt,
+            size
+        })
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+        if (status) status.textContent = data.error || '生图失败';
+        if (result) result.textContent = data.error || '生图失败';
+        return;
+    }
+    try {
+        const imageItems = await fetchLatestUserMaterial('image');
+        const latest = imageItems.find((item) => Number(item.id || 0) !== previousLatestId) || imageItems[0] || null;
+        if (latest && latest.id) {
+            const previewUrl = `/api/user/materials/file/${latest.id}`;
+            result.innerHTML = `
+                <div class="storyboard-sentence-text">已生成图片素材 #${latest.id}</div>
+                <div class="storyboard-sentence-text">${escapeHtml(latest.file_path || '')}</div>
+                <div style="margin-top:12px;"><img src="${previewUrl}" alt="storyboard image" style="max-width:100%; border-radius:16px;"></div>
+                <div class="storyboard-sentence-actions"><a class="effect-add" href="${previewUrl}" target="_blank" rel="noopener">打开预览</a></div>
+            `;
+        } else {
+            result.textContent = data.path || '图片已生成，请到最近 AI 素材查看。';
+        }
+        if (status) status.textContent = '图片生成完成。';
+        await refreshAiMaterials();
+    } catch (e) {
+        if (status) status.textContent = '图片已生成，但预览读取失败。';
+        result.textContent = data.path || e.message || '图片已生成，请到最近 AI 素材查看。';
+    }
 }
 
 async function refreshAiMaterials() {

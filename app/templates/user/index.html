@@ -110,6 +110,7 @@
                     <div class="sidebar-group" data-group="assistant"><button class="sidebar-parent" type="button" data-group-toggle="assistant"><span>智能助手</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink active" href="#panel-assistant">命令中心</a></div></div>
                     <div class="sidebar-group" data-group="mix"><button class="sidebar-parent" type="button" data-group-toggle="mix"><span>批量混剪</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#mix-mode-group-anchor" data-mix-target="group">按组精准替换</a><a class="sidebar-link sidebar-sublink" href="#mix-mode-mix-anchor" data-mix-target="mix">混剪裂变替换</a><a class="sidebar-link sidebar-sublink" href="#mix-mode-partition-anchor" data-mix-target="partition">分区混剪裂变</a><a class="sidebar-link sidebar-sublink" href="#mix-mode-sequence-anchor" data-mix-target="sequence">槽位拼接混剪</a></div></div>
                     <div class="sidebar-group" data-group="ai"><button class="sidebar-parent" type="button" data-group-toggle="ai"><span class="sidebar-label-mixed">AI  智做</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-ai-make">AI 成片</a><a id="aiMangaSidebarLink" class="sidebar-link sidebar-sublink" href="#panel-ai-manga">AI 漫剧</a></div></div>
+                    <div class="sidebar-group" data-group="manga-assistant"><button class="sidebar-parent" type="button" data-group-toggle="manga-assistant"><span>漫剧助手</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-manga-assistant">文案转 SRT</a></div></div>
                     <div class="sidebar-group" data-group="effects"><button class="sidebar-parent" type="button" data-group-toggle="effects"><span>批量效果</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-effects" data-subtab-container="effects_section" data-subtab-target="effects-core">效果配置</a><a class="sidebar-link sidebar-sublink" href="#panel-effects" data-subtab-container="effects_section" data-subtab-target="effects-resource">资源库</a><a id="duoSidebarLink" class="sidebar-link sidebar-sublink" href="#panel-effects" data-subtab-container="effects_section" data-subtab-target="effects-duo">Duo 资源</a></div></div>
                     <div class="sidebar-group" data-group="split"><button class="sidebar-parent" type="button" data-group-toggle="split"><span>批量分割</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-split" data-subtab-container="panel-split" data-subtab-target="split-file">文件分割</a><a class="sidebar-link sidebar-sublink" href="#panel-split" data-subtab-container="panel-split" data-subtab-target="split-draft">草稿处理</a><a class="sidebar-link sidebar-sublink" href="#panel-split" data-subtab-container="panel-split" data-subtab-target="split-batch">批量查看</a></div></div>
                     <div class="sidebar-group" data-group="clip"><button class="sidebar-parent" type="button" data-group-toggle="clip"><span>片段微调</span><span class="sidebar-caret">⌄</span></button><div class="sidebar-submenu"><a class="sidebar-link sidebar-sublink" href="#panel-clip" data-subtab-container="clipToolsGrid" data-subtab-target="clip-ai">AI 灵感</a><a class="sidebar-link sidebar-sublink" href="#panel-clip" data-subtab-container="clipToolsGrid" data-subtab-target="clip-rhythm">节奏变速</a><a class="sidebar-link sidebar-sublink" href="#panel-clip" data-subtab-container="clipToolsGrid" data-subtab-target="clip-transform">画面校正</a><a class="sidebar-link sidebar-sublink" href="#panel-clip" data-subtab-container="clipToolsGrid" data-subtab-target="clip-shake">摇晃关键帧</a></div></div>
@@ -240,6 +241,88 @@
                             </div>
                         </div>
                     </section>
+                    <section id="panel-manga-assistant" class="module-block workspace-panel" data-requires-draft="false" data-panel-title="漫剧助手">
+                        <div id="manga-assistant-anchor" class="workspace-anchor"></div>
+                        <div class="module-head">
+                            <div>
+                                <span class="module-kicker">漫剧助手</span>
+                                <h3 class="module-title">先整理字幕分镜，再按镜头去生图</h3>
+                                <p class="module-sub">这条链路不会碰官方草稿主流程，只做文案转 SRT 和按句生图，适合先把人物、对白和镜头感理顺。</p>
+                            </div>
+                        </div>
+                        <div class="tool-grid tool-grid-2 manga-assistant-grid">
+                            <section class="tool-card">
+                                <div class="tool-head">
+                                    <div>
+                                        <h3>第 1 步：生成 SRT 分镜</h3>
+                                        <p>选择一个 OpenAI 兼容脚本账号，把文案整理成可读的分镜字幕。</p>
+                                    </div>
+                                </div>
+                                <div class="grid-2">
+                                    <div class="form-group">
+                                        <label>脚本账号</label>
+                                        <select id="storyboard_text_key"><option value="">请选择</option></select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>单条字幕时长（秒）</label>
+                                        <input type="number" id="storyboard_duration_seconds" value="3" min="1" max="12" step="0.5">
+                                    </div>
+                                    <div class="form-group full">
+                                        <label>文案原文</label>
+                                        <textarea id="storyboard_source_text" rows="10" placeholder="把小说段落、对话脚本或漫剧文案直接贴进来。建议一次控制在 5 到 20 句，方便后续逐条生图。"></textarea>
+                                    </div>
+                                </div>
+                                <div class="inline-actions">
+                                    <button class="primary-btn" type="button" onclick="generateStoryboardSrt()">生成 SRT</button>
+                                    <button class="effect-add" type="button" onclick="downloadStoryboardSrt()">下载 SRT</button>
+                                </div>
+                                <div id="storyboard_status" class="hint">先选脚本账号，再粘贴文案开始生成。</div>
+                                <textarea id="storyboard_result" rows="12" placeholder="生成好的 SRT 会显示在这里"></textarea>
+                            </section>
+                            <section class="tool-card">
+                                <div class="tool-head">
+                                    <div>
+                                        <h3>第 2 步：按句生图</h3>
+                                        <p>推荐先从下方分镜卡片点“用于生图”，比重新写提示词更稳。</p>
+                                    </div>
+                                </div>
+                                <div class="grid-2">
+                                    <div class="form-group">
+                                        <label>生图账号</label>
+                                        <select id="storyboard_image_key"><option value="">请选择</option></select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>图片尺寸</label>
+                                        <select id="storyboard_image_size">
+                                            <option value="1024x1024">1024 x 1024</option>
+                                            <option value="1024x1536">1024 x 1536</option>
+                                            <option value="1536x1024">1536 x 1024</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group full">
+                                        <label>生图提示词</label>
+                                        <textarea id="ai_storyboard_image_prompt" rows="8" placeholder="可以直接手写一条画面描述，也可以先从下方分镜卡片点“用于生图”。"></textarea>
+                                    </div>
+                                </div>
+                                <div class="inline-actions">
+                                    <button class="primary-btn" type="button" onclick="startAiStoryboardImage()">开始生图</button>
+                                </div>
+                                <div id="ai_storyboard_image_status" class="hint">推荐优先使用从 SRT 分镜生成的提示词。</div>
+                                <div id="ai_storyboard_image_result" class="tool-result">生成后的图片预览会显示在这里。</div>
+                            </section>
+                        </div>
+                        <section class="tool-card">
+                            <div class="tool-head">
+                                <div>
+                                    <h3>分镜卡片</h3>
+                                    <p>每条都可以直接拿去生图，人物、场景、动作和镜头类型会一起带过去。</p>
+                                </div>
+                            </div>
+                            <div id="storyboard_sentence_list" class="storyboard-sentence-list">
+                                <div class="tool-result">生成 SRT 后，这里会按条显示分镜卡片。</div>
+                            </div>
+                        </section>
+                    </section>
                     <section id="panel-effects" class="module-block workspace-panel" data-requires-draft="true" data-panel-title="批量效果">
                         <div class="module-head"><div><span class="module-kicker">批量效果</span><h3 class="module-title">给草稿快速加效果、转场、贴纸和 Duo 资源</h3><p class="module-sub">常用操作可以直接点选，复杂参数再放到高级设置里调整。</p></div></div>
                         <section class="tool-card flow-card draft-inline-card draft-compact-card" data-draft-shell="true">
@@ -319,4 +402,3 @@
     <script src="{{ url_for('static', filename='js/user-index.js', v='20260329i') }}"></script>
 </body>
 </html>
-

@@ -2,8 +2,10 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -888,7 +890,7 @@ def _hydrate_missing_materials_from_payload_roots(payload: dict, cloned_draft_pa
     copied = 0
     seen_pairs: set[tuple[str, str]] = set()
 
-    def try_copy_from_payload_root(payload_root: str, rel_path: str) -> None:
+    def try_copy_from_payload_root(payload_root: str, rel_path: str, item: dict | None = None, media_type: str = "") -> None:
         nonlocal copied
         if not payload_root or not rel_path:
             return
@@ -900,10 +902,20 @@ def _hydrate_missing_materials_from_payload_roots(payload: dict, cloned_draft_pa
         tail = rel_norm
         if tail.lower().startswith("materials/"):
             tail = tail.split("/", 1)[1] if "/" in tail else ""
+        basename = os.path.basename(rel_norm)
         candidates = [
             os.path.join(payload_root, rel_norm.replace("/", os.sep)),
             os.path.join(payload_root, tail.replace("/", os.sep)) if tail else "",
         ]
+        if media_type == "videos" and basename and "_water_mark" in basename.lower():
+            candidates.append(os.path.join(payload_root, "video", "cover", basename))
+        if media_type == "audios" and isinstance(item, dict):
+            for key in ("effect_id", "music_id", "local_material_id", "resource_id"):
+                value = str(item.get(key) or "").strip()
+                if not value:
+                    continue
+                ext = os.path.splitext(basename)[1] or ".mp3"
+                candidates.append(os.path.join(payload_root, "audio", f"{value}{ext}"))
         for src_abs in candidates:
             if not src_abs or not os.path.isfile(src_abs):
                 continue
@@ -947,7 +959,7 @@ def _hydrate_missing_materials_from_payload_roots(payload: dict, cloned_draft_pa
                 for key in ("path", "file_path", "material_path"):
                     value = str(item.get(key) or "").strip()
                     if value and not os.path.isabs(value):
-                        try_copy_from_payload_root(payload_root, value)
+                        try_copy_from_payload_root(payload_root, value, item=item, media_type=media_type)
     return copied
 
 
@@ -1120,10 +1132,6 @@ def _write_text_content(item: dict, new_text: str) -> None:
 
 def _candidate_gg_roots() -> list[str]:
     candidates = []
-    bundled_root = app_resource_path("runtime_tools", _OFFICIAL_READER_RUNTIME_DIRNAME)
-    if bundled_root.exists():
-        candidates.append(str(bundled_root))
-
     env_root = str(os.environ.get("GG_JY_ASSISTANT_ROOT") or "").strip()
     if env_root:
         candidates.append(env_root)
@@ -1133,6 +1141,10 @@ def _candidate_gg_roots() -> list[str]:
         r"E:\gg-jy-assistant",
     ):
         candidates.append(raw)
+
+    bundled_root = app_resource_path("runtime_tools", _OFFICIAL_READER_RUNTIME_DIRNAME)
+    if bundled_root.exists():
+        candidates.append(str(bundled_root))
 
     deduped = []
     seen = set()
@@ -1146,15 +1158,19 @@ def _candidate_gg_roots() -> list[str]:
 
 
 def _resolve_reader_utils_path(root: str) -> str:
-    candidates = [
-        os.path.join(root, "resources", "app.asar", "build", "electron", "utils"),
-        os.path.join(root, "resources", "app_source", "build", "electron", "utils"),
-        os.path.join(root, "resources", "app.asar.unpacked", "build", "electron", "utils"),
-    ]
-    for path in candidates:
-        if os.path.isdir(path):
-            return path
-    return candidates[0]
+    packaged_semantic = os.path.join(root, "resources", "app.asar", "build", "electron", "utils")
+    if os.path.exists(os.path.join(root, "resources", "app.asar")):
+        return packaged_semantic
+
+    unpacked_semantic = os.path.join(root, "resources", "app.asar.unpacked", "build", "electron", "utils")
+    if os.path.exists(os.path.join(root, "resources", "app.asar.unpacked")):
+        return unpacked_semantic
+
+    source_utils = os.path.join(root, "resources", "app_source", "build", "electron", "utils")
+    if os.path.isdir(source_utils):
+        return source_utils
+
+    return packaged_semantic
 
 
 def _candidate_reader_config_paths(root: str) -> list[Path]:
@@ -1162,6 +1178,7 @@ def _candidate_reader_config_paths(root: str) -> list[Path]:
     roaming_config = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming") / _GG_ASSISTANT_SOFTWARE_KEY / "config.json"
     candidates = [
         roaming_config,
+        Path(root) / "userdata" / _GG_ASSISTANT_SOFTWARE_KEY / "config.json",
         Path(root) / "user_data" / "config.json",
         Path(root) / "config.json",
     ]
@@ -1226,24 +1243,14 @@ def _resolve_gg_like_timeline_root(primary_path: str) -> str:
 
 def _resolve_private_reader_runtime() -> dict:
     for root in _candidate_gg_roots():
-        java_path = os.path.join(root, "resources", "helper", "win32", "x64", "jre", "bin", "java.exe")
-        javaw_path = os.path.join(root, "resources", "helper", "win32", "x64", "jre", "bin", "javaw.exe")
-        jar_path = os.path.join(
-            root,
-            "resources",
-            "helper",
-            "win32",
-            "x64",
-            "jre",
-            "conf",
-            "security",
-            "policy",
-            "limited",
-            "exempt_US_export.policy",
-        )
-        cache_log_path = os.path.join(root, "resources", "log", "cache.log")
+        cppreader_path = os.path.join(root, "resources", "enhance", "win32", "x64", "cppreader.exe")
         utils_path = _resolve_reader_utils_path(root)
-        if not (os.path.exists(java_path) and os.path.exists(jar_path) and os.path.exists(cache_log_path) and os.path.isdir(utils_path)):
+        has_reader_context = (
+            os.path.exists(os.path.join(root, "resources", "app.asar"))
+            or os.path.exists(os.path.join(root, "resources", "app.asar.unpacked"))
+            or os.path.isdir(utils_path)
+        )
+        if not (os.path.exists(cppreader_path) and has_reader_context):
             continue
 
         for config_path in _candidate_reader_config_paths(root):
@@ -1270,11 +1277,13 @@ def _resolve_private_reader_runtime() -> dict:
                 continue
 
             user_data_path = str(config_path.parent).replace("\\", "/")
+            if os.path.basename(user_data_path).lower() == "user_data":
+                bundled_userdata = Path(root) / "userdata" / _GG_ASSISTANT_SOFTWARE_KEY
+                if bundled_userdata.is_dir():
+                    user_data_path = str(bundled_userdata).replace("\\", "/")
             return {
                 "root": root,
-                "java_path": java_path,
-                "javaw_path": javaw_path if os.path.exists(javaw_path) else java_path,
-                "jar_path": jar_path,
+                "cppreader_path": cppreader_path,
                 "utils_path": utils_path,
                 "g6_token": g6[10:],
                 "k6": k6,
@@ -1284,6 +1293,96 @@ def _resolve_private_reader_runtime() -> dict:
             }
 
     raise ValueError("private gg reader runtime not found")
+
+
+def _path_has_non_ascii(value: str) -> bool:
+    text = str(value or "")
+    try:
+        text.encode("ascii")
+        return False
+    except Exception:
+        return True
+
+
+def _build_ascii_reader_shadow_root(source_root: str) -> str:
+    base_dir = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "VideoFactoryDesktop" / "official_reader_shadow"
+    digest = hashlib.sha1(os.path.abspath(str(source_root or "")).encode("utf-8", errors="ignore")).hexdigest()[:12]
+    shadow_root = base_dir / f"src_{digest}"
+    if shadow_root.exists():
+        shutil.rmtree(shadow_root, ignore_errors=True)
+    shadow_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_root, shadow_root)
+    return str(shadow_root)
+
+
+def _run_private_reader_to_payload(draft_content_path: str, runtime: dict) -> tuple[dict, dict]:
+    rec_path = f"{draft_content_path}.rec"
+    try:
+        if os.path.exists(rec_path):
+            os.remove(rec_path)
+    except Exception:
+        pass
+
+    attempts = [
+        [
+            runtime["cppreader_path"],
+            runtime["k6"],
+            runtime["api_param"],
+            draft_content_path,
+            runtime["g6_token"],
+            _GG_ASSISTANT_SOFTWARE_KEY,
+            runtime["utils_path"],
+            runtime["user_data_path"],
+        ],
+        [
+            runtime["cppreader_path"],
+            runtime["k6"],
+            runtime["api_param"],
+            draft_content_path,
+            runtime["g6_token"],
+            _GG_ASSISTANT_SOFTWARE_KEY,
+            runtime["utils_path"].replace("\\", "/"),
+            runtime["user_data_path"].replace("\\", "/"),
+        ],
+    ]
+    last_error = ""
+    for argv in attempts:
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            check=False,
+            **_quiet_subprocess_kwargs(),
+        )
+        stderr = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
+        stdout = (result.stdout or b"").decode("utf-8", errors="ignore").strip()
+        if result.returncode != 0:
+            last_error = stderr or stdout or f"private reader failed ({result.returncode})"
+            continue
+        if os.path.exists(rec_path):
+            break
+        last_error = "private reader did not produce .rec payload"
+    else:
+        raise ValueError(last_error or "private reader failed")
+
+    try:
+        data = _decode_rec_payload_via_node(rec_path, runtime["k6"])
+        data = _apply_gg_polyfill_defaults(data, runtime["k6"])
+    finally:
+        try:
+            if os.path.exists(rec_path):
+                os.remove(rec_path)
+        except Exception:
+            pass
+
+    diagnostics = {
+        "reader": "private_gg_cppreader",
+        "cppreader_path": runtime["cppreader_path"],
+        "config_path": runtime["config_path"],
+        "matched_candidate": draft_content_path,
+        "reader_utils_path": runtime["utils_path"],
+        "reader_user_data_path": runtime["user_data_path"],
+    }
+    return data, diagnostics
 
 
 def _decode_rec_payload_via_node(rec_path: str, k6: str) -> dict:
@@ -1454,56 +1553,25 @@ def _apply_gg_polyfill_defaults(data: dict, k6: str) -> dict:
 
 def _load_official_encrypted_draft_content(draft_content_path: str) -> tuple[dict, dict]:
     runtime = _resolve_private_reader_runtime()
-    rec_path = f"{draft_content_path}.rec"
     try:
-        if os.path.exists(rec_path):
-            os.remove(rec_path)
-    except Exception:
-        pass
-
-    result = subprocess.run(
-        [
-            runtime["javaw_path"],
-            "-jar",
-            runtime["jar_path"],
-            runtime["utils_path"],
-            runtime["g6_token"],
-            draft_content_path,
-            _GG_ASSISTANT_SOFTWARE_KEY,
-            runtime["user_data_path"],
-            runtime["api_param"],
-            runtime["k6"],
-        ],
-        capture_output=True,
-        check=False,
-        **_quiet_subprocess_kwargs(),
-    )
-    if result.returncode != 0:
-        stderr = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
-        stdout = (result.stdout or b"").decode("utf-8", errors="ignore").strip()
-        raise ValueError((stderr or stdout or "private reader failed").strip())
-    if not os.path.exists(rec_path):
-        raise ValueError("private reader did not produce .rec payload")
-
-    try:
-        data = _decode_rec_payload_via_node(rec_path, runtime["k6"])
-        data = _apply_gg_polyfill_defaults(data, runtime["k6"])
-    finally:
+        return _run_private_reader_to_payload(draft_content_path, runtime)
+    except Exception as primary_exc:
+        source_root = os.path.dirname(str(draft_content_path or "").strip())
+        if not source_root or not os.path.isdir(source_root) or not _path_has_non_ascii(source_root):
+            raise
+        shadow_root = ""
         try:
-            if os.path.exists(rec_path):
-                os.remove(rec_path)
-        except Exception:
-            pass
-
-    diagnostics = {
-        "reader": "private_gg_java",
-        "java_path": runtime["java_path"],
-        "javaw_path": runtime["javaw_path"],
-        "jar_path": runtime["jar_path"],
-        "config_path": runtime["config_path"],
-        "matched_candidate": draft_content_path,
-    }
-    return data, diagnostics
+            shadow_root = _build_ascii_reader_shadow_root(source_root)
+            shadow_path = os.path.join(shadow_root, os.path.basename(draft_content_path))
+            data, diagnostics = _run_private_reader_to_payload(shadow_path, runtime)
+            diagnostics["matched_candidate"] = draft_content_path
+            diagnostics["shadow_read_path"] = shadow_path
+            diagnostics["shadow_read_mode"] = "ascii_shadow_copy"
+            diagnostics["primary_error"] = str(primary_exc)
+            return data, diagnostics
+        finally:
+            if shadow_root:
+                shutil.rmtree(shadow_root, ignore_errors=True)
 
 
 def _replace_texts(payload: dict, texts_input) -> int:
@@ -2008,6 +2076,19 @@ def replace_official_draft(
     summary["text_replaced"] = _replace_texts(working_payload, texts_input)
     summary["material_replaced"] = _replace_materials(working_payload, localized_material_replacements)
     summary["diagnostics"]["localized_material_replacements"] = len(localized_material_replacements or {})
+    summary["diagnostics"]["rebased_internal_paths"] = _rebase_source_internal_paths(
+        working_payload,
+        source_draft_root,
+        cloned_draft_path,
+    )
+    summary["diagnostics"]["hydrated_payload_materials"] = _hydrate_missing_materials_from_payload_roots(
+        working_payload,
+        cloned_draft_path,
+    )
+    summary["diagnostics"]["sanitized_missing_cover_paths"] = _sanitize_missing_cover_paths(
+        working_payload,
+        cloned_draft_path,
+    )
     summary["diagnostics"]["nested_visual_covers_refreshed"] = _refresh_nested_combination_visual_covers(
         working_payload,
         cloned_draft_path,
