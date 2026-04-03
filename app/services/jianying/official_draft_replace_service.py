@@ -15,12 +15,7 @@ from app.services.jianying.local_draft_service import (
     load_json_file_with_encodings,
     normalize_draft_project_path,
 )
-from app.services.jianying.official_draft_codec import (
-    OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS as _CODEC_EMBEDDED_IV_OFFSETS,
-    OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS as _CODEC_EMBEDDED_KEY_OFFSETS,
-    decode_official_encrypted_draft_content_inprocess,
-    encode_official_encrypted_draft_content_inprocess,
-)
+from app.services.jianying import official_draft_codec as official_codec
 from app.services.jianying.draft_replacement_strategy import (
     classify_draft_strategy,
     copy_into_cache_target as _strategy_copy_into_cache_target,
@@ -41,8 +36,8 @@ _GG_ASSISTANT_SOFTWARE_KEY = "gg-jy-assistant"
 _OFFICIAL_READER_RUNTIME_DIRNAME = "official_reader"
 _OFFICIAL_READER_RUNTIME_MODE_ENV = "VF_OFFICIAL_READER_RUNTIME_MODE"
 _OFFICIAL_READER_ALLOW_GG_FALLBACK_ENV = "VF_OFFICIAL_READER_ALLOW_GG_FALLBACK"
-_OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS = _CODEC_EMBEDDED_KEY_OFFSETS
-_OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS = _CODEC_EMBEDDED_IV_OFFSETS
+_OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS = official_codec.OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS
+_OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS = official_codec.OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS
 
 
 def _quiet_subprocess_kwargs() -> dict:
@@ -315,9 +310,7 @@ def _write_draft_meta_info_payload(meta_path: str, meta: dict, is_plain: bool) -
             with open(meta_path, "w", encoding="utf-8") as handle:
                 json.dump(meta, handle, ensure_ascii=False, indent=2)
             return
-        payload_text, _diag = encode_official_encrypted_draft_content_inprocess(meta)
-        with open(meta_path, "w", encoding="utf-8") as handle:
-            handle.write(payload_text)
+        official_codec.write_official_draft_payload(meta_path, meta)
     except Exception:
         return
 
@@ -1483,7 +1476,7 @@ def _write_draft_content_targets(data: dict, cloned_draft_path: str) -> list[str
 def _write_top_level_payload_with_private_gg_writer(cloned_draft_path: str, data: dict) -> dict:
     target_path = os.path.join(cloned_draft_path, "draft_content.json")
     try:
-        payload_text, encode_diag = encode_official_encrypted_draft_content_inprocess(data)
+        payload_text, encode_diag = official_codec.dump_official_draft_payload(data)
 
         written_paths = []
         for top_level_name in ("draft_content.json", "template-2.tmp"):
@@ -2207,7 +2200,7 @@ def _sync_generated_official_backup_payloads(cloned_draft_path: str, timeline_di
         if not backup_path or not os.path.isfile(backup_path):
             continue
         try:
-            backup_payload, _diag = decode_official_encrypted_draft_content_inprocess(backup_path)
+            backup_payload, _diag = official_codec.load_official_draft_payload(backup_path)
         except Exception:
             continue
         if not isinstance(backup_payload, dict):
@@ -3197,7 +3190,7 @@ def _apply_gg_polyfill_defaults(data: dict, k6: str) -> dict:
 
 def _load_official_encrypted_draft_content(draft_content_path: str) -> tuple[dict, dict]:
     try:
-        return decode_official_encrypted_draft_content_inprocess(draft_content_path)
+        return official_codec.load_official_draft_payload(draft_content_path)
     except Exception:
         if not _allow_legacy_gg_reader_fallback():
             raise

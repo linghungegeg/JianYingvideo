@@ -107,3 +107,32 @@ def encode_official_encrypted_draft_content_inprocess(data: dict) -> tuple[str, 
         "embedded_iv_offsets": list(OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS),
     }
     return container_text, diagnostics
+
+
+def load_official_draft_payload(draft_content_path: str) -> tuple[dict, dict]:
+    return decode_official_encrypted_draft_content_inprocess(draft_content_path)
+
+
+def dump_official_draft_payload(data: dict) -> tuple[str, dict]:
+    return encode_official_encrypted_draft_content_inprocess(data)
+
+
+def write_official_draft_payload(draft_content_path: str, data: dict) -> dict:
+    container_text, diagnostics = dump_official_draft_payload(data)
+    Path(draft_content_path).write_text(container_text, encoding="utf-8")
+    return {
+        "path": str(draft_content_path),
+        "payload_length": len(container_text),
+        **diagnostics,
+    }
+
+
+__all__ = [
+    "OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS",
+    "OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS",
+    "decode_official_encrypted_draft_content_inprocess",
+    "encode_official_encrypted_draft_content_inprocess",
+    "load_official_draft_payload",
+    "dump_official_draft_payload",
+    "write_official_draft_payload",
+]
