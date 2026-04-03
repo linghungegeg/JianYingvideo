@@ -31,6 +31,8 @@
         let assistantPreviewState = null;
         let storyboardItemsCache = [];
         let storyboardSourceTextCache = '';
+        let storyboardRecentPage = 1;
+        let storyboardRecentSelectedIds = new Set();
         let resourceExchangeState = {
             page: 1,
             pages: 1,
@@ -223,6 +225,14 @@
                 .replace(/'/g, '&#39;');
         }
 
+        function buildAuthedMaterialFileUrl(materialId) {
+            const id = Number(materialId || 0);
+            if (!id) return '';
+            const token = getToken();
+            const base = `/api/user/materials/file/${id}`;
+            return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+        }
+
         function getPathLeaf(pathValue) {
             const raw = String(pathValue || '').trim().replace(/[\\/]+$/, '');
             if (!raw) return '';
@@ -246,27 +256,69 @@
             const generatedPaths = Array.isArray(result.generated_paths) ? result.generated_paths.filter(Boolean) : [];
             const cleanedPaths = Array.isArray(result.cleaned_paths) ? result.cleaned_paths.filter(Boolean) : [];
             const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
+            const batchDetails = Array.isArray(result.batch_details) ? result.batch_details.filter((item) => item && typeof item === 'object') : [];
+            const failedBatches = Array.isArray(result.failed_batches) ? result.failed_batches.filter((item) => item && typeof item === 'object') : [];
             const draftsFolder = String(options.draftsFolder || '').trim();
             const sections = [];
+            const successCount = generatedPaths.length;
+            const failedCount = failedBatches.length;
+            const batchDetailsByPath = new Map();
+            batchDetails.forEach((detail, index) => {
+                const draftPath = String(detail.draft_path || '').trim();
+                if (draftPath) batchDetailsByPath.set(draftPath, detail);
+                detail.__index = index;
+            });
+
+            function renderBatchSelectionSummary(detail = null) {
+                if (!detail || typeof detail !== 'object') return '<span class="mix-result-muted">未记录</span>';
+                const expectedCount = Number(detail.expected_count || 0);
+                const selectedCount = Number(detail.selected_count || 0);
+                const missingCount = Number(detail.missing_count || 0);
+                const selectedItems = Array.isArray(detail.selected_items) ? detail.selected_items : [];
+                const truncatedCount = Number(detail.truncated_count || 0);
+                if (!selectedCount || !selectedItems.length) {
+                    return '<span class="mix-result-muted">本份未替换素材</span>';
+                }
+                const chips = selectedItems.map((item) => {
+                    const fileName = escapeHtml(String(item.file_name || item.path || item.slot_name || '素材'));
+                    const slotName = escapeHtml(String(item.slot_name || '槽位'));
+                    return `<span class="mix-result-chip" title="${slotName}">${fileName}</span>`;
+                }).join('');
+                const extra = truncatedCount > 0 ? `<span class="mix-result-chip mix-result-chip-muted">+${truncatedCount}</span>` : '';
+                const strategy = escapeHtml(String(detail.replace_strategy || 'group'));
+                const mode = escapeHtml(String(detail.replace_mode || 'order'));
+                const missingText = missingCount > 0 ? ` · 缺 ${missingCount}/${expectedCount}` : '';
+                return `
+                    <div class="mix-result-selection">
+                        <div class="mix-result-selection-meta">已选 ${selectedCount}/${expectedCount || selectedCount} 项${missingText} · ${strategy} / ${mode}</div>
+                        <div class="mix-result-chip-row">${chips}${extra}</div>
+                    </div>
+                `;
+            }
 
             sections.push(`
                 <section class="mix-result-group">
-                    <h4 class="mix-result-title">本批新草稿 ${generatedPaths.length} 个</h4>
+                    <h4 class="mix-result-title">本批结果：成功 ${successCount} 份${failedCount ? `，失败 ${failedCount} 份` : ''}</h4>
                     <p class="mix-result-meta">${draftsFolder ? `输出目录：${escapeHtml(draftsFolder)}` : '系统按当前草稿目录生成新的草稿副本。'}</p>
                     ${generatedPaths.length
                         ? `<div class="resource-table-shell mix-result-table">
                             <div class="resource-table-head mix-result-table-head">
                                 <span>草稿名称</span>
                                 <span>状态</span>
+                                <span>本份素材</span>
                                 <span>草稿路径</span>
                             </div>
-                            ${generatedPaths.map((pathValue) => `
+                            ${generatedPaths.map((pathValue, index) => {
+                                const detail = batchDetailsByPath.get(pathValue) || batchDetails[index] || null;
+                                return `
                                 <article class="resource-table-row mix-result-table-row">
                                     <div class="resource-table-cell"><strong title="${escapeHtml(getPathLeaf(pathValue) || '未命名草稿')}">${escapeHtml(getPathLeaf(pathValue) || '未命名草稿')}</strong></div>
                                     <div class="resource-table-cell"><span class="resource-level-badge">本批新稿</span></div>
+                                    <div class="resource-table-cell mix-result-selection-cell">${renderBatchSelectionSummary(detail)}</div>
                                     <div class="resource-table-cell export-path-cell" title="${escapeHtml(pathValue)}">${escapeHtml(compactPathLabel(pathValue))}</div>
                                 </article>
-                            `).join('')}
+                            `;
+                            }).join('')}
                         </div>`
                         : '<p class="mix-result-summary">任务已完成，但当前返回里没有新草稿路径。</p>'}
                 </section>
@@ -308,6 +360,30 @@
                                 <article class="resource-table-row mix-result-warning-row">
                                     <div class="resource-table-cell"><span class="resource-level-badge">警告</span></div>
                                     <div class="resource-table-cell export-path-cell" title="${escapeHtml(warning)}">${escapeHtml(warning)}</div>
+                                </article>
+                            `).join('')}
+                        </div>
+                    </section>
+                `);
+            }
+
+            if (failedBatches.length) {
+                sections.push(`
+                    <section class="mix-result-group">
+                        <h4 class="mix-result-title">失败批次 ${failedBatches.length} 个</h4>
+                        <div class="resource-table-shell mix-result-table">
+                            <div class="resource-table-head mix-result-table-head">
+                                <span>草稿名称</span>
+                                <span>状态</span>
+                                <span>本份素材</span>
+                                <span>失败原因</span>
+                            </div>
+                            ${failedBatches.map((detail) => `
+                                <article class="resource-table-row mix-result-table-row">
+                                    <div class="resource-table-cell"><strong title="${escapeHtml(String(detail.draft_name || `批次${Number(detail.batch_index || 0) + 1}`))}">${escapeHtml(String(detail.draft_name || `批次${Number(detail.batch_index || 0) + 1}`))}</strong></div>
+                                    <div class="resource-table-cell"><span class="resource-level-badge badge-warning">失败</span></div>
+                                    <div class="resource-table-cell mix-result-selection-cell">${renderBatchSelectionSummary(detail)}</div>
+                                    <div class="resource-table-cell export-path-cell" title="${escapeHtml(String(detail.error || '未知错误'))}">${escapeHtml(String(detail.error || '未知错误'))}</div>
                                 </article>
                             `).join('')}
                         </div>
@@ -364,6 +440,25 @@
             const values = inputs.filter((input) => input.checked).map((input) => input.value);
             if (!values.length) return [];
             return values;
+        }
+
+        function getActiveMaterialSlots() {
+            const replaceMaterials = !!document.getElementById('replace_materials')?.checked;
+            const replaceAudios = !!document.getElementById('replace_audios')?.checked;
+            const replaceTypes = new Set(getSelectedReplaceTypes());
+            return materialsConfig.filter((item, index) => {
+                const meta = Array.isArray(materialSlotMeta) ? materialSlotMeta[index] : null;
+                const metaType = meta && typeof meta === 'object' ? String(meta.type || meta.source || '').trim().toLowerCase() : '';
+                const inferredType = metaType || inferMaterialTypeFromLabel(item);
+                if (inferredType === 'audio') {
+                    return replaceAudios || replaceTypes.has('audio');
+                }
+                if (!replaceMaterials) return false;
+                if (!replaceTypes.size) return true;
+                if (inferredType === 'image') return replaceTypes.has('image');
+                if (inferredType === 'video') return replaceTypes.has('video');
+                return true;
+            });
         }
 
         function toggleDraftCompactSection(button) {
@@ -678,11 +773,11 @@
             };
         }
 
-        function clearMaterialLayoutList() {
-            currentMaterialLayout = null;
-            const box = document.getElementById('materialLayoutList');
-            if (box) box.innerHTML = '';
-        }
+function clearMaterialLayoutList() {
+    currentMaterialLayout = null;
+    const box = document.getElementById('materialLayoutList');
+    if (box) box.innerHTML = '';
+}
 
         function renderMaterialLayoutList(layout = null) {
             const box = document.getElementById('materialLayoutList');
@@ -699,7 +794,10 @@
                 const fullPath = String(folder.path || '');
                 return `
                     <article class="material-layout-card">
-                        <strong title="${escapeHtml(folderLabel)}">${escapeHtml(compactPathLabel(folderLabel, 26))}</strong>
+                        <div class="material-layout-head">
+                            <strong title="${escapeHtml(folderLabel)}">${escapeHtml(compactPathLabel(folderLabel, 26))}</strong>
+                            <button class="material-layout-remove" type="button" onclick="removeMaterialLayoutFolder(${index})" aria-label="移除目录卡片">×</button>
+                        </div>
                         <div class="material-layout-chip">${escapeHtml(getMaterialTypeLabel(materialType))}</div>
                         <div class="material-layout-meta">
                             <span>已放素材：${count} 个</span>
@@ -1045,9 +1143,7 @@
 
         function buildRuntimeSummaryText() {
             const items = [
-                `Duo 素材中心 ${runtimeFeatures.duo ? '可用' : '未开放'}`,
-                `AI 漫剧草稿 ${runtimeFeatures.manga ? '可用' : '未开放'}`,
-                `OpenClaw 接入 ${runtimeFeatures.openclaw ? '已保留' : '未开放'}`
+                `Duo 素材中心 ${runtimeFeatures.duo ? '可用' : '未开放'}`
             ];
             return items.join(' / ');
         }
@@ -1058,7 +1154,6 @@
 
             const disabledFlags = [];
             if (!runtimeFeatures.duo) disabledFlags.push('Duo 素材中心');
-            if (!runtimeFeatures.manga) disabledFlags.push('AI 漫剧草稿');
             const disabledHint = disabledFlags.length
                 ? `当前版本暂未开放：${disabledFlags.join('、')}。`
                 : '';
@@ -1293,34 +1388,72 @@
             modal.setAttribute('aria-hidden', 'true');
         }
 
-        function updateWorkspaceDraftBadge() {
-            const badge = document.getElementById('workspaceDraftBadge');
-            if (!badge) return;
-            if (!currentDraftPath) {
-                badge.textContent = '未选草稿';
-                return;
-            }
-            const name = currentDraftPath.split(/[\\/]/).filter(Boolean).pop() || currentDraftPath;
-            const versionMap = {
-                all: '自动识别',
-                jianying: '剪映',
-                capcut: 'CapCut 国际版'
-            };
-            badge.textContent = `草稿 ${versionMap[currentDraftVersion] || '自动识别'} / ${name}`;
-        }
+function updateWorkspaceDraftBadge() {
+    const badge = document.getElementById('workspaceDraftBadge');
+    if (!badge) return;
+    const shell = getCurrentDraftShell(getActiveWorkspacePanel());
+    const shellPath = shell?.dataset?.draftPath || '';
+    const shellVersion = shell?.dataset?.draftVersion || currentDraftVersion || 'all';
+    if (!shellPath) {
+        badge.textContent = '未选草稿';
+        return;
+    }
+    const name = shellPath.split(/[\\/]/).filter(Boolean).pop() || shellPath;
+    const versionMap = {
+        all: '自动识别',
+        jianying: '剪映',
+        capcut: 'CapCut 国际版'
+    };
+    badge.textContent = `草稿 ${versionMap[shellVersion] || '自动识别'} / ${name}`;
+}
 
-        function getActiveWorkspacePanel() {
-            return document.querySelector('.workspace-panel.active') || document.querySelector('.workspace-panel');
-        }
+function getActiveWorkspacePanel() {
+    return document.querySelector('.workspace-panel.active') || document.querySelector('.workspace-panel');
+}
 
         function getAllDraftShells() {
             return Array.from(document.querySelectorAll('[data-draft-shell="true"]'));
         }
 
-        function getCurrentDraftShell(scope = null) {
-            if (scope?.matches?.('[data-draft-shell="true"]')) return scope;
-            return scope?.querySelector?.('[data-draft-shell="true"]') || getActiveWorkspacePanel()?.querySelector?.('[data-draft-shell="true"]') || getAllDraftShells()[0] || null;
-        }
+function getCurrentDraftShell(scope = null) {
+    if (scope?.matches?.('[data-draft-shell="true"]')) return scope;
+    return scope?.querySelector?.('[data-draft-shell="true"]') || getActiveWorkspacePanel()?.querySelector?.('[data-draft-shell="true"]') || getAllDraftShells()[0] || null;
+}
+
+function getDraftShellState(shell = null) {
+    const target = getCurrentDraftShell(shell);
+    return {
+        shell: target,
+        path: target?.dataset?.draftPath || '',
+        infoPath: target?.dataset?.draftInfoPath || '',
+        version: target?.dataset?.draftVersion || 'all',
+        status: target?.dataset?.draftStatusMessage || ''
+    };
+}
+
+function setDraftShellState(shell = null, nextState = {}) {
+    const target = getCurrentDraftShell(shell);
+    if (!target) return;
+    if (Object.prototype.hasOwnProperty.call(nextState, 'path')) {
+        target.dataset.draftPath = nextState.path || '';
+    }
+    if (Object.prototype.hasOwnProperty.call(nextState, 'infoPath')) {
+        target.dataset.draftInfoPath = nextState.infoPath || '';
+    }
+    if (Object.prototype.hasOwnProperty.call(nextState, 'version')) {
+        target.dataset.draftVersion = nextState.version || 'all';
+    }
+    if (Object.prototype.hasOwnProperty.call(nextState, 'status')) {
+        target.dataset.draftStatusMessage = nextState.status || '';
+    }
+}
+
+function syncActiveDraftGlobals(shell = null) {
+    const state = getDraftShellState(shell);
+    currentDraftPath = state.path || '';
+    currentDraftInfoPath = state.infoPath || '';
+    currentDraftVersion = state.version || 'all';
+}
 
         function getDraftElement(role, panel = null) {
             const scope = panel || getCurrentDraftShell(getActiveWorkspacePanel());
@@ -1371,30 +1504,57 @@
             return Array.from(document.querySelectorAll('[data-action="refresh-drafts"]'));
         }
 
-        function syncDraftShellValues(message = '') {
-            const settings = getWorkspaceSettings();
-            getAllDraftShells().forEach((shell) => {
-                const versionSelect = getDraftElement('version', shell);
-                const pathInput = getDraftElement('path', shell);
-                const status = getDraftElement('status', shell);
-                if (versionSelect) {
-                    versionSelect.value = currentDraftVersion || versionSelect.value || settings.last_draft_version || 'all';
-                }
-                if (pathInput) {
-                    pathInput.value = currentDraftPath || pathInput.value || settings.last_draft_path || '';
-                }
-                if (status) {
-                    if (message) {
-                        status.textContent = message;
-                    } else if (currentDraftPath) {
-                        const draftName = currentDraftPath.split(/[\\/]/).filter(Boolean).pop() || currentDraftPath;
-                        status.textContent = `当前草稿：${draftName}`;
-                    } else {
-                        status.textContent = '请先从下方选择草稿。';
-                    }
-                }
-            });
+function syncDraftShellValues(message = '') {
+    getAllDraftShells().forEach((shell) => {
+        const state = getDraftShellState(shell);
+        const versionSelect = getDraftElement('version', shell);
+        const pathInput = getDraftElement('path', shell);
+        const status = getDraftElement('status', shell);
+        if (versionSelect) {
+            versionSelect.value = state.version || versionSelect.value || 'all';
         }
+        if (pathInput) {
+            pathInput.value = state.path || '';
+        }
+        if (status) {
+            const statusMessage = shell === getCurrentDraftShell(getActiveWorkspacePanel()) && message ? message : (state.status || '');
+            if (statusMessage) {
+                status.textContent = statusMessage;
+            } else if (state.path) {
+                const draftName = state.path.split(/[\\/]/).filter(Boolean).pop() || state.path;
+                status.textContent = `当前草稿：${draftName}`;
+            } else {
+                status.textContent = '请先从下方选择草稿。';
+            }
+        }
+    });
+}
+
+function clearDraftShellSelection(shell = null, statusMessage = '') {
+    const target = getCurrentDraftShell(shell);
+    if (!target) return;
+    setDraftShellState(target, {
+        path: '',
+        infoPath: '',
+        version: getDraftElement('version', target)?.value || 'all',
+        status: statusMessage || ''
+    });
+    if (target === getCurrentDraftShell(getActiveWorkspacePanel())) {
+        syncActiveDraftGlobals(target);
+    }
+}
+
+function removeMaterialLayoutFolder(index) {
+    const layout = currentMaterialLayout;
+    if (!Array.isArray(layout?.folders) || !layout.folders[index]) return;
+    layout.folders.splice(index, 1);
+    renderMaterialLayoutList(layout);
+    if (!layout.folders.length) {
+        clearMaterialLayoutList();
+    }
+    updatePrimaryActionState();
+    notify('已移除该目录卡片。', 'success');
+}
 
         function syncEffectsSectionVisibility() {
             const effects = document.getElementById('effects_section');
@@ -2205,16 +2365,17 @@
                 .join('');
         }
 
-        async function discoverDrafts(targetShell = null, renderInModal = isDraftPickerOpen(), forceRefresh = false) {
-            const shell = getCurrentDraftShell(targetShell || activeDraftShell || getActiveWorkspacePanel());
+async function discoverDrafts(targetShell = null, renderInModal = isDraftPickerOpen(), forceRefresh = false) {
+    const shell = getCurrentDraftShell(targetShell || activeDraftShell || getActiveWorkspacePanel());
             const picker = getDraftPickerElements();
             const summary = renderInModal ? picker.summary : getDraftElement('summary', shell);
             const rootList = renderInModal ? picker.roots : getDraftElement('roots', shell);
             const list = renderInModal ? picker.list : getDraftElement('list', shell);
-            const version = renderInModal
-                ? (picker.version?.value || getDraftElement('version', shell)?.value || currentDraftVersion || 'all')
-                : (getDraftElement('version', shell)?.value || currentDraftVersion || 'all');
-            const activePath = getDraftElement('path', shell)?.value?.trim() || currentDraftPath || '';
+    const shellState = getDraftShellState(shell);
+    const version = renderInModal
+        ? (picker.version?.value || getDraftElement('version', shell)?.value || shellState.version || 'all')
+        : (getDraftElement('version', shell)?.value || shellState.version || 'all');
+    const activePath = getDraftElement('path', shell)?.value?.trim() || shellState.path || '';
             if (!summary || !rootList || !list) return;
             if (!getToken()) {
                 summary.textContent = '请先登录后查看本机草稿。';
@@ -2277,20 +2438,26 @@
             }
         }
 
-        async function useDraftFromDiscovery(idx) {
-            const drafts = window.__vfDiscoveredDrafts || [];
-            const item = drafts[idx];
-            if (!item) return;
-            const shell = getCurrentDraftShell(activeDraftShell || getActiveWorkspacePanel());
-            const input = getDraftElement('path', shell);
-            const version = inferDraftVersion(`${item.source} ${item.path}`);
-            if (input) input.value = item.path;
-            currentDraftPath = item.path;
-            currentDraftVersion = version !== 'all' ? version : (currentDraftVersion || 'all');
-            syncDraftShellValues();
-            await loadDraftInfo();
-            closeDraftPicker();
-        }
+async function useDraftFromDiscovery(idx) {
+    const drafts = window.__vfDiscoveredDrafts || [];
+    const item = drafts[idx];
+    if (!item) return;
+    const shell = getCurrentDraftShell(activeDraftShell || getActiveWorkspacePanel());
+    const input = getDraftElement('path', shell);
+    const version = inferDraftVersion(`${item.source} ${item.path}`);
+    if (input) input.value = item.path;
+    setDraftShellState(shell, {
+        path: item.path,
+        infoPath: item.path,
+        version: version !== 'all' ? version : (getDraftShellState(shell).version || 'all'),
+        status: ''
+    });
+    syncActiveDraftGlobals(shell);
+    clearMaterialLayoutList();
+    syncDraftShellValues();
+    await loadDraftInfo();
+    closeDraftPicker();
+}
 
         function applyManualDraftPath() {
             const manualInput = document.getElementById('draft_path_manual');
@@ -2897,15 +3064,15 @@
             };
         }
 
-        function resetDraftInfo(message = '') {
-            currentDraftPath = '';
-            currentDraftInfoPath = '';
-            currentDraftVersion = getDraftElement('version')?.value || 'all';
-            materialsConfig = [];
-            materialSlotMeta = [];
-            textsConfig = [];
-            draftTrackMeta = [];
-            clearMaterialLayoutList();
+function resetDraftInfo(message = '') {
+    const activeShell = getCurrentDraftShell(getActiveWorkspacePanel());
+    clearDraftShellSelection(activeShell, message || '');
+    syncActiveDraftGlobals(activeShell);
+    materialsConfig = [];
+    materialSlotMeta = [];
+    textsConfig = [];
+    draftTrackMeta = [];
+    clearMaterialLayoutList();
             const dom = getDraftDom();
             if (dom.materialsArea) dom.materialsArea.style.display = 'none';
             if (dom.materialsList) dom.materialsList.innerHTML = '';
@@ -2934,13 +3101,14 @@
             updateMixModeUI();
         }
 
-        async function loadDraftInfo() {
-            const dom = getDraftDom();
-            const draftPath = dom.draftPath?.value?.trim();
-            if (!draftPath) {
-                resetDraftInfo('请先选择草稿');
-                return;
-            }
+async function loadDraftInfo() {
+    const dom = getDraftDom();
+    const activeShell = getCurrentDraftShell(getActiveWorkspacePanel());
+    const draftPath = getDraftElement('path', activeShell)?.value?.trim();
+    if (!draftPath) {
+        resetDraftInfo('请先选择草稿');
+        return;
+    }
             if (!getToken()) {
                 setAuthMessage('请先登录后选择草稿');
                 toggleProtectedUI(false);
@@ -2959,16 +3127,19 @@
                     throw new Error(data.error || '草稿读取失败');
                 }
 
-                currentDraftPath = draftPath;
-                currentDraftInfoPath = draftPath;
-                currentDraftVersion = getDraftElement('version')?.value || inferDraftVersion(draftPath);
+                setDraftShellState(activeShell, {
+                    path: draftPath,
+                    infoPath: draftPath,
+                    version: getDraftElement('version', activeShell)?.value || inferDraftVersion(draftPath),
+                    status: ''
+                });
+                syncActiveDraftGlobals(activeShell);
                 materialsConfig = data.materials || [];
                 materialSlotMeta = Array.isArray(data.material_items) ? data.material_items : [];
                 textsConfig = data.texts || [];
                 draftTrackMeta = data.tracks || [];
                 updateDuoTrackOptions(data.tracks || [], data.segment_counts || {});
                 setWorkspaceSettings({
-                    last_draft_path: draftPath,
                     last_draft_version: currentDraftVersion
                 });
 
@@ -3018,6 +3189,7 @@
                     const textCount = textsConfig.length;
                     dom.draftStatus.textContent = `当前草稿：${matCount} 个素材槽 / ${textCount} 段文字`;
                 }
+                setDraftShellState(activeShell, { status: dom.draftStatus?.textContent || '' });
                 syncDraftShellValues(dom.draftStatus?.textContent || '');
                 updateWorkspaceDraftBadge();
                 toggleProtectedUI(!!getToken());
@@ -3040,13 +3212,15 @@
             updatePrimaryActionState();
         }
 
-        function buildAssistantContext() {
-            return {
-                draft_path: getDraftElement('path')?.value?.trim() || currentDraftPath || '',
-                materials_root: document.getElementById('folder_path')?.value?.trim() || '',
-                strategy: getSelectedReplaceStrategy(),
-                slots: materialsConfig.slice(),
-                text_count: textsConfig.length
+function buildAssistantContext() {
+    const shell = getCurrentDraftShell(getActiveWorkspacePanel());
+    const shellState = getDraftShellState(shell);
+    return {
+        draft_path: getDraftElement('path', shell)?.value?.trim() || shellState.path || '',
+        materials_root: document.getElementById('folder_path')?.value?.trim() || '',
+        strategy: getSelectedReplaceStrategy(),
+        slots: getActiveMaterialSlots(),
+        text_count: textsConfig.length
             };
         }
 
@@ -3078,15 +3252,17 @@
                 if (!res.ok || !data.ok) throw new Error(data.error || '创建失败');
                 const layout = data.layout || {};
                 const folderInput = document.getElementById('folder_path');
-                if (folderInput && layout.root) {
-                    folderInput.value = layout.root;
-                    pushRecentMaterialFolder(layout.root);
-                    setWorkspaceSettings({last_materials_root: layout.root});
-                }
-                currentMaterialLayout = hydrateMaterialLayout(layout);
-                renderMaterialLayoutList(currentMaterialLayout);
-                const folderNames = Array.isArray(layout.folders) ? layout.folders.map((item) => item.label || item.path).join(' / ') : '';
-                if (statusEl) statusEl.textContent = layout.root ? `目录已创建：${layout.root}${folderNames ? `\n${folderNames}` : ''}` : '目录已创建';
+            if (folderInput && layout.root) {
+                folderInput.value = layout.root;
+                pushRecentMaterialFolder(layout.root);
+                setWorkspaceSettings({last_materials_root: layout.root});
+            }
+            currentMaterialLayout = hydrateMaterialLayout({
+                ...layout,
+                draft_path: context.draft_path
+            });
+            renderMaterialLayoutList(currentMaterialLayout);
+                if (statusEl) statusEl.textContent = '';
                 updatePrimaryActionState();
                 notify('素材目录已按草稿创建。', 'success');
             } catch (e) {
@@ -3333,21 +3509,23 @@
             renderAllEffectLists();
         }
 
-        async function submitBatch() {
+async function submitBatch() {
             if (!getToken()) {
                 setAuthMessage('请先登录后再生成');
                 toggleProtectedUI(false);
                 return;
             }
-            const draftPath = getDraftElement('path')?.value?.trim();
-            if (!draftPath) {
-                notify('请先选择草稿。', 'warn');
-                return;
-            }
-            if (!currentDraftPath || currentDraftPath !== draftPath) {
-                notify('草稿状态已变化，请重新选择后再试。', 'warn');
-                return;
-            }
+    const activeShell = getCurrentDraftShell(getActiveWorkspacePanel());
+    const shellState = getDraftShellState(activeShell);
+    const draftPath = getDraftElement('path', activeShell)?.value?.trim();
+    if (!draftPath) {
+        notify('请先选择草稿。', 'warn');
+        return;
+    }
+    if (!shellState.path || shellState.path !== draftPath || currentDraftPath !== draftPath) {
+        notify('草稿状态已变化，请重新选择后再试。', 'warn');
+        return;
+    }
             const batchCount = parseInt(document.getElementById('batch_count').value) || 1;
             if (batchCount < 1 || batchCount > 100) {
                 notify('批量生成数量需要在 1 到 100 之间。', 'warn');
@@ -3386,10 +3564,14 @@
                 notify('槽位拼接段数需要在 2 到 12 之间。', 'warn');
                 return;
             }
-            if (isMixMaterialsRootRequired(replaceStrategy) && !folderPath) {
-                notify('请先选择素材目录。', 'warn');
-                return;
-            }
+    if (isMixMaterialsRootRequired(replaceStrategy) && !folderPath) {
+        notify('请先选择素材目录。', 'warn');
+        return;
+    }
+    if (currentMaterialLayout?.draft_path && currentMaterialLayout.draft_path !== draftPath) {
+        notify('目录卡片对应的草稿已变化，请重新点击“快速创建目录”。', 'warn');
+        return;
+    }
 
             const textsInput = [];
             if (replaceTexts) {
@@ -3450,6 +3632,11 @@
                 const result = await response.json();
                 if (result.job_id) {
                     document.getElementById('progress-text').innerText = `任务已提交，编号 ${result.job_id}，正在处理...`;
+                    notify('任务已提交，正在后台处理。', 'success');
+                    const submitWarnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
+                    if (submitWarnings.length) {
+                        submitWarnings.forEach((warning) => notify(warning, 'warn', 5000));
+                    }
                     pollTaskStatus(result.job_id);
                 } else {
                     throw new Error(result.error || '未知错误');
@@ -3855,18 +4042,68 @@
             if (!isNaN(whiten)) params.whiten = whiten;
             const input = document.getElementById('duo_params');
             if (input) input.value = JSON.stringify(params);
+            updateDuoQuickSummary(params);
         }
 
-        function applyDuoPreset() {
-            const preset = document.getElementById('duo_param_preset')?.value || '';
+        function updateDuoPresetSelection(preset = '') {
+            document.querySelectorAll('[data-duo-preset]').forEach((node) => {
+                node.classList.toggle('active', (node.dataset.duoPreset || '') === preset);
+            });
+            const summary = document.getElementById('duoPresetSummary');
+            if (summary) {
+                const copyMap = {
+                    '': '当前方案：纯净简约。适合先加素材，再按需要补单项效果。',
+                    beauty: '当前方案：人像优化。会默认补人像优化、磨皮和提亮，适合口播和人物主体。',
+                    shake: '当前方案：镜头律动。会默认补镜头律动和综合强度，适合节奏感更强的成片。'
+                };
+                summary.textContent = copyMap[preset] || copyMap[''];
+            }
+        }
+
+        function updateDuoQuickSummary(params = null) {
+            const summary = document.getElementById('duoQuickSummary');
+            if (!summary) return;
+            const payload = params && typeof params === 'object' ? params : parseMaybeJson(document.getElementById('duo_params')?.value || '') || {};
+            const enabled = [];
+            if (payload.blur) enabled.push('柔焦');
+            if (payload.shake) enabled.push('镜头律动');
+            if (payload.beauty) enabled.push('人像优化');
+            if (typeof payload.intensity === 'number') enabled.push(`综合强度 ${payload.intensity}`);
+            if (typeof payload.strength === 'number') enabled.push(`动态幅度 ${payload.strength}`);
+            if (typeof payload.speed === 'number') enabled.push(`动态速度 ${payload.speed}`);
+            if (typeof payload.smooth === 'number') enabled.push(`磨皮 ${payload.smooth}`);
+            if (typeof payload.whiten === 'number') enabled.push(`提亮 ${payload.whiten}`);
+            summary.textContent = enabled.length
+                ? `当前已启用：${enabled.join(' / ')}`
+                : '当前未启用额外 Duo 参数。';
+        }
+
+        function applyDuoPreset(presetValue = null) {
+            const presetInput = document.getElementById('duo_param_preset');
+            const preset = presetValue !== null ? String(presetValue || '') : (presetInput?.value || '');
+            if (presetInput) presetInput.value = preset;
+            const checkboxIds = ['duo_param_blur', 'duo_param_shake', 'duo_param_beauty'];
+            checkboxIds.forEach((id) => {
+                const node = document.getElementById(id);
+                if (node) node.checked = false;
+            });
+            const numericIds = ['duo_param_intensity', 'duo_param_strength', 'duo_param_speed', 'duo_param_smooth', 'duo_param_whiten'];
+            numericIds.forEach((id) => {
+                const node = document.getElementById(id);
+                if (node) node.value = '';
+            });
             if (preset === 'beauty') {
                 document.getElementById('duo_param_beauty').checked = true;
+                document.getElementById('duo_param_blur').checked = true;
                 document.getElementById('duo_param_smooth').value = 0.6;
                 document.getElementById('duo_param_whiten').value = 0.4;
             } else if (preset === 'shake') {
                 document.getElementById('duo_param_shake').checked = true;
                 document.getElementById('duo_param_intensity').value = 60;
+                document.getElementById('duo_param_strength').value = 0.5;
+                document.getElementById('duo_param_speed').value = 1.2;
             }
+            updateDuoPresetSelection(preset);
             syncDuoParamUI();
         }
 
@@ -4315,48 +4552,51 @@ async function renameUserMaterialProject() {
         }
 
         async function initSettingsWorkspace() {
+            injectAiSettingsEnhancements();
             const saveMsg = document.getElementById('settingsSaveMsg');
             const pathSaveMsg = document.getElementById('pathSettingsSaveMsg');
             const serviceSaveMsg = document.getElementById('serviceSettingsSaveMsg');
+            const aiPromptSaveMsg = document.getElementById('aiPromptSettingsSaveMsg');
             const openclawStatusMsg = document.getElementById('openclawSettingsStatus');
             const strategyInput = document.getElementById('settingsStrategy');
             const autoDiscoverInput = document.getElementById('settingsAutoDiscover');
-            const autoLoadInput = document.getElementById('settingsAutoLoadLastDraft');
             const materialFolderInput = document.getElementById('settingsMaterialFolder');
             const draftsFolderInput = document.getElementById('settingsDraftsFolder');
             const audioFolderInput = document.getElementById('settingsAudioFolder');
             const exportDirInput = document.getElementById('settingsDefaultExportDir');
             const openclawBaseUrlInput = document.getElementById('settingsOpenclawBaseUrl');
             const openclawTokenInput = document.getElementById('settingsOpenclawToken');
+            const scriptPromptTemplateInput = document.getElementById('settingsScriptPromptTemplate');
+            const imagePromptTemplateInput = document.getElementById('settingsImagePromptTemplate');
 
             try {
                 const localSettings = getWorkspaceSettings();
                 if (!getToken()) {
                     if (strategyInput) strategyInput.value = localSettings.strategy || 'simple';
                     if (autoDiscoverInput) autoDiscoverInput.checked = localSettings.auto_discover !== false;
-                    if (autoLoadInput) autoLoadInput.checked = !!localSettings.auto_load_last_draft;
                     return;
                 }
                 const settings = await loadWorkspaceSettingsConfig();
                 const workspace = settings.workspace || {};
                 const paths = settings.paths || {};
                 const services = settings.services || {};
+                const ai = settings.ai || {};
                 const openclaw = services.openclaw || {};
 
                 if (strategyInput) strategyInput.value = workspace.strategy || localSettings.strategy || 'simple';
                 if (autoDiscoverInput) autoDiscoverInput.checked = workspace.auto_discover !== false;
-                if (autoLoadInput) autoLoadInput.checked = !!workspace.auto_load_last_draft;
                 if (materialFolderInput) materialFolderInput.value = paths.material_folder || '';
                 if (draftsFolderInput) draftsFolderInput.value = paths.drafts_folder || '';
                 if (audioFolderInput) audioFolderInput.value = paths.audio_folder || '';
                 if (exportDirInput) exportDirInput.value = paths.default_export_dir || '';
                 if (openclawBaseUrlInput) openclawBaseUrlInput.value = openclaw.base_url || 'http://localhost:18789';
                 if (openclawTokenInput) openclawTokenInput.value = openclaw.token || '';
+                if (scriptPromptTemplateInput) scriptPromptTemplateInput.value = ai.script_prompt_template || '';
+                if (imagePromptTemplateInput) imagePromptTemplateInput.value = ai.image_prompt_template || '';
 
                 setWorkspaceSettings({
                     strategy: workspace.strategy || localSettings.strategy || 'simple',
-                    auto_discover: workspace.auto_discover !== false,
-                    auto_load_last_draft: !!workspace.auto_load_last_draft
+                    auto_discover: workspace.auto_discover !== false
                 });
                 syncWorkspacePathInputs();
             } catch (e) {
@@ -4368,14 +4608,12 @@ async function renameUserMaterialProject() {
                     const payload = {
                         workspace: {
                             strategy: strategyInput?.value || 'simple',
-                            auto_discover: !!autoDiscoverInput?.checked,
-                            auto_load_last_draft: !!autoLoadInput?.checked
+                            auto_discover: !!autoDiscoverInput?.checked
                         }
                     };
                     await saveWorkspaceSettingsConfig(payload);
                     setWorkspaceSettings(payload.workspace);
                     setInlineMessage(saveMsg, '工作台设置已保存', 'success');
-                    notify('工作台设置已保存', 'success');
                     if (payload.workspace.auto_discover && getToken()) discoverDrafts();
                 } catch (e) {
                     const message = `保存失败：${e.message || e}`;
@@ -4396,7 +4634,6 @@ async function renameUserMaterialProject() {
                     };
                     await saveWorkspaceSettingsConfig(payload);
                     setInlineMessage(pathSaveMsg, '路径设置已保存', 'success');
-                    notify('路径设置已保存', 'success');
                 } catch (e) {
                     const message = `保存失败：${e.message || e}`;
                     setInlineMessage(pathSaveMsg, message, 'error');
@@ -4416,7 +4653,6 @@ async function renameUserMaterialProject() {
                     };
                     await saveWorkspaceSettingsConfig(payload);
                     setInlineMessage(serviceSaveMsg, 'AI 漫剧服务已保存', 'success');
-                    notify('AI 漫剧服务已保存', 'success');
                 } catch (e) {
                     const message = `保存失败：${e.message || e}`;
                     setInlineMessage(serviceSaveMsg, message, 'error');
@@ -4440,6 +4676,23 @@ async function renameUserMaterialProject() {
                 } catch (e) {
                     const message = `连接失败：${e.message || e}`;
                     setInlineMessage(openclawStatusMsg, message, 'error');
+                    notify(message, 'error');
+                }
+            });
+
+            document.getElementById('saveAiPromptSettingsBtn')?.addEventListener('click', async () => {
+                try {
+                    const payload = {
+                        ai: {
+                            script_prompt_template: scriptPromptTemplateInput?.value?.trim() || '',
+                            image_prompt_template: imagePromptTemplateInput?.value?.trim() || ''
+                        }
+                    };
+                    await saveWorkspaceSettingsConfig(payload);
+                    setInlineMessage(aiPromptSaveMsg, '提示词配置已保存', 'success');
+                } catch (e) {
+                    const message = `保存失败：${e.message || e}`;
+                    setInlineMessage(aiPromptSaveMsg, message, 'error');
                     notify(message, 'error');
                 }
             });
@@ -4852,12 +5105,16 @@ async function renameUserMaterialProject() {
             if (settings.last_draft_version) {
                 currentDraftVersion = settings.last_draft_version;
             }
-            if (settings.auto_load_last_draft && settings.last_draft_path) {
-                currentDraftPath = settings.last_draft_path;
-                updateWorkspaceDraftBadge();
-            }
+            getAllDraftShells().forEach((shell, index) => {
+                shell.dataset.draftShellId = shell.dataset.draftShellId || `draft-shell-${index + 1}`;
+                shell.dataset.draftPath = '';
+                shell.dataset.draftInfoPath = '';
+                shell.dataset.draftVersion = shell.dataset.draftVersion || currentDraftVersion || 'all';
+                shell.dataset.draftStatusMessage = '';
+            });
             syncWorkspacePathInputs();
             syncDraftShellValues();
+            updateWorkspaceDraftBadge();
             renderRecentMaterialFolders();
             renderExportDraftQueue();
             renderSplitDraftQueue();
@@ -4892,8 +5149,14 @@ async function renameUserMaterialProject() {
                 defaultItem: 'make',
                 items: {
                     make: {kind: 'panel', panelId: 'panel-ai-make', focusId: 'ai-make-anchor'},
-                    inspiration: {kind: 'panel', panelId: 'panel-ai-make', focusId: 'ai-inspiration-anchor'},
-                    manga: {kind: 'panel', panelId: 'panel-ai-manga', focusId: 'ai-manga-anchor'}
+                    inspiration: {kind: 'panel', panelId: 'panel-ai-make', focusId: 'ai-inspiration-anchor'}
+                }
+            },
+            'manga-assistant': {
+                panelId: 'panel-manga-assistant',
+                defaultItem: 'manga-assistant-main',
+                items: {
+                    'manga-assistant-main': {kind: 'panel', panelId: 'panel-manga-assistant', focusId: 'manga-assistant-anchor'}
                 }
             },
             effects: {
@@ -5021,9 +5284,16 @@ async function renameUserMaterialProject() {
             });
             syncWorkspaceSidebarState(entry.groupKey, entry.itemKey, options);
 
+            const targetShell = getCurrentDraftShell(targetPanel);
+            syncActiveDraftGlobals(targetShell);
             syncDraftShellValues();
+            updateWorkspaceDraftBadge();
+            if (!getDraftShellState(targetShell).path) {
+                clearMaterialLayoutList();
+                updatePrimaryActionState();
+            }
             if (targetPanel.dataset.requiresDraft === 'true') {
-                discoverDrafts();
+                discoverDrafts(targetShell);
             }
 
             if (entry.kind === 'mix') {
@@ -5048,7 +5318,6 @@ async function renameUserMaterialProject() {
 
         function applyAiWorkspaceSection(itemKey) {
             const aiMakePanel = document.getElementById('panel-ai-make');
-            const aiMangaPanel = document.getElementById('panel-ai-manga');
             const aiInspirationCard = document.getElementById('aiInspirationCard');
             if (aiMakePanel) {
                 aiMakePanel.querySelectorAll('.tool-card').forEach((node) => {
@@ -5059,9 +5328,6 @@ async function renameUserMaterialProject() {
             }
             if (aiInspirationCard) {
                 aiInspirationCard.style.display = itemKey === 'inspiration' ? '' : 'none';
-            }
-            if (aiMangaPanel) {
-                aiMangaPanel.style.display = itemKey === 'manga' ? '' : 'none';
             }
         }
 
@@ -5397,9 +5663,22 @@ async function renameUserMaterialProject() {
             if (runtimeFeatures.duo) {
                 loadDuoCacheStatus();
                 loadFfmpegStatus();
-                document.getElementById('duo_param_blur')?.addEventListener('change', syncDuoParamUI);
-                document.getElementById('duo_param_shake')?.addEventListener('change', syncDuoParamUI);
-                document.getElementById('duo_param_beauty')?.addEventListener('change', syncDuoParamUI);
+                [
+                    'duo_param_blur',
+                    'duo_param_shake',
+                    'duo_param_beauty',
+                    'duo_param_intensity',
+                    'duo_param_strength',
+                    'duo_param_speed',
+                    'duo_param_smooth',
+                    'duo_param_whiten'
+                ].forEach((id) => {
+                    const node = document.getElementById(id);
+                    if (!node) return;
+                    node.addEventListener('change', syncDuoParamUI);
+                    node.addEventListener('input', syncDuoParamUI);
+                });
+                applyDuoPreset(document.getElementById('duo_param_preset')?.value || '');
             }
         }
 
@@ -5407,6 +5686,16 @@ async function renameUserMaterialProject() {
             document.getElementById('assistantPreviewBtn')?.addEventListener('click', previewAssistantCommand);
             document.getElementById('assistantExecuteBtn')?.addEventListener('click', executeAssistantCommand);
             document.getElementById('assistantRefreshLogsBtn')?.addEventListener('click', loadAssistantLogs);
+            document.querySelectorAll('[data-assistant-command]').forEach((node) => {
+                node.addEventListener('click', () => {
+                    const input = document.getElementById('assistantCommandInput');
+                    const command = node.getAttribute('data-assistant-command') || '';
+                    if (input && command) {
+                        input.value = command;
+                        input.focus();
+                    }
+                });
+            });
             loadAssistantLogs();
         }
 
@@ -5742,6 +6031,21 @@ async function renameUserMaterialProject() {
 let aiProviders = [];
 let aiKeys = [];
 let editingAiKeyId = null;
+const AI_PROVIDER_PRESETS = {
+    siliconflow: {
+        providerCode: 'siliconflow',
+        keyName: 'SiliconFlow',
+        baseUrl: 'https://api.siliconflow.cn/v1',
+        endpoint: 'Qwen/Qwen2.5-7B-Instruct'
+    },
+    volc: {
+        providerCode: 'volc',
+        keyName: '火山 TTS',
+        baseUrl: '',
+        endpoint: ''
+    }
+};
+const CORE_AI_PROVIDER_ORDER = ['siliconflow', 'volc', 'openai'];
 let mangaCharacterBase64 = '';
 let mangaAbortController = null;
 let mangaProgressTimer = null;
@@ -5875,6 +6179,10 @@ function applyAssistantClientAction(action = {}) {
             applyWorkspaceNavigation('mix', action.mix_target, {openActiveGroup: true});
             return;
         }
+        if (action.panel_id === 'panel-effects' && action.anchor === 'effects-duo-anchor') {
+            applyWorkspaceNavigation('effects', 'effects-duo', {openActiveGroup: true});
+            return;
+        }
         if (action.subtab_target && action.panel_id === 'panel-export') {
             applyWorkspaceNavigation('export', action.subtab_target, {openActiveGroup: true});
             return;
@@ -5989,6 +6297,91 @@ function mapAiKeyOptions(selectId, providerCode) {
     el.innerHTML = items.length ? items.map((item) => `<option value="${item.id}">${item.key_name}</option>`).join('') : '<option value="">请选择</option>';
 }
 
+function injectAiSettingsEnhancements() {
+    const stack = document.querySelector('#settings-ai-section .tool-stack');
+    if (!stack || document.getElementById('aiPromptSettingsSaveMsg')) return;
+    const providerCard = stack.querySelector('.tool-card:nth-child(2)');
+    if (!providerCard) return;
+    const presetCard = document.createElement('div');
+    presetCard.className = 'tool-card';
+    presetCard.innerHTML = `<div class="tool-head"><div><h3>推荐接入</h3><p>点一下就把下方服务切到对应分类，并带入常用默认值。</p></div></div><div class="ai-provider-presets"><button class="ai-provider-preset" type="button" data-ai-preset="siliconflow"><strong>SiliconFlow</strong><span>脚本与生图统一使用</span></button><button class="ai-provider-preset" type="button" data-ai-preset="volc"><strong>火山 TTS</strong><span>配音模型</span></button></div>`;
+    const promptCard = document.createElement('div');
+    promptCard.className = 'tool-card';
+    promptCard.innerHTML = `<div class="tool-head"><div><h3>提示词默认配置</h3><p>系统会优先使用这里的默认模板，再叠加分镜结构和用户补充内容。</p></div></div><div class="settings-vertical"><div class="form-group"><label>脚本提示词默认模板</label><textarea id="settingsScriptPromptTemplate" rows="5" placeholder="例如：先整理人物、场景、动作、镜头与字幕。"></textarea></div><div class="form-group"><label>生图提示词默认模板</label><textarea id="settingsImagePromptTemplate" rows="5" placeholder="例如：突出人物一致性、场景风格、镜头语言和画面细节。"></textarea></div></div><div class="inline-actions"><button id="saveAiPromptSettingsBtn" class="primary-btn" type="button">保存提示词配置</button><div id="aiPromptSettingsSaveMsg" class="hint"></div></div>`;
+    stack.insertBefore(promptCard, providerCard);
+    stack.insertBefore(presetCard, providerCard);
+}
+
+function applyAiProviderPreset(presetKey) {
+    const preset = AI_PROVIDER_PRESETS[presetKey];
+    if (!preset) return;
+    const provider = aiProviders.find((item) => String(item.provider_code || '').toLowerCase() === String(preset.providerCode || '').toLowerCase());
+    const providerSelect = document.getElementById('ai_provider_select');
+    const keyNameInput = document.getElementById('ai_key_name');
+    const baseUrlInput = document.getElementById('ai_base_url');
+    const endpointInput = document.getElementById('ai_endpoint');
+    if (providerSelect && provider) providerSelect.value = String(provider.id);
+    if (keyNameInput) keyNameInput.value = preset.keyName || '';
+    if (baseUrlInput) baseUrlInput.value = preset.baseUrl || '';
+    if (endpointInput) endpointInput.value = preset.endpoint || '';
+    updateAiProviderGuideHint();
+    setAiAccountMessage(`已切换到 ${preset.keyName}，可以直接在下方补密钥并保存。`);
+}
+
+function getAiProviderCategory(provider) {
+    const code = String(provider?.provider_code || '').toLowerCase();
+    const name = String(provider?.provider_name || '').toLowerCase();
+    const desc = String(provider?.description || '').toLowerCase();
+    const text = `${code} ${name} ${desc}`;
+    if (text.includes('jimeng') || text.includes('即梦') || text.includes('image') || text.includes('绘图') || text.includes('生图')) {
+        return 'image';
+    }
+    if (text.includes('volc') || text.includes('tts') || text.includes('voice') || text.includes('语音') || text.includes('配音')) {
+        return 'audio';
+    }
+    return 'script';
+}
+
+function sortProvidersByPriority(items = []) {
+    return [...(Array.isArray(items) ? items : [])].sort((a, b) => {
+        const codeA = String(a?.provider_code || '').toLowerCase();
+        const codeB = String(b?.provider_code || '').toLowerCase();
+        const idxA = CORE_AI_PROVIDER_ORDER.indexOf(codeA);
+        const idxB = CORE_AI_PROVIDER_ORDER.indexOf(codeB);
+        const rankA = idxA === -1 ? 999 : idxA;
+        const rankB = idxB === -1 ? 999 : idxB;
+        if (rankA !== rankB) return rankA - rankB;
+        return String(a?.provider_name || codeA).localeCompare(String(b?.provider_name || codeB), 'zh-CN');
+    });
+}
+
+function splitCoreAndExtraProviders(items = []) {
+    const ordered = sortProvidersByPriority(items);
+    return {
+        core: ordered.filter((item) => CORE_AI_PROVIDER_ORDER.includes(String(item?.provider_code || '').toLowerCase())),
+        extra: ordered.filter((item) => !CORE_AI_PROVIDER_ORDER.includes(String(item?.provider_code || '').toLowerCase()))
+    };
+}
+
+function getAiProviderGroupMeta(groupKey) {
+    const map = {
+        image: { title: '生图模型', badge: '生图', hint: '当前主链路优先使用 SiliconFlow 处理生图。' },
+        script: { title: '脚本模型', badge: '脚本', hint: '当前主链路优先使用 SiliconFlow 的文本模型整理文案和提示词。' },
+        audio: { title: '配音模型', badge: '配音', hint: '适合火山 TTS、语音合成和配音账号。' }
+    };
+    return map[groupKey] || map.script;
+}
+
+function groupAiProviders(items) {
+    const groups = { image: [], script: [], audio: [] };
+    (Array.isArray(items) ? items : []).forEach((item) => {
+        const key = getAiProviderCategory(item);
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(item);
+    });
+    return groups;
+}
+
 function renderAiKeysList() {
     const box = document.getElementById('ai_keys_list');
     if (!box) return;
@@ -5996,27 +6389,53 @@ function renderAiKeysList() {
         box.innerHTML = '还没有保存账号。先选择服务，填写账号名称和密钥后再保存。';
         return;
     }
-    box.innerHTML = aiKeys.map((item) => `
+    const { core, extra } = splitCoreAndExtraProviders(aiKeys);
+    const renderCards = (items) => items.map((item) => `
         <div class="key-item">
             <div class="key-row"><strong>${item.key_name}</strong><span class="key-badge">${item.provider_name || item.provider_code}</span></div>
             <div class="key-row"><span>${item.masked_key || '-'}</span><span>${item.is_active ? '启用' : '停用'}</span></div>
             <div class="key-actions"><button class="effect-add" type="button" onclick="editAiKey(${item.id})">编辑</button><button class="effect-add" type="button" onclick="testAiKey(${item.id})">测试</button><button class="effect-add" type="button" onclick="toggleAiKeyActive(${item.id}, ${item.is_active ? 'false' : 'true'})">${item.is_active ? '停用' : '启用'}</button><button class="effect-add" type="button" onclick="deleteAiKey(${item.id})">删除</button></div>
         </div>
     `).join('');
+    const sections = [];
+    if (core.length) {
+        sections.push(`<section class="ai-provider-group"><div class="ai-provider-group-head"><div><h4>当前主用服务</h4><p>优先展示现在真正会用到的脚本、生图和配音账号。</p></div><span class="key-badge">${core.length} 个账号</span></div>${renderCards(core)}</section>`);
+    }
+    if (extra.length) {
+        sections.push(`<section class="ai-provider-group"><div class="ai-provider-group-head"><div><h4>其他服务</h4><p>保留备用或历史接入，不影响当前主流程。</p></div><span class="key-badge">${extra.length} 个账号</span></div>${renderCards(extra)}</section>`);
+    }
+    box.innerHTML = sections.join('');
 }
 
 function renderProviderList() {
     const list = document.getElementById('ai_provider_list');
     const select = document.getElementById('ai_provider_select');
+    const { core, extra } = splitCoreAndExtraProviders(aiProviders);
     if (select) {
-        select.innerHTML = aiProviders.length ? aiProviders.map((item) => `<option value="${item.id}">${item.provider_name}</option>`).join('') : '<option value="">暂无可用服务</option>';
+        if (!aiProviders.length) {
+            select.innerHTML = '<option value="">暂无可用服务</option>';
+        } else {
+            const coreOptions = core.map((item) => `<option value="${item.id}">${item.provider_name}</option>`).join('');
+            const extraOptions = extra.map((item) => `<option value="${item.id}">${item.provider_name}</option>`).join('');
+            select.innerHTML = [
+                coreOptions ? `<optgroup label="当前主用服务">${coreOptions}</optgroup>` : '',
+                extraOptions ? `<optgroup label="其他服务">${extraOptions}</optgroup>` : ''
+            ].join('');
+        }
     }
     if (!list) return;
     if (!aiProviders.length) {
         list.textContent = '暂时还没有可用服务。请检查初始化数据或重新登录后再试。';
         return;
     }
-    list.innerHTML = aiProviders.map((item) => `<div class="key-item"><div class="key-row"><strong>${item.provider_name}</strong><span class="key-badge">${item.provider_code}</span></div><div class="key-row"><span>${item.description || ''}</span></div></div>`).join('');
+    const renderCards = (items) => items.map((item) => `<div class="key-item key-item-compact"><div class="key-row"><strong>${item.provider_name}</strong><span class="key-badge">${item.provider_code}</span></div><div class="hint">${item.description || ''}</div></div>`).join('');
+    list.innerHTML = [
+        core.length ? `<section class="ai-provider-group"><div class="ai-provider-group-head"><div><h4>当前主用服务</h4><p>默认按这几项维护，就够覆盖现在的主链路。</p></div><span class="key-badge">核心</span></div><div class="ai-provider-group-grid">${renderCards(core)}</div></section>` : '',
+        extra.length ? `<section class="ai-provider-group"><div class="ai-provider-group-head"><div><h4>其他服务</h4><p>需要时再补，不用一开始就全配。</p></div><span class="key-badge">备用</span></div><div class="ai-provider-group-grid">${renderCards(extra)}</div></section>` : ''
+    ].join('');
+    document.querySelectorAll('[data-ai-preset]').forEach((button) => {
+        button.onclick = () => applyAiProviderPreset(button.dataset.aiPreset || '');
+    });
 }
 
 function setAiAccountMessage(message, level = 'info') {
@@ -6080,7 +6499,7 @@ async function loadAiProviders() {
         const res = await authFetch('/api/ai/providers');
         const data = await res.json();
         if (!res.ok || data.ok === false) throw new Error(data.error || '加载失败');
-        aiProviders = Array.isArray(data.items) ? data.items : [];
+        aiProviders = (Array.isArray(data.items) ? data.items : []).filter((item) => String(item?.provider_code || '').toLowerCase() !== 'chatanywhere');
     } catch (e) {
         aiProviders = [];
         setAiAccountMessage(`AI 服务列表加载失败：${e.message || e}`, 'error');
@@ -6097,8 +6516,6 @@ async function loadAiKeys() {
         mapAiKeyOptions('ai_jimeng_key', 'jimeng');
         mapAiKeyOptions('ai_volc_key', 'volc');
         mapAiKeyOptions('ai_openai_key', 'openai');
-        mapAiKeyOptions('storyboard_text_key', 'openai');
-        mapAiKeyOptions('storyboard_image_key', 'openai');
         setAiAccountMessage('请先登录后再读取 AI 账号。', 'warn');
         return;
     }
@@ -6117,8 +6534,6 @@ async function loadAiKeys() {
     mapAiKeyOptions('ai_jimeng_key', 'jimeng');
     mapAiKeyOptions('ai_volc_key', 'volc');
     mapAiKeyOptions('ai_openai_key', 'openai');
-    mapAiKeyOptions('storyboard_text_key', 'openai');
-    mapAiKeyOptions('storyboard_image_key', 'openai');
 }
 
 function resetAiKeyForm() {
@@ -6401,12 +6816,68 @@ function normalizeStoryboardItem(item, index) {
     };
 }
 
+function buildStoryboardGlobalContext() {
+    const sourceText = cleanupStoryboardText(storyboardSourceTextCache || document.getElementById('storyboard_source_text')?.value || '');
+    if (!sourceText) return '';
+    return sourceText
+        .replace(/\s+/g, ' ')
+        .slice(0, 120)
+        .trim();
+}
+
+function collectStoryboardRecurringCharacters(limit = 4) {
+    const counts = new Map();
+    (Array.isArray(storyboardItemsCache) ? storyboardItemsCache : []).forEach((item) => {
+        normalizeStoryboardCharacters(item?.characters || item?.speaker || '').forEach((name) => {
+            const key = cleanupStoryboardText(name);
+            if (!key) return;
+            counts.set(key, (counts.get(key) || 0) + 1);
+        });
+    });
+    return [...counts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, limit)
+        .map(([name]) => name);
+}
+
+function buildEnhancedStoryboardImagePrompt(item, index = 0) {
+    const normalized = normalizeStoryboardItem(item || {}, index || 1);
+    const globalContext = buildStoryboardGlobalContext();
+    const recurringCharacters = collectStoryboardRecurringCharacters();
+    const characters = normalized.characters.length ? normalized.characters : recurringCharacters;
+    const promptLines = [
+        characters.length ? `人物主体：${characters.join('、')}，保持同一角色形象稳定、脸部和发型连续一致。` : '人物主体：如果有人物出镜，保持角色脸部、发型、服饰和体态稳定一致。',
+        normalized.setting ? `场景环境：${normalized.setting}。` : '',
+        normalized.scene ? `画面主体：${normalized.scene}。` : '',
+        normalized.visual_action ? `动作设计：${normalized.visual_action}。` : '',
+        normalized.camera ? `镜头语言：${normalized.camera}，强调短剧分镜感、主体明确、构图干净。` : '镜头语言：短剧分镜感，主体明确，构图干净，避免纯风景空镜。',
+        normalized.emotion ? `情绪氛围：${normalized.emotion}。` : '',
+        normalized.dialogue ? `对白氛围：保留“${normalized.dialogue}”对应的说话状态、情绪张力和表演感，但画面不要出现字幕文字。` : '',
+        globalContext ? `剧情背景：${globalContext}。当前镜头必须与这段剧情保持连续，不要跳到无关画面。` : '',
+        '画面要求：中文短剧/国漫分镜风格，单镜头叙事，主体突出，层次清晰，光影自然，禁止英文、字幕、水印、logo、说明文字，避免多人拥挤和杂乱背景。'
+    ].filter(Boolean);
+    return promptLines.join('\n');
+}
+
 function extractJsonBlock(raw) {
-    const text = String(raw || '').trim();
+    const text = sanitizeStoryboardRawText(raw);
     if (!text) return '';
     const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fenceMatch && fenceMatch[1]) return fenceMatch[1].trim();
+    const firstBrace = text.indexOf('{');
+    const lastBrace = text.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+        return text.slice(firstBrace, lastBrace + 1).trim();
+    }
     return text;
+}
+
+function sanitizeStoryboardRawText(raw) {
+    return String(raw || '')
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/\*\*[\s\S]*?\*\*/g, '')
+        .replace(/^\s*#+\s.*$/gm, '')
+        .trim();
 }
 
 function parseStoryboardItemsFromText(rawText) {
@@ -6494,8 +6965,39 @@ function renderStoryboardSentenceList(items) {
     }).join('');
 }
 
+function updateStoryboardWorkbenchState() {
+    const countEl = document.getElementById('storyboard_summary_count');
+    const promptReadyEl = document.getElementById('storyboard_prompt_ready');
+    const nextActionEl = document.getElementById('storyboard_next_action');
+    const promptHintEl = document.getElementById('storyboard_prompt_hint');
+    const promptInput = document.getElementById('ai_storyboard_image_prompt');
+    const promptValue = cleanupStoryboardText(promptInput?.value || '');
+    const itemCount = Array.isArray(storyboardItemsCache) ? storyboardItemsCache.length : 0;
+    const hasPrompt = !!promptValue;
+
+    if (countEl) countEl.textContent = `${itemCount} 条`;
+    if (promptReadyEl) promptReadyEl.textContent = hasPrompt ? '已带入' : '未带入';
+
+    let nextAction = '先生成分镜';
+    if (itemCount > 0 && !hasPrompt) nextAction = '从镜头卡片带入提示词';
+    if (itemCount > 0 && hasPrompt) nextAction = '可以开始按句生图';
+    if (nextActionEl) nextActionEl.textContent = nextAction;
+
+    if (promptHintEl) {
+        if (hasPrompt) {
+            promptHintEl.textContent = '当前提示词已就绪，建议先确认人物、场景和动作，再开始生图。';
+        } else if (itemCount > 0) {
+            promptHintEl.textContent = '先从下方镜头卡片点“用于生图”，再做少量补充，比手写一整段更稳。';
+        } else {
+            promptHintEl.textContent = '先生成分镜，再从镜头卡片带入提示词。';
+        }
+    }
+}
+
 function buildStoryboardPrompt(sourceText, durationSeconds) {
+    const scriptTemplate = cleanupStoryboardText(document.getElementById('settingsScriptPromptTemplate')?.value || '');
     return [
+        scriptTemplate,
         '请把下面文案整理成适合短视频漫剧的结构化分镜。',
         '只返回 JSON，不要解释，不要 Markdown 代码块。',
         '返回格式：{"items":[{"index":1,"scene":"","dialogue":"","visual_action":"","setting":"","camera":"","emotion":"","speaker":"","characters":[],"shot_type":"scene"}]}',
@@ -6518,14 +7020,66 @@ function setStoryboardImagePrompt(value, item = null) {
         delete input.dataset.storyboardItem;
         delete input.dataset.storyboardImagePrompt;
     }
+    updateStoryboardWorkbenchState();
 }
 
 function useStoryboardSentenceForImage(index) {
     const target = Number(index || 0);
     const item = storyboardItemsCache.find((entry) => Number(entry.index || 0) === target);
     if (!item) return;
-    setStoryboardImagePrompt(item.image_prompt_text || item.scene || item.dialogue || '', item);
-    document.getElementById('ai_storyboard_image_status').textContent = `已带入镜头 ${target} 的生图提示词。`;
+    const enhancedPrompt = buildEnhancedStoryboardImagePrompt(item, target);
+    setStoryboardImagePrompt(enhancedPrompt || item.image_prompt_text || item.scene || item.dialogue || '', item);
+    const statusEl = document.getElementById('ai_storyboard_image_status');
+    const promptInput = document.getElementById('ai_storyboard_image_prompt');
+    if (statusEl) statusEl.textContent = `已带入镜头 ${target} 的强化生图提示词。请先看上方提示词，再决定是否直接生图。`;
+    if (promptInput) {
+        promptInput.focus();
+        promptInput.scrollIntoView({behavior: 'smooth', block: 'center'});
+        promptInput.classList.add('input-pulse-focus');
+        window.setTimeout(() => promptInput.classList.remove('input-pulse-focus'), 1800);
+    }
+}
+
+function buildStoryboardImagePrompt(rawPrompt) {
+    const imageTemplate = cleanupStoryboardText(document.getElementById('settingsImagePromptTemplate')?.value || '');
+    const prompt = cleanupStoryboardText(rawPrompt || '');
+    return [imageTemplate, prompt].filter(Boolean).join('\n\n');
+}
+
+function buildStoryboardScriptForManga() {
+    const items = Array.isArray(storyboardItemsCache) ? storyboardItemsCache : [];
+    if (!items.length) {
+        return cleanupStoryboardText(document.getElementById('storyboard_source_text')?.value || '');
+    }
+    return items.map((item, idx) => {
+        const parts = [
+            cleanupStoryboardText(item.scene || ''),
+            cleanupStoryboardText(item.visual_action || ''),
+            cleanupStoryboardText(item.dialogue || ''),
+        ].filter(Boolean);
+        return `${idx + 1}. ${parts.join('，')}`.trim();
+    }).filter(Boolean).join('\n');
+}
+
+function buildStoryboardProjectName() {
+    const currentName = cleanupStoryboardText(document.getElementById('manga_project_name')?.value || '');
+    if (currentName) return currentName;
+    const sourceText = cleanupStoryboardText(document.getElementById('storyboard_source_text')?.value || '');
+    const firstLine = sourceText.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
+    if (!firstLine) return '';
+    return firstLine.slice(0, 18);
+}
+
+function openStoryboardNextStep(target) {
+    if (target === 'ai-manga') {
+        applyWorkspaceNavigation('manga-assistant', 'manga-assistant-main', {openActiveGroup: true});
+        notify('AI 漫剧入口已隐藏，请继续在漫剧助手里整理分镜和生图。', 'success');
+        return;
+    }
+    if (target === 'mix') {
+        applyWorkspaceNavigation('mix', 'mix-mode-group', {openActiveGroup: true});
+        notify('已切到批量混剪，把当前生成图片放进对应槽位目录即可继续。', 'success');
+    }
 }
 
 async function pollAiTaskUntilDone(taskId, statusEl) {
@@ -6550,12 +7104,11 @@ async function pollAiTaskUntilDone(taskId, statusEl) {
 
 async function generateStoryboardSrt() {
     const sourceText = cleanupStoryboardText(document.getElementById('storyboard_source_text')?.value || '');
-    const keyId = parseInt(document.getElementById('storyboard_text_key')?.value || '0', 10);
     const durationSeconds = parseFloat(document.getElementById('storyboard_duration_seconds')?.value || '3');
     const status = document.getElementById('storyboard_status');
     const result = document.getElementById('storyboard_result');
-    if (!keyId || !sourceText) {
-        if (status) status.textContent = '请先选择脚本账号并粘贴文案。';
+    if (!sourceText) {
+        if (status) status.textContent = '请先粘贴文案。';
         return;
     }
     if (status) status.textContent = '正在提交分镜任务...';
@@ -6563,11 +7116,11 @@ async function generateStoryboardSrt() {
     storyboardItemsCache = [];
     storyboardSourceTextCache = sourceText;
     renderStoryboardSentenceList([]);
+    updateStoryboardWorkbenchState();
     const res = await authFetch('/api/ai/generate/text', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-            key_id: keyId,
             prompt: buildStoryboardPrompt(sourceText, durationSeconds),
             temperature: 0.3,
             max_tokens: 2400
@@ -6587,8 +7140,10 @@ async function generateStoryboardSrt() {
         renderStoryboardSentenceList(storyboardItemsCache);
         if (status) status.textContent = `已生成 ${storyboardItemsCache.length} 条分镜。`;
         if (storyboardItemsCache[0]) useStoryboardSentenceForImage(storyboardItemsCache[0].index);
+        updateStoryboardWorkbenchState();
     } catch (e) {
         if (status) status.textContent = e.message || '生成失败';
+        updateStoryboardWorkbenchState();
     }
 }
 
@@ -6620,13 +7175,12 @@ async function fetchLatestUserMaterial(type = 'image') {
 
 async function startAiStoryboardImage() {
     const promptInput = document.getElementById('ai_storyboard_image_prompt');
-    const keyId = parseInt(document.getElementById('storyboard_image_key')?.value || '0', 10);
-    const size = document.getElementById('storyboard_image_size')?.value || '1024x1024';
+    const size = document.getElementById('storyboard_image_size')?.value || '1080x1920';
     const status = document.getElementById('ai_storyboard_image_status');
     const result = document.getElementById('ai_storyboard_image_result');
     const prompt = cleanupStoryboardText(promptInput?.value || '');
-    if (!keyId || !prompt) {
-        if (status) status.textContent = '请先选择生图账号并准备提示词。';
+    if (!prompt) {
+        if (status) status.textContent = '请先准备提示词。';
         return;
     }
     let previousLatestId = 0;
@@ -6642,9 +7196,8 @@ async function startAiStoryboardImage() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-            key_id: keyId,
             task_type: 'image',
-            prompt,
+            prompt: buildStoryboardImagePrompt(prompt),
             size
         })
     });
@@ -6658,31 +7211,143 @@ async function startAiStoryboardImage() {
         const imageItems = await fetchLatestUserMaterial('image');
         const latest = imageItems.find((item) => Number(item.id || 0) !== previousLatestId) || imageItems[0] || null;
         if (latest && latest.id) {
-            const previewUrl = `/api/user/materials/file/${latest.id}`;
+            const previewUrl = buildAuthedMaterialFileUrl(latest.id);
             result.innerHTML = `
+                <div style="margin-bottom:12px;"><img src="${previewUrl}" alt="storyboard image" style="max-width:100%; border-radius:16px;"></div>
                 <div class="storyboard-sentence-text">已生成图片素材 #${latest.id}</div>
-                <div class="storyboard-sentence-text">${escapeHtml(latest.file_path || '')}</div>
-                <div style="margin-top:12px;"><img src="${previewUrl}" alt="storyboard image" style="max-width:100%; border-radius:16px;"></div>
-                <div class="storyboard-sentence-actions"><a class="effect-add" href="${previewUrl}" target="_blank" rel="noopener">打开预览</a></div>
+                <div class="storyboard-sentence-actions"><a class="effect-add" href="${previewUrl}" target="_blank" rel="noopener">打开预览</a><a class="effect-add" href="${previewUrl}" download>下载图片</a></div>
             `;
         } else {
             result.textContent = data.path || '图片已生成，请到最近 AI 素材查看。';
         }
         if (status) status.textContent = '图片生成完成。';
+        storyboardRecentPage = 1;
         await refreshAiMaterials();
+        updateStoryboardWorkbenchState();
     } catch (e) {
         if (status) status.textContent = '图片已生成，但预览读取失败。';
         result.textContent = data.path || e.message || '图片已生成，请到最近 AI 素材查看。';
+        updateStoryboardWorkbenchState();
     }
+}
+
+function getStoryboardRecentImageItems() {
+    return aiRecentMaterialsCache.filter((item) => String(item.file_type || '').toLowerCase() === 'image');
+}
+
+function getStoryboardRecentPageSize() {
+    const value = parseInt(document.getElementById('storyboard_recent_page_size')?.value || '5', 10);
+    return Number.isFinite(value) && value > 0 ? value : 5;
+}
+
+function renderStoryboardRecentImages() {
+    const storyboardBox = document.getElementById('storyboard_recent_ai_images');
+    const pager = document.getElementById('storyboard_recent_pager');
+    const prevBtn = document.getElementById('storyboard_recent_prev');
+    const nextBtn = document.getElementById('storyboard_recent_next');
+    if (!storyboardBox) return;
+
+    const imageItems = getStoryboardRecentImageItems();
+    const pageSize = getStoryboardRecentPageSize();
+    const totalPages = Math.max(1, Math.ceil(imageItems.length / pageSize));
+    storyboardRecentPage = Math.min(Math.max(1, storyboardRecentPage), totalPages);
+    const start = (storyboardRecentPage - 1) * pageSize;
+    const pageItems = imageItems.slice(start, start + pageSize);
+
+    if (pager) pager.textContent = `${storyboardRecentPage} / ${totalPages}`;
+    if (prevBtn) prevBtn.disabled = storyboardRecentPage <= 1;
+    if (nextBtn) nextBtn.disabled = storyboardRecentPage >= totalPages;
+
+    storyboardBox.innerHTML = pageItems.length ? pageItems.map((item) => {
+        const materialId = Number(item.id || 0);
+        const previewUrl = buildAuthedMaterialFileUrl(materialId);
+        const checked = storyboardRecentSelectedIds.has(materialId) ? 'checked' : '';
+        return `<article class="storyboard-recent-card">
+            <div class="storyboard-recent-preview">
+                <img src="${previewUrl}" alt="AI 图片 #${materialId || '-'}">
+            </div>
+            <div class="storyboard-recent-body">
+                <div class="storyboard-recent-meta">
+                    <strong>图片 #${materialId || '-'}</strong>
+                    <span class="key-badge">${escapeHtml(item.source || 'AI')}</span>
+                    <label class="storyboard-recent-check"><input type="checkbox" value="${materialId}" onchange="toggleStoryboardRecentSelection(${materialId}, this.checked)" ${checked}> 选中</label>
+                </div>
+                <div class="key-actions">
+                    <a class="effect-add" href="${previewUrl}" target="_blank" rel="noopener">预览</a>
+                    <a class="effect-add" href="${previewUrl}" download>下载</a>
+                </div>
+            </div>
+        </article>`;
+    }).join('') : '<div class="tool-result">最近 AI 图片会显示在这里。</div>';
+}
+
+function toggleStoryboardRecentSelection(materialId, checked) {
+    const id = Number(materialId || 0);
+    if (!id) return;
+    if (checked) {
+        storyboardRecentSelectedIds.add(id);
+    } else {
+        storyboardRecentSelectedIds.delete(id);
+    }
+}
+
+function changeStoryboardRecentPage(step) {
+    const total = Math.max(1, Math.ceil(getStoryboardRecentImageItems().length / getStoryboardRecentPageSize()));
+    storyboardRecentPage = Math.min(Math.max(1, storyboardRecentPage + Number(step || 0)), total);
+    renderStoryboardRecentImages();
+}
+
+function changeStoryboardRecentPageSize() {
+    storyboardRecentPage = 1;
+    renderStoryboardRecentImages();
+}
+
+function toggleStoryboardRecentPageSelection(selectAll) {
+    const imageItems = getStoryboardRecentImageItems();
+    const pageSize = getStoryboardRecentPageSize();
+    const start = (storyboardRecentPage - 1) * pageSize;
+    const pageItems = imageItems.slice(start, start + pageSize);
+    pageItems.forEach((item) => {
+        const id = Number(item.id || 0);
+        if (!id) return;
+        if (selectAll) {
+            storyboardRecentSelectedIds.add(id);
+        } else {
+            storyboardRecentSelectedIds.delete(id);
+        }
+    });
+    renderStoryboardRecentImages();
+}
+
+function downloadStoryboardRecentSelected() {
+    const ids = Array.from(storyboardRecentSelectedIds).filter((id) => Number(id) > 0);
+    if (!ids.length) {
+        notify('请先勾选本页要下载的图片。', 'warning');
+        return;
+    }
+    ids.forEach((id, index) => {
+        const url = buildAuthedMaterialFileUrl(id);
+        window.setTimeout(() => {
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', '');
+            link.rel = 'noopener';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        }, index * 120);
+    });
+    notify(`已开始下载 ${ids.length} 张图片。`, 'success');
 }
 
 async function refreshAiMaterials() {
     const box = document.getElementById('ai_recent_materials');
-    if (!box || !getToken()) return;
+    const storyboardBox = document.getElementById('storyboard_recent_ai_images');
+    if ((!box && !storyboardBox) || !getToken()) return;
     const res = await authFetch('/api/user/materials');
     const data = await res.json();
     aiRecentMaterialsCache = Array.isArray(data.items) ? data.items.slice(0, 20) : [];
-    box.innerHTML = aiRecentMaterialsCache.length ? aiRecentMaterialsCache.map((item) => {
+    const listHtml = aiRecentMaterialsCache.length ? aiRecentMaterialsCache.map((item) => {
         const materialId = item.id || '';
         const checked = item.source === 'openclaw' || String(item.file_path || '').toLowerCase().includes('manga');
         return `<div class="key-item">
@@ -6691,6 +7356,10 @@ async function refreshAiMaterials() {
             <div class="key-row"><span>${item.file_path || '-'}</span></div>
         </div>`;
     }).join('') : '这里会显示最近生成的素材。';
+    if (box) box.innerHTML = listHtml;
+    if (storyboardBox) {
+        renderStoryboardRecentImages();
+    }
 }
 
 function getSelectedMangaMaterialIds() {
@@ -7052,5 +7721,6 @@ function initAiWorkspace() {
         loadMangaTemplates();
         loadMangaHistory();
         renderMangaDraftResult({});
+        updateStoryboardWorkbenchState();
     }
 }

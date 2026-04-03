@@ -24,8 +24,10 @@ from sqlalchemy import or_, func
 from werkzeug.security import generate_password_hash, check_password_hash
 from app.utils.helpers import (
     get_config,
+    get_secure_config,
     set_config,
     set_configs,
+    set_secure_config,
     get_site_settings,
     get_material_folder,
     get_drafts_folder,
@@ -109,6 +111,55 @@ from app.utils.runtime_paths import app_resource_path, runtime_file_path, runtim
 api_bp = Blueprint('api', __name__, url_prefix='/api')
 draft_logger = logging.getLogger("draft_inspect")
 draft_logger.setLevel(logging.INFO)
+
+_AI_PROVIDER_DEFAULTS = {
+    "siliconflow": {
+        "provider_name": "SiliconFlow",
+        "description": "AI 生图与分镜图生成",
+        "docs_url": "https://docs.siliconflow.cn/cn/userguide/capabilities/images",
+        "signup_url": "https://cloud.siliconflow.cn",
+        "base_url": "https://api.siliconflow.cn/v1",
+    },
+    "chatanywhere": {
+        "provider_name": "ChatAnywhere",
+        "description": "AI 漫剧脚本与分镜文案",
+        "docs_url": "https://chatanywhere.apifox.cn/doc-5547696",
+        "signup_url": "https://api.chatanywhere.tech/#/shop",
+        "base_url": "https://api.chatanywhere.tech/v1",
+    },
+}
+_AI_STORYBOARD_DEFAULT_MODELS = [
+    "internlm/internlm2_5-7b-chat",
+    "Qwen/Qwen2.5-7B-Instruct",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "THUDM/GLM-Z1-9B-0414",
+    "THUDM/GLM-4-9B-0414",
+    "Qwen/Qwen3-8B",
+    "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+    "THUDM/GLM-4.1V-9B-Thinking",
+    "PaddlePaddle/PaddleOCR-VL",
+    "Qwen/Qwen3.5-4B",
+    "PaddlePaddle/PaddleOCR-VL-1.5",
+]
+_AI_IMAGE_POSITIVE_PREFIX = (
+    "masterpiece, best quality, ultra detailed, 8k, anime style, cinematic anime storyboard frame, "
+    "clean line art, soft lighting, dramatic framing, story-driven composition, vertical composition, "
+    "mobile-screen friendly composition, beautiful face, stable facial features, consistent character design"
+)
+_AI_IMAGE_SCENE_SUFFIX = (
+    "single character focus, suitable for short drama storyboard, clean readable framing for video editing, "
+    "simple uncluttered background, no extra people, clear face, clear hands, portrait-ready framing"
+)
+_AI_IMAGE_NEGATIVE_PROMPT = (
+    "lowres, bad anatomy, bad hands, text, caption, speech bubble, error, missing fingers, extra digit, "
+    "fused fingers, watermark, logo, blurry, deformed, distorted, ugly, multiple people, crowded scene"
+)
+_AI_STORYBOARD_SYSTEM_PROMPT = (
+    "你是专业的中文短剧分镜助手。"
+    "只允许输出中文内容，禁止输出英文解释、思考过程、Markdown、代码块、<think> 标签或任何额外说明。"
+    "你必须只返回结构化 JSON，格式为 "
+    "{\"items\":[{\"index\":1,\"scene\":\"\",\"dialogue\":\"\",\"visual_action\":\"\",\"setting\":\"\",\"camera\":\"\",\"emotion\":\"\",\"speaker\":\"\",\"characters\":[],\"shot_type\":\"scene\"}]}"
+)
 
 _DRAFT_CONTENT_ENCODINGS = (
     "utf-8",
@@ -560,6 +611,62 @@ def _safe_int_config(key: str, default: int = 0) -> int:
         return default
 
 
+def _parse_model_list_config(value) -> list:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raw = str(value or "").strip()
+    if not raw:
+        return list(_AI_STORYBOARD_DEFAULT_MODELS)
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [str(item).strip() for item in data if str(item).strip()]
+    except Exception:
+        pass
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def _build_model_candidates(primary_model, configured_models) -> list:
+    candidates = []
+    seen = set()
+    for item in [primary_model, *(configured_models or [])]:
+        model = str(item or "").strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        candidates.append(model)
+    return candidates
+
+
+def _get_ai_admin_config() -> dict:
+    silicon_key = (get_secure_config("siliconflow_default_api_key", "") or "").strip()
+    chat_key = (get_secure_config("chatanywhere_default_api_key", "") or "").strip()
+    return {
+        "siliconflow_base_url": get_config("siliconflow_base_url", _AI_PROVIDER_DEFAULTS["siliconflow"]["base_url"]) or _AI_PROVIDER_DEFAULTS["siliconflow"]["base_url"],
+        "siliconflow_docs_url": get_config("siliconflow_docs_url", _AI_PROVIDER_DEFAULTS["siliconflow"]["docs_url"]) or _AI_PROVIDER_DEFAULTS["siliconflow"]["docs_url"],
+        "siliconflow_signup_url": get_config("siliconflow_signup_url", _AI_PROVIDER_DEFAULTS["siliconflow"]["signup_url"]) or _AI_PROVIDER_DEFAULTS["siliconflow"]["signup_url"],
+        "siliconflow_model": get_config("siliconflow_model", "Kwai-Kolors/Kolors") or "Kwai-Kolors/Kolors",
+        "siliconflow_positive_prefix": get_config("siliconflow_positive_prefix", _AI_IMAGE_POSITIVE_PREFIX) or _AI_IMAGE_POSITIVE_PREFIX,
+        "siliconflow_scene_suffix": get_config("siliconflow_scene_suffix", _AI_IMAGE_SCENE_SUFFIX) or _AI_IMAGE_SCENE_SUFFIX,
+        "siliconflow_negative_prompt": get_config("siliconflow_negative_prompt", _AI_IMAGE_NEGATIVE_PROMPT) or _AI_IMAGE_NEGATIVE_PROMPT,
+        "siliconflow_default_api_key": silicon_key,
+        "chatanywhere_base_url": get_config("chatanywhere_base_url", _AI_PROVIDER_DEFAULTS["chatanywhere"]["base_url"]) or _AI_PROVIDER_DEFAULTS["chatanywhere"]["base_url"],
+        "chatanywhere_docs_url": get_config("chatanywhere_docs_url", _AI_PROVIDER_DEFAULTS["chatanywhere"]["docs_url"]) or _AI_PROVIDER_DEFAULTS["chatanywhere"]["docs_url"],
+        "chatanywhere_signup_url": get_config("chatanywhere_signup_url", _AI_PROVIDER_DEFAULTS["chatanywhere"]["signup_url"]) or _AI_PROVIDER_DEFAULTS["chatanywhere"]["signup_url"],
+        "chatanywhere_default_api_key": chat_key,
+        "siliconflow_text_model_list": _parse_model_list_config(
+            get_config(
+                "siliconflow_text_model_list",
+                get_config("chatanywhere_model_list", json.dumps(_AI_STORYBOARD_DEFAULT_MODELS, ensure_ascii=False))
+            )
+        ),
+        "siliconflow_text_system_prompt": get_config(
+            "siliconflow_text_system_prompt",
+            get_config("chatanywhere_system_prompt", _AI_STORYBOARD_SYSTEM_PROMPT) or _AI_STORYBOARD_SYSTEM_PROMPT
+        ) or _AI_STORYBOARD_SYSTEM_PROMPT,
+    }
+
+
 def _clamp_int(value, default: int = 0, minimum: int = 0, maximum: Optional[int] = None) -> int:
     try:
         number = int(value)
@@ -988,7 +1095,7 @@ def _enforce_rate_limit(action_key: str, *, limit: int, window_seconds: int, ide
 
 
 def _build_usage_policy() -> dict:
-    manga_cost = int(get_config("manga_generate_cost", "1") or 1)
+    manga_cost = _get_manga_generate_cost()
     export_cost = 1
     online_status = _remote_online_status()
     return {
@@ -1569,8 +1676,8 @@ def _build_vip_rules_summary() -> dict:
     return {
         "default_user_quota": _get_default_user_quota_value(),
         "daily_checkin_reward": _get_daily_checkin_reward(),
-        "license_points_ratio": int(settings.get("points_ratio", 1) or 1),
-        "manga_generate_cost": int(get_config("manga_generate_cost", "1") or 1),
+        "license_points_ratio": _clamp_int(settings.get("points_ratio", 0), 0, 0, None),
+        "manga_generate_cost": _get_manga_generate_cost(),
         "invite_referrer_reward": invite_settings["referrer_reward"],
         "invite_invitee_reward": invite_settings["invitee_reward"],
         "usage_policy": _build_usage_policy(),
@@ -1655,7 +1762,7 @@ def _build_material_layout(base_root: str, draft_name: str, strategy: str, slots
 
     normalized_slots = [item for item in (slots or []) if str(item or "").strip()]
     if strategy == "mix":
-        normalized_slots = normalized_slots or ["素材池"]
+        normalized_slots = ["素材池"]
     elif not normalized_slots:
         normalized_slots = ["槽位 1"]
 
@@ -2760,6 +2867,8 @@ def _validate_mix_materials_root(materials_root, replace_strategy, replace_type,
         ]
         if not valid_subfolders:
             return '按组精准替换至少需要 1 个包含所选素材类型的子文件夹。'
+        if len(valid_subfolders) < len(material_names):
+            return f'按组精准替换至少需要 {len(material_names)} 个包含所选素材的子文件夹，当前只有 {len(valid_subfolders)} 个。'
         return None
 
     if replace_strategy == 'partition':
@@ -2840,6 +2949,65 @@ def _validate_mix_materials_root_v2(materials_root, replace_strategy, replace_ty
             return f'这些分区目录里还没有可用素材：{", ".join(empty_folders)}。'
         return None
 
+    return None
+
+
+def _build_mix_generation_warning_v2(materials_root, replace_strategy, replace_type, material_names, batch_count, replace_mode):
+    try:
+        batch_count = max(1, int(batch_count or 1))
+    except Exception:
+        batch_count = 1
+    if batch_count <= 1:
+        return None
+    if str(replace_mode or '').strip().lower() == 'random':
+        return None
+
+    if replace_strategy == 'mix':
+        pool_size = len(_list_media_files_for_strategy(materials_root, replace_type))
+        required_span = batch_count + max(0, len(material_names or []) - 1)
+        if pool_size and pool_size < required_span:
+            return f'当前素材池共 {pool_size} 个素材，批量 {batch_count} 份时后续批次会循环复用。'
+        return None
+
+    subfolders = _list_strategy_subfolders(materials_root)
+    if not subfolders:
+        return None
+
+    if replace_strategy == 'group':
+        undersized = []
+        for folder in subfolders[:len(material_names or [])]:
+            count = len(_list_media_files_for_strategy(folder, replace_type))
+            if 0 < count < batch_count:
+                undersized.append(f"{os.path.basename(folder)}({count})")
+        if undersized:
+            return '这些槽位目录素材数少于批量数量，后续批次会循环复用：' + '，'.join(undersized[:6])
+        return None
+
+    if replace_strategy == 'sequence':
+        undersized = []
+        for folder in subfolders[:len(material_names or [])]:
+            count = len(_list_media_files_for_strategy(folder, 'video'))
+            if 0 < count < batch_count:
+                undersized.append(f"{os.path.basename(folder)}({count})")
+        if undersized:
+            return '这些拼接槽位目录视频数少于批量数量，后续批次会循环复用：' + '，'.join(undersized[:6])
+        return None
+
+    if replace_strategy == 'partition':
+        folder_map = {
+            _normalize_strategy_name(os.path.basename(folder)): folder
+            for folder in subfolders
+        }
+        undersized = []
+        for name in material_names or []:
+            folder = folder_map.get(_normalize_strategy_name(name))
+            if not folder:
+                continue
+            count = len(_list_media_files_for_strategy(folder, replace_type))
+            if 0 < count < batch_count:
+                undersized.append(f"{os.path.basename(folder)}({count})")
+        if undersized:
+            return '这些分区目录素材数少于批量数量，后续批次会循环复用：' + '，'.join(undersized[:6])
     return None
 
 def _extract_template_tracks(template_path):
@@ -3953,6 +4121,7 @@ def workspace_settings():
     def _build_workspace_settings_payload(user_config: dict) -> dict:
         workspace = user_config.get('workspace') or {}
         services = user_config.get('services') or {}
+        ai_cfg = user_config.get('ai') or {}
         legacy_openclaw = user_config.get('openclaw') or {}
         export_cfg = user_config.get('export') or {}
         paths_cfg = user_config.get('paths') or {}
@@ -3974,6 +4143,10 @@ def workspace_settings():
                     'base_url': openclaw_cfg.get('base_url') or '',
                     'token': openclaw_cfg.get('token') or '',
                 },
+            },
+            'ai': {
+                'script_prompt_template': ai_cfg.get('script_prompt_template') or get_config('script_prompt_template', '') or '',
+                'image_prompt_template': ai_cfg.get('image_prompt_template') or get_config('image_prompt_template', '') or '',
             },
         }
 
@@ -4033,6 +4206,13 @@ def workspace_settings():
             user_config_patch['openclaw'] = openclaw_payload
         if services_patch:
             user_config_patch['services'] = services_patch
+
+    ai_cfg = data.get('ai') or {}
+    if ai_cfg:
+        user_config_patch['ai'] = {
+            'script_prompt_template': (ai_cfg.get('script_prompt_template') or '').strip(),
+            'image_prompt_template': (ai_cfg.get('image_prompt_template') or '').strip(),
+        }
 
     config = save_user_config(user.id, user_config_patch, merge=True) if user_config_patch else load_user_config(user.id)
     return jsonify({'ok': True, 'config': config, 'settings': _build_workspace_settings_payload(config)})
@@ -4210,7 +4390,14 @@ def _china_day_bounds(now=None):
 def _get_daily_checkin_reward():
     try:
         settings = get_license_settings()
-        return max(1, int(settings.get("daily_checkin_reward", 1) or 1))
+        return _clamp_int(settings.get("daily_checkin_reward", 1), 1, 0, None)
+    except Exception:
+        return 1
+
+
+def _get_manga_generate_cost():
+    try:
+        return _clamp_int(get_config("manga_generate_cost", "1"), 1, 0, None)
     except Exception:
         return 1
 
@@ -4297,7 +4484,7 @@ def _build_user_points_overview(user_id: int):
         "today_cost": abs(int(today_cost)),
         "checkin_reward": _get_daily_checkin_reward(),
         "streak_days": streak_days,
-        "points_ratio": int(settings.get("points_ratio", 1) or 1),
+        "points_ratio": _clamp_int(settings.get("points_ratio", 0), 0, 0, None),
         "recent_logs": [_serialize_quota_log(item) for item in recent_logs],
         "server_day": local_day,
         "invite": _build_user_invite_overview(user),
@@ -4417,7 +4604,7 @@ def license_activate():
             if cdk.duration_days:
                 _extend_vip_expire_at(quota, int(cdk.duration_days), now)
             if cdk.bonus_points:
-                ratio = max(1, int(settings["points_ratio"] or 1))
+                ratio = max(0, int(settings["points_ratio"] or 0))
                 add_times = int(cdk.bonus_points or 0) * ratio
                 if add_times:
                     quota.remaining = (quota.remaining or 0) + add_times
@@ -4767,6 +4954,16 @@ def admin_license_settings():
             "default_user_quota",
             "invite_referrer_reward",
             "invite_invitee_reward",
+            "siliconflow_base_url",
+            "siliconflow_docs_url",
+            "siliconflow_signup_url",
+            "siliconflow_model",
+            "siliconflow_positive_prefix",
+            "siliconflow_scene_suffix",
+            "siliconflow_negative_prompt",
+            "siliconflow_text_system_prompt",
+            "script_prompt_template",
+            "image_prompt_template",
         ):
             if key in data:
                 raw_value = data.get(key)
@@ -4774,15 +4971,37 @@ def admin_license_settings():
                     raw_value = _clamp_int(raw_value, _get_default_user_quota_value(), 0, None)
                 elif key in ("invite_referrer_reward", "invite_invitee_reward"):
                     raw_value = _clamp_int(raw_value, 0, 0, _MAX_INVITE_REWARD_PERCENT)
+                elif key == "license_points_ratio":
+                    raw_value = _clamp_int(raw_value, 0, 0, None)
                 elif key == "license_transfer_cooldown_minutes":
                     raw_value = _clamp_int(raw_value, 0, 0, None)
                     set_config("license_transfer_cooldown_hours", str(int(raw_value // 60) if raw_value else 0))
-                set_config(key, str(raw_value))
+                set_config(key, "" if raw_value is None else str(raw_value).strip())
+        if "siliconflow_text_model_list" in data:
+            set_config("siliconflow_text_model_list", json.dumps(_parse_model_list_config(data.get("siliconflow_text_model_list")), ensure_ascii=False))
+        if "siliconflow_default_api_key" in data:
+            set_secure_config("siliconflow_default_api_key", str(data.get("siliconflow_default_api_key") or "").strip())
     settings = get_license_settings()
-    settings['manga_generate_cost'] = int(get_config('manga_generate_cost', '1') or 1)
+    settings['manga_generate_cost'] = _get_manga_generate_cost()
     settings['default_user_quota'] = _get_default_user_quota_value()
     settings['invite_referrer_reward'] = _clamp_int(_safe_int_config('invite_referrer_reward', 3), 3, 0, _MAX_INVITE_REWARD_PERCENT)
     settings['invite_invitee_reward'] = _clamp_int(_safe_int_config('invite_invitee_reward', 2), 2, 0, _MAX_INVITE_REWARD_PERCENT)
+    ai_settings = _get_ai_admin_config()
+    settings.update({
+        "siliconflow_base_url": ai_settings.get("siliconflow_base_url") or "",
+        "siliconflow_docs_url": ai_settings.get("siliconflow_docs_url") or "",
+        "siliconflow_signup_url": ai_settings.get("siliconflow_signup_url") or "",
+        "siliconflow_model": ai_settings.get("siliconflow_model") or "",
+        "siliconflow_positive_prefix": ai_settings.get("siliconflow_positive_prefix") or "",
+        "siliconflow_scene_suffix": ai_settings.get("siliconflow_scene_suffix") or "",
+        "siliconflow_negative_prompt": ai_settings.get("siliconflow_negative_prompt") or "",
+        "siliconflow_default_api_key_masked": f"{ai_settings['siliconflow_default_api_key'][:4]}****{ai_settings['siliconflow_default_api_key'][-4:]}" if ai_settings.get("siliconflow_default_api_key") else "",
+        "siliconflow_has_default_api_key": bool(ai_settings.get("siliconflow_default_api_key")),
+        "siliconflow_text_model_list": ai_settings.get("siliconflow_text_model_list") or [],
+        "siliconflow_text_system_prompt": ai_settings.get("siliconflow_text_system_prompt") or "",
+        "script_prompt_template": get_config("script_prompt_template", "") or "",
+        "image_prompt_template": get_config("image_prompt_template", "") or "",
+    })
     return jsonify({"ok": True, "settings": settings})
 
 
@@ -6560,6 +6779,12 @@ def _ensure_default_ai_providers():
             'description': '文本、图片、音频和视频生成',
             'docs_url': 'https://platform.openai.com/docs/api-reference/introduction',
         },
+        {
+            'provider_code': 'siliconflow',
+            'provider_name': _AI_PROVIDER_DEFAULTS['siliconflow']['provider_name'],
+            'description': _AI_PROVIDER_DEFAULTS['siliconflow']['description'],
+            'docs_url': _AI_PROVIDER_DEFAULTS['siliconflow']['docs_url'],
+        },
     ]
     changed = False
     for item in defaults:
@@ -6685,6 +6910,14 @@ def ai_provider_guide(provider_code):
             "3. 填写 API Key=access_token，API Secret=appid，Endpoint=cluster\n\n"
             "接口：`https://openspeech.bytedance.com/api/v1/tts`\n\n"
             "注意：需要提供 voice_type\n"
+        ),
+        "siliconflow": (
+            "# SiliconFlow 指南\n\n"
+            "1. 获取 API Key\n"
+            "2. Base URL 通常填写 `https://api.siliconflow.cn/v1`\n"
+            "3. 生图模型可填 `Kwai-Kolors/Kolors`\n"
+            "4. 脚本文本模型列表可在后台统一维护\n\n"
+            "文档：`https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions`\n"
         ),
     }
     content = guide_map.get(code, "# 指南\n\n暂无说明")
@@ -6841,7 +7074,7 @@ def _normalize_base_url(value: str) -> str:
 
 
 def _test_key_request(provider_code: str, api_key: str, endpoint: str, base_url: str = None):
-    if provider_code == "openai":
+    if provider_code in ("openai", "chatanywhere", "siliconflow"):
         base = _normalize_base_url(base_url)
         url = base + "/models"
         try:
@@ -6911,6 +7144,102 @@ def user_key_test(key_id):
     return jsonify({'ok': ok, 'message': msg})
 
 
+def _build_system_ai_key(user_id: int, provider_code: str, task_type: str):
+    task_type = (task_type or '').strip().lower()
+    admin_cfg = _get_ai_admin_config()
+    api_key = ''
+    api_secret = ''
+    endpoint = ''
+    base_url = ''
+    selected_prefix = ''
+    if provider_code == 'chatanywhere':
+        api_key = (admin_cfg.get("chatanywhere_default_api_key") or "").strip()
+        base_url = (admin_cfg.get("chatanywhere_base_url") or "").strip()
+        selected_prefix = 'chatanywhere'
+    elif provider_code == 'siliconflow':
+        api_key = (admin_cfg.get("siliconflow_default_api_key") or "").strip()
+        base_url = (admin_cfg.get("siliconflow_base_url") or "").strip()
+        selected_prefix = 'siliconflow'
+    else:
+        prefix_map = {
+            'text': 'system_script',
+            'image': 'system_image',
+            'audio': 'system_audio',
+            'video': 'system_video',
+        }
+        prefixes = [prefix_map.get(task_type, 'system_openai'), 'system_openai']
+        for prefix in prefixes:
+            api_key = (get_config(f'{prefix}_api_key', '') or '').strip()
+            if api_key:
+                api_secret = (get_config(f'{prefix}_api_secret', '') or '').strip()
+                endpoint = (get_config(f'{prefix}_endpoint', '') or '').strip()
+                base_url = (get_config(f'{prefix}_base_url', '') or '').strip()
+                selected_prefix = prefix
+                break
+    if not api_key:
+        return None
+    _ensure_default_ai_providers()
+    provider = AIProvider.query.filter_by(provider_code=provider_code).first()
+    if not provider:
+        return None
+    return SimpleNamespace(
+        id=0,
+        user_id=user_id,
+        provider=provider,
+        endpoint=endpoint or None,
+        base_url=base_url or None,
+        get_api_key=lambda: api_key,
+        get_api_secret=lambda: api_secret,
+        usage_count=0,
+        last_used_at=None,
+        _vf_system_prefix=selected_prefix,
+    )
+
+
+def _resolve_ai_runtime_key(user, task_type: str, key_id=None):
+    task_type = (task_type or '').strip().lower()
+    preferred_provider = {
+        'text': 'siliconflow',
+        'image': 'siliconflow',
+        'audio': 'volc',
+        'video': 'jimeng',
+    }.get(task_type, 'openai')
+    fallback_provider = {
+        'siliconflow': 'openai',
+        'volc': 'openai',
+        'jimeng': 'openai',
+    }.get(preferred_provider)
+    explicit_key_id = int(key_id or 0)
+    if explicit_key_id > 0:
+        key = UserApiKey.query.filter_by(id=explicit_key_id, user_id=user.id).first()
+        if key and key.is_active:
+            return key
+    system_key = _build_system_ai_key(user.id, preferred_provider, task_type)
+    if system_key:
+        return system_key
+    if fallback_provider:
+        system_key = _build_system_ai_key(user.id, fallback_provider, task_type)
+        if system_key:
+            return system_key
+    query = UserApiKey.query.join(AIProvider, UserApiKey.provider_id == AIProvider.id).filter(
+        UserApiKey.user_id == user.id,
+        UserApiKey.is_active.is_(True),
+        AIProvider.provider_code == preferred_provider,
+    ).order_by(UserApiKey.last_used_at.is_(None), UserApiKey.last_used_at.desc(), UserApiKey.id.desc())
+    key = query.first()
+    if key:
+        return key
+    if fallback_provider:
+        key = UserApiKey.query.join(AIProvider, UserApiKey.provider_id == AIProvider.id).filter(
+            UserApiKey.user_id == user.id,
+            UserApiKey.is_active.is_(True),
+            AIProvider.provider_code == fallback_provider,
+        ).order_by(UserApiKey.last_used_at.is_(None), UserApiKey.last_used_at.desc(), UserApiKey.id.desc()).first()
+        if key:
+            return key
+    return None
+
+
 @api_bp.route('/ai/generate', methods=['POST'])
 def ai_generate():
     user, err = get_auth_user()
@@ -6920,16 +7249,14 @@ def ai_generate():
     key_id = data.get('key_id')
     task_type = (data.get('task_type') or '').strip()
     prompt = (data.get('prompt') or '').strip()
-    if not key_id:
-        return jsonify({'ok': False, 'error': '请选择 Key'}), 400
     if not task_type:
         return jsonify({'ok': False, 'error': '请选择任务类型'}), 400
     if not prompt:
         return jsonify({'ok': False, 'error': '请输入提示词'}), 400
 
-    key = UserApiKey.query.filter_by(id=key_id, user_id=user.id).first()
-    if not key or not key.is_active:
-        return jsonify({'ok': False, 'error': 'Key 不存在或未启用'}), 400
+    key = _resolve_ai_runtime_key(user, task_type, key_id)
+    if not key:
+        return jsonify({'ok': False, 'error': '没有可用的 AI 账号或系统预设 Key'}), 400
 
     payload = {
         "prompt": prompt,
@@ -6952,17 +7279,40 @@ def ai_generate():
             except Exception:
                 return jsonify({'ok': False, 'error': 'extra_body JSON 解析失败'}), 400
 
+    provider_code = str(
+        getattr(key, "provider_code", "")
+        or getattr(getattr(key, "provider", None), "provider_code", "")
+        or ""
+    ).lower()
+    if provider_code == 'chatanywhere':
+        ai_cfg = _get_ai_admin_config()
+        model_candidates = _build_model_candidates(payload.get("model"), ai_cfg.get("chatanywhere_model_list") or [])
+        if model_candidates:
+            payload["model"] = model_candidates[0]
+            payload["model_candidates"] = model_candidates
+        payload["system_prompt"] = payload.get("system_prompt") or ai_cfg.get("chatanywhere_system_prompt") or _AI_STORYBOARD_SYSTEM_PROMPT
+    elif provider_code == 'siliconflow':
+        ai_cfg = _get_ai_admin_config()
+        model_seed = ai_cfg.get("siliconflow_text_model_list") if task_type == 'text' else [ai_cfg.get("siliconflow_model") or "Kwai-Kolors/Kolors"]
+        model_candidates = _build_model_candidates(payload.get("model"), model_seed)
+        if model_candidates:
+            payload["model"] = model_candidates[0]
+            payload["model_candidates"] = model_candidates
+        if task_type == 'text':
+            payload["system_prompt"] = payload.get("system_prompt") or ai_cfg.get("siliconflow_text_system_prompt") or ai_cfg.get("chatanywhere_system_prompt") or _AI_STORYBOARD_SYSTEM_PROMPT
+
     result = generate_with_key(key, task_type, payload)
     return jsonify(result)
 
 
 def _enqueue_ai_task(user, key, task_type, payload, save_text_file=False):
     task_id = uuid.uuid4().hex
+    persisted_key_id = getattr(key, "id", None) if isinstance(key, UserApiKey) else None
     task = AITask(
         id=task_id,
         user_id=user.id,
-        key_id=key.id,
-        provider_code=key.provider.provider_code if key.provider else "",
+        key_id=persisted_key_id,
+        provider_code=key.provider.provider_code if getattr(key, "provider", None) else "",
         task_type=task_type,
         status="pending",
         prompt=payload.get("prompt") or payload.get("text"),
@@ -6970,7 +7320,7 @@ def _enqueue_ai_task(user, key, task_type, payload, save_text_file=False):
     db.session.add(task)
     db.session.commit()
     app = current_app._get_current_object()
-    _run_background(app, generate_ai_task, task_id, user.id, key.id, task_type, payload, save_text_file)
+    _run_background(app, generate_ai_task, task_id, user.id, persisted_key_id or 0, task_type, payload, save_text_file)
     return task_id
 
 
@@ -7130,7 +7480,7 @@ def ai_manga_generate_draft():
     if not _effective_runtime_features().get("manga"):
         return jsonify({'ok': False, 'error': 'AI manga feature is disabled in this build'}), 404
 
-    cost = int(get_config('manga_generate_cost', '1') or 1)
+    cost = _get_manga_generate_cost()
     remote_task_id = f"manga_draft_{uuid.uuid4().hex}"
     remote_task_token = None
     quota = None
@@ -7242,7 +7592,7 @@ def ai_manga_generate():
     if not user_material_dir:
         return jsonify({'ok': False, 'error': 'Material folder not configured'}), 400
 
-    cost = int(get_config('manga_generate_cost', '1') or 1)
+    cost = _get_manga_generate_cost()
     remote_task_id = f"manga_ai_{uuid.uuid4().hex}"
     remote_task_token = None
     quota = None
@@ -7492,11 +7842,11 @@ def ai_generate_audio():
     data = request.get_json() or {}
     key_id = data.get('key_id')
     text = (data.get('text') or '').strip()
-    if not key_id or not text:
-        return jsonify({'ok': False, 'error': '缺少 Key 或文本'}), 400
-    key = UserApiKey.query.filter_by(id=key_id, user_id=user.id).first()
+    if not text:
+        return jsonify({'ok': False, 'error': '缺少文本'}), 400
+    key = _resolve_ai_runtime_key(user, 'audio', key_id)
     if not key:
-        return jsonify({'ok': False, 'error': 'Key 不存在'}), 404
+        return jsonify({'ok': False, 'error': '没有可用的配音账号或系统预设 Key'}), 404
     payload = {
         "prompt": text,
         "model": data.get("model"),
@@ -7517,11 +7867,11 @@ def ai_generate_text():
     data = request.get_json() or {}
     key_id = data.get('key_id')
     prompt = (data.get('prompt') or '').strip()
-    if not key_id or not prompt:
-        return jsonify({'ok': False, 'error': '缺少 Key 或提示词'}), 400
-    key = UserApiKey.query.filter_by(id=key_id, user_id=user.id).first()
+    if not prompt:
+        return jsonify({'ok': False, 'error': '缺少提示词'}), 400
+    key = _resolve_ai_runtime_key(user, 'text', key_id)
     if not key:
-        return jsonify({'ok': False, 'error': 'Key 不存在'}), 404
+        return jsonify({'ok': False, 'error': '没有可用的脚本账号或系统预设 Key'}), 404
     payload = {
         "prompt": prompt,
         "model": data.get("model"),
@@ -7529,6 +7879,27 @@ def ai_generate_text():
         "max_tokens": data.get("max_tokens"),
         "extra_body": _parse_extra_body(data.get("extra_body")),
     }
+    provider_code = str(
+        getattr(key, "provider_code", "")
+        or getattr(getattr(key, "provider", None), "provider_code", "")
+        or ""
+    ).lower()
+    if provider_code == "chatanywhere":
+        ai_cfg = _get_ai_admin_config()
+        model_list = ai_cfg.get("chatanywhere_model_list") or []
+        model_candidates = _build_model_candidates(payload.get("model"), model_list)
+        if model_candidates:
+            payload["model"] = model_candidates[0]
+            payload["model_candidates"] = model_candidates
+        payload["system_prompt"] = ai_cfg.get("chatanywhere_system_prompt") or _AI_STORYBOARD_SYSTEM_PROMPT
+    elif provider_code == "siliconflow":
+        ai_cfg = _get_ai_admin_config()
+        model_list = ai_cfg.get("siliconflow_text_model_list") or ai_cfg.get("chatanywhere_model_list") or []
+        model_candidates = _build_model_candidates(payload.get("model"), model_list)
+        if model_candidates:
+            payload["model"] = model_candidates[0]
+            payload["model_candidates"] = model_candidates
+        payload["system_prompt"] = ai_cfg.get("siliconflow_text_system_prompt") or ai_cfg.get("chatanywhere_system_prompt") or _AI_STORYBOARD_SYSTEM_PROMPT
     task_id = _enqueue_ai_task(user, key, "text", payload, save_text_file=False)
     return jsonify({'ok': True, 'task_id': task_id})
 
@@ -8377,6 +8748,16 @@ def generate_batch_api():
         )
         if validation_error:
             return jsonify({'error': validation_error}), 400
+        generation_warning = _build_mix_generation_warning_v2(
+            materials_root=materials_root,
+            replace_strategy=replace_strategy,
+            replace_type=replace_type,
+            material_names=replaceable_materials,
+            batch_count=batch_count,
+            replace_mode=replace_mode,
+        )
+    else:
+        generation_warning = None
 
     if export_enabled and not export_path:
         export_path = get_drafts_folder() or draft_path
@@ -8431,7 +8812,10 @@ def generate_batch_api():
         auth_token=remote_task_token,
     )
 
-    return jsonify({'job_id': job_id})
+    response_payload = {'job_id': job_id}
+    if generation_warning:
+        response_payload['warnings'] = [generation_warning]
+    return jsonify(response_payload)
 
 
 @api_bp.route('/task/<task_id>/refund', methods=['POST'])
@@ -8441,5 +8825,46 @@ def refund_task_usage(task_id):
         return err
     audit_security_event("task_refund_blocked", level="warning", request_obj=request, user_id=user.id, details={"task_id": task_id})
     return jsonify({'ok': False, 'error': '该退款接口已停用，失败任务请走正式回退流程。'}), 403
+def _assistant_route_preview(command: str, context: Optional[dict] = None) -> dict:
+    text = (command or "").strip()
+    lowered = text.lower()
+    ctx = context if isinstance(context, dict) else {}
+    draft_path = (ctx.get("draft_path") or "").strip()
+    materials_root = (ctx.get("materials_root") or "").strip()
+    slots = [str(item).strip() for item in (ctx.get("slots") or []) if str(item).strip()]
+    text_count = int(ctx.get("text_count") or 0)
+    strategy = (ctx.get("strategy") or "group").strip() or "group"
 
+    if not text:
+        return {"ok": False, "error": "请输入要执行的助手命令。"}
 
+    if ("分区" in text and "混剪" in text) or ("分区" in text and "视频" in text):
+        return {"ok": True, "intent": "open_partition_mix", "summary": "打开批量混剪并切到“分区混剪裂变”。", "requires_confirmation": False, "impact": "仅导航，不会直接执行生成。", "client_action": {"type": "navigate", "panel_id": "panel-materials", "mix_target": "partition", "anchor": "mix-mode-partition-anchor"}}
+    if ("按组" in text and "混剪" in text) or "精准替换" in text:
+        return {"ok": True, "intent": "open_group_mix", "summary": "打开批量混剪并切到“按组精准替换”。", "requires_confirmation": False, "impact": "仅导航，不会直接执行生成。", "client_action": {"type": "navigate", "panel_id": "panel-materials", "mix_target": "group", "anchor": "mix-mode-group-anchor"}}
+    if "duo" in lowered or ("资源" in text and ("特效" in text or "贴纸" in text)):
+        return {"ok": True, "intent": "open_duo_resources", "summary": "打开 Duo 资源工作台。", "requires_confirmation": False, "impact": "仅导航到 Duo 资源，不会直接修改草稿。", "client_action": {"type": "navigate", "panel_id": "panel-effects", "anchor": "effects-duo-anchor"}}
+    if ("分割" in text and ("视频" in text or "文件" in text or "草稿" in text)) or "批量分割" in text:
+        return {"ok": True, "intent": "open_split_tools", "summary": "打开批量分割工作台。", "requires_confirmation": False, "impact": "仅导航到分割工具，不会立刻执行。", "client_action": {"type": "navigate", "panel_id": "panel-split", "subtab_target": "split-file"}}
+    if "片段微调" in text or "节奏变速" in text or "摇晃关键帧" in text or "画面校正" in text:
+        return {"ok": True, "intent": "open_clip_tools", "summary": "打开片段微调工作台。", "requires_confirmation": False, "impact": "仅导航到微调页面，不会立即修改草稿。", "client_action": {"type": "navigate", "panel_id": "panel-clip"}}
+    if ("AI" in text and "账号" in text) or "脚本模型" in text or "生图模型" in text or ("key" in lowered and "ai" in lowered):
+        return {"ok": True, "intent": "open_ai_settings", "summary": "打开 AI 账号管理。", "requires_confirmation": False, "impact": "仅导航到软件设置中的 AI 账号管理，不会立即保存配置。", "client_action": {"type": "navigate", "panel_id": "panel-settings", "section_id": "settings-ai-section"}}
+    if "导出" in text and "草稿" in text:
+        return {"ok": True, "intent": "open_export", "summary": "打开批量导出页并准备导出当前已选草稿。", "requires_confirmation": False, "impact": "仅导航到导出页，真正导出仍需你确认执行。", "client_action": {"type": "navigate", "panel_id": "panel-export", "subtab_target": "export-settings"}}
+    if ("检查" in text or "查看" in text) and "草稿" in text and ("槽位" in text or "结构" in text):
+        return {"ok": True, "intent": "inspect_draft_slots", "summary": "打开草稿结构检查入口，方便核对槽位与文字位置。", "requires_confirmation": False, "impact": "仅导航，不会修改草稿。", "client_action": {"type": "navigate", "panel_id": "panel-split", "subtab_target": "split-draft"}}
+    if "创建" in text and ("素材目录" in text or "素材文件夹" in text):
+        missing = []
+        if not draft_path:
+            missing.append("draft_path")
+        if not materials_root:
+            missing.append("materials_root")
+        if strategy != "mix" and not slots:
+            missing.append("slots")
+        return {"ok": True, "intent": "create_material_layout", "summary": "按当前草稿和模式创建素材目录结构。", "requires_confirmation": True, "impact": "会在你选择的素材根目录下创建新的草稿素材目录。", "missing": missing, "client_action": {"type": "create_material_layout", "draft_path": draft_path, "materials_root": materials_root, "strategy": strategy, "slots": slots}}
+    if "生成" in text and "文字" in text and ("模板" in text or "替换" in text):
+        return {"ok": True, "intent": "build_text_template", "summary": "为当前草稿生成一份可直接填写的文字替换模板。", "requires_confirmation": False, "impact": "仅生成模板内容，不会直接改写草稿。", "client_action": {"type": "fill_text_template", "text_count": text_count, "strategy": strategy}}
+    if "助手" in text and ("日志" in text or "记录" in text):
+        return {"ok": True, "intent": "open_assistant_logs", "summary": "打开助手日志面板。", "requires_confirmation": False, "impact": "仅导航。", "client_action": {"type": "navigate", "panel_id": "panel-assistant"}}
+    return {"ok": False, "error": "暂未识别这条命令。当前优先支持：分区混剪、按组混剪、Duo 资源、批量分割、片段微调、AI 账号管理、导出当前草稿、检查草稿槽位、创建素材目录、生成文字替换模板。", "received": text, "matched_hint": lowered}

@@ -41,7 +41,7 @@ _VIDEO_EXTS = ('.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v')
 _AUDIO_EXTS = ('.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac')
 _ALL_MEDIA_EXTS = _IMAGE_EXTS + _VIDEO_EXTS + _AUDIO_EXTS
 _VF_GENERATED_MARKER = ".vf_generated.json"
-_VF_MANAGED_RUN_KEEP = 3
+_VF_MANAGED_RUN_KEEP = 0
 _DRAFT_CONTENT_ENCODINGS = (
     "utf-8",
     "utf-8-sig",
@@ -964,17 +964,121 @@ def _collect_user_material_overrides(
                     pool_files = _list_media_files(materials_root, replace_type)
                 user_file = _pick_from_list(pool_files, replace_mode, batch_index + idx)
             elif len(group_folders) > 0:
-                folder = group_folders[idx % len(group_folders)]
-                files = folder_cache.get(folder)
-                if files is None:
-                    files = _list_media_files(folder, replace_type)
-                    folder_cache[folder] = files
-                user_file = _pick_from_list(files, replace_mode, batch_index)
+                if idx < len(group_folders):
+                    folder = group_folders[idx]
+                    files = folder_cache.get(folder)
+                    if files is None:
+                        files = _list_media_files(folder, replace_type)
+                        folder_cache[folder] = files
+                    user_file = _pick_from_list(files, replace_mode, batch_index)
 
         if user_file:
             user_files[fname.lower()] = user_file
 
     return user_files
+
+
+def _build_material_override_summary(material_names, material_replacements, sample_limit=6):
+    summary_items = []
+    seen = set()
+    for material_name in material_names or []:
+        key = str(material_name or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        override_path = (material_replacements or {}).get(key)
+        if not override_path:
+            continue
+        summary_items.append({
+            "slot_name": str(material_name or "").strip(),
+            "path": str(override_path or "").strip(),
+            "file_name": os.path.basename(str(override_path or "").strip()),
+        })
+
+    total_count = len(summary_items)
+    expected_count = len([item for item in (material_names or []) if str(item or "").strip()])
+    return {
+        "expected_count": expected_count,
+        "selected_count": total_count,
+        "missing_count": max(0, expected_count - total_count),
+        "selected_items": summary_items[:max(1, int(sample_limit or 1))],
+        "truncated_count": max(0, total_count - max(1, int(sample_limit or 1))),
+    }
+
+
+def _build_material_pool_warning(
+    materials_root,
+    replace_type,
+    replace_mode,
+    replace_strategy,
+    batch_count,
+    material_slot_count,
+    material_names=None,
+):
+    if replace_strategy not in {"mix", "group", "sequence", "partition"}:
+        return None
+
+    try:
+        batch_count = max(1, int(batch_count or 1))
+    except Exception:
+        batch_count = 1
+    try:
+        material_slot_count = max(0, int(material_slot_count or 0))
+    except Exception:
+        material_slot_count = 0
+
+    if batch_count <= 1 or material_slot_count <= 0:
+        return None
+    if str(replace_mode or "").strip().lower() == "random":
+        return None
+
+    if replace_strategy == "mix":
+        pool_size = len(_list_media_files(materials_root, replace_type))
+        if pool_size <= 0:
+            return None
+        required_span = batch_count + max(0, material_slot_count - 1)
+        if pool_size < required_span:
+            return f"当前素材池共 {pool_size} 个素材，批量 {batch_count} 份、每份约 {material_slot_count} 个槽位，后续批次会循环复用素材。"
+        return None
+
+    subfolders = _list_subfolders(materials_root)
+    if not subfolders:
+        return None
+
+    if replace_strategy == "group":
+        undersized = []
+        for folder in subfolders[:material_slot_count]:
+            file_count = len(_list_media_files(folder, replace_type))
+            if 0 < file_count < batch_count:
+                undersized.append(f"{os.path.basename(folder)}({file_count})")
+        if undersized:
+            return "这些槽位目录素材数少于批量数量，后续批次会循环复用：" + "，".join(undersized[:6])
+        return None
+
+    if replace_strategy == "sequence":
+        undersized = []
+        for folder in subfolders[:material_slot_count]:
+            file_count = len(_list_media_files(folder, "video"))
+            if 0 < file_count < batch_count:
+                undersized.append(f"{os.path.basename(folder)}({file_count})")
+        if undersized:
+            return "这些拼接槽位目录视频数少于批量数量，后续批次会循环复用：" + "，".join(undersized[:6])
+        return None
+
+    if replace_strategy == "partition":
+        undersized = []
+        folder_map = {_normalize_name(os.path.basename(folder)): folder for folder in subfolders}
+        for slot_name in material_names or []:
+            normalized_name = _normalize_name(slot_name)
+            folder = folder_map.get(normalized_name)
+            if not folder:
+                continue
+            file_count = len(_list_media_files(folder, replace_type))
+            if 0 < file_count < batch_count:
+                undersized.append(f"{os.path.basename(folder)}({file_count})")
+        if undersized:
+            return "这些分区目录素材数少于批量数量，后续批次会循环复用：" + "，".join(undersized[:6])
+    return None
 
 
 def _lookup_material_override(material_replacements, material_name=None, material_path=None, material_id=None):
@@ -1242,6 +1346,8 @@ def _cleanup_managed_drafts(
     if not root or not os.path.isdir(root):
         return []
 
+    if int(keep_run_count or 0) <= 0:
+        return []
     keep_run_count = max(1, int(keep_run_count or 1))
     target_template_key = _normalize_managed_template_key(template_path)
     target_generator = str(generator or "official").strip().lower() or "official"
@@ -1364,6 +1470,8 @@ def _generate_video_task_via_mcp(
 
     generated = 0
     generated_paths = []
+    batch_details = []
+    failed_batches = []
     cleaned_paths = []
     warnings = []
     run_token = _build_managed_run_token(task_id)
@@ -1374,6 +1482,18 @@ def _generate_video_task_via_mcp(
         os.makedirs(sequence_cache_root, exist_ok=True)
     else:
         sequence_cache_root = None
+
+    pool_warning = _build_material_pool_warning(
+        materials_root=materials_root,
+        replace_type=replace_type,
+        replace_mode=replace_mode,
+        replace_strategy=replace_strategy,
+        batch_count=batch_count,
+        material_slot_count=len(material_names),
+        material_names=material_names,
+    )
+    if pool_warning and pool_warning not in warnings:
+        warnings.append(pool_warning)
 
     for i in range(batch_count):
         draft_name = _build_managed_draft_name(
@@ -1386,6 +1506,7 @@ def _generate_video_task_via_mcp(
         update_task_meta({'progress': f'mcp rebuilding draft ({i+1}/{batch_count})...'}, task_id=task_id)
 
         user_files = {}
+        material_summary = {"expected_count": 0, "selected_count": 0, "missing_count": 0, "selected_items": [], "truncated_count": 0}
         if replace_materials and material_names:
             user_files = _collect_user_material_overrides(
                 material_names=material_names,
@@ -1398,57 +1519,91 @@ def _generate_video_task_via_mcp(
                 sequence_cache_root=os.path.join(sequence_cache_root, draft_name) if sequence_cache_root else drafts_folder,
             )
             material_replacements_by_key = dict(user_files)
+            material_summary = _build_material_override_summary(material_names, user_files)
 
-        svc = JianYingService(output_path=drafts_folder)
-        summary = _apply_mcp_effects(
-            template_path,
-            effects_config or {},
-            svc,
-            duo_config,
-            export_format=export_format,
-            export_resolution=export_resolution,
-            export_fps=export_fps,
-            texts_input=texts_input if replace_texts else None,
-            material_replacements=material_replacements_by_key if replace_materials else None,
-            output_path=drafts_folder,
-            force_export=True,
-            draft_name=draft_name,
-            audio_source_root=audio_root or materials_root if (audio_enabled or replace_audios) else None,
-        )
-        exported_name = str((summary or {}).get("exported_draft_name") or draft_name).strip() or draft_name
-        exported_path = os.path.join(drafts_folder, exported_name)
-        if not os.path.isdir(exported_path):
-            raise RuntimeError(f"MCP export draft missing: {exported_path}")
-        if summary:
-            if task_id:
-                try:
-                    log = TaskEffectLog(task_id=task_id, summary=json.dumps(summary, ensure_ascii=False))
-                    db.session.add(log)
-                    db.session.commit()
-                except Exception as exc:
-                    logging.warning("MCP effects log failed: %s", exc)
-            for warning in summary.get("warnings") or []:
-                if warning not in warnings:
-                    warnings.append(warning)
-
-        generated += 1
-        generated_paths.append(exported_path)
         try:
-            _write_generated_draft_marker(
-                exported_path,
-                _build_generated_draft_marker(
-                    draft_name=exported_name,
-                    draft_path=exported_path,
-                    template_path=template_path,
-                    task_id=task_id,
-                    generator="mcp",
-                    batch_index=i,
-                    batch_count=batch_count,
-                    run_token=run_token,
-                ),
+            svc = JianYingService(output_path=drafts_folder)
+            summary = _apply_mcp_effects(
+                template_path,
+                effects_config or {},
+                svc,
+                duo_config,
+                export_format=export_format,
+                export_resolution=export_resolution,
+                export_fps=export_fps,
+                texts_input=texts_input if replace_texts else None,
+                material_replacements=material_replacements_by_key if replace_materials else None,
+                output_path=drafts_folder,
+                force_export=True,
+                draft_name=draft_name,
+                audio_source_root=audio_root or materials_root if (audio_enabled or replace_audios) else None,
             )
+            exported_name = str((summary or {}).get("exported_draft_name") or draft_name).strip() or draft_name
+            exported_path = os.path.join(drafts_folder, exported_name)
+            if not os.path.isdir(exported_path):
+                raise RuntimeError(f"MCP export draft missing: {exported_path}")
+            if summary:
+                if task_id:
+                    try:
+                        log = TaskEffectLog(task_id=task_id, summary=json.dumps(summary, ensure_ascii=False))
+                        db.session.add(log)
+                        db.session.commit()
+                    except Exception as exc:
+                        logging.warning("MCP effects log failed: %s", exc)
+                for warning in summary.get("warnings") or []:
+                    if warning not in warnings:
+                        warnings.append(warning)
+
+            generated += 1
+            generated_paths.append(exported_path)
+            batch_details.append({
+                "batch_index": i,
+                "draft_name": exported_name,
+                "draft_path": exported_path,
+                "expected_count": material_summary.get("expected_count", 0),
+                "selected_count": material_summary.get("selected_count", 0),
+                "missing_count": material_summary.get("missing_count", 0),
+                "selected_items": material_summary.get("selected_items", []),
+                "truncated_count": material_summary.get("truncated_count", 0),
+                "replace_strategy": replace_strategy,
+                "replace_mode": replace_mode,
+                "status": "ok",
+            })
+            try:
+                _write_generated_draft_marker(
+                    exported_path,
+                    _build_generated_draft_marker(
+                        draft_name=exported_name,
+                        draft_path=exported_path,
+                        template_path=template_path,
+                        task_id=task_id,
+                        generator="mcp",
+                        batch_index=i,
+                        batch_count=batch_count,
+                        run_token=run_token,
+                    ),
+                )
+            except Exception as exc:
+                logging.warning("managed draft marker write failed for %s: %s", exported_path, exc)
         except Exception as exc:
-            logging.warning("managed draft marker write failed for %s: %s", exported_path, exc)
+            logging.exception("mcp batch generation failed at index %s", i)
+            failure_message = str(exc or "unknown error")
+            failed_batches.append({
+                "batch_index": i,
+                "draft_name": draft_name,
+                "expected_count": material_summary.get("expected_count", 0),
+                "selected_count": material_summary.get("selected_count", 0),
+                "missing_count": material_summary.get("missing_count", 0),
+                "selected_items": material_summary.get("selected_items", []),
+                "truncated_count": material_summary.get("truncated_count", 0),
+                "replace_strategy": replace_strategy,
+                "replace_mode": replace_mode,
+                "status": "failed",
+                "error": failure_message,
+            })
+            warning_message = f"第 {i + 1} 份生成失败：{failure_message}"
+            if warning_message not in warnings:
+                warnings.append(warning_message)
         update_task_meta({'progress': f'completed {generated}/{batch_count} drafts'}, task_id=task_id)
 
     try:
@@ -1461,11 +1616,18 @@ def _generate_video_task_via_mcp(
     except Exception as exc:
         logging.warning("managed draft cleanup failed: %s", exc)
 
+    if generated <= 0 and failed_batches:
+        raise RuntimeError(f"all batch generations failed: {failed_batches[0].get('error') or 'unknown error'}")
+
     result = {'ok': True, 'message': 'batch generation completed', 'generated': generated}
     if warnings:
         result['warnings'] = warnings
     if generated_paths:
         result['generated_paths'] = generated_paths
+    if batch_details:
+        result['batch_details'] = batch_details
+    if failed_batches:
+        result['failed_batches'] = failed_batches
     if cleaned_paths:
         result['cleaned_paths'] = cleaned_paths
     return result
@@ -1525,9 +1687,24 @@ def _generate_video_task_via_official_draft(
             material_names.append(fname)
 
     generated_paths = []
+    batch_details = []
+    failed_batches = []
     cleaned_paths = []
     warnings = []
     run_token = _build_managed_run_token(task_id)
+
+    pool_warning = _build_material_pool_warning(
+        materials_root=materials_root,
+        replace_type=replace_type,
+        replace_mode=replace_mode,
+        replace_strategy=replace_strategy,
+        batch_count=batch_count,
+        material_slot_count=len(material_names),
+        material_names=material_names,
+    )
+    if pool_warning and pool_warning not in warnings:
+        warnings.append(pool_warning)
+
     for i in range(batch_count):
         draft_name = _build_managed_draft_name(
             template_path=template_path,
@@ -1539,8 +1716,10 @@ def _generate_video_task_via_official_draft(
         update_task_meta({'progress': f'official draft rebuilding ({i+1}/{batch_count})...'}, task_id=task_id)
 
         material_replacements = {}
+        raw_material_replacements = {}
+        material_summary = {"expected_count": 0, "selected_count": 0, "missing_count": 0, "selected_items": [], "truncated_count": 0}
         if replace_materials and material_names:
-            material_replacements = _collect_user_material_overrides(
+            raw_material_replacements = _collect_user_material_overrides(
                 material_names=material_names,
                 materials_root=materials_root,
                 replace_type=replace_type,
@@ -1550,41 +1729,76 @@ def _generate_video_task_via_official_draft(
                 batch_index=i,
                 sequence_cache_root=os.path.join(drafts_folder, ".vf_sequence_cache", draft_name),
             )
+            material_summary = _build_material_override_summary(material_names, raw_material_replacements)
+            material_replacements = dict(raw_material_replacements)
             if material_map and material_replacements:
                 expanded_replacements = dict(material_replacements)
-                for material_name, override_path in material_replacements.items():
+                for material_name, override_path in raw_material_replacements.items():
                     material_id = material_map.get(material_name) or material_map.get(str(material_name or "").strip())
                     if material_id and override_path:
                         expanded_replacements[str(material_id).strip().lower()] = override_path
                 material_replacements = expanded_replacements
 
-        summary = replace_official_draft(
-            template_path=template_path,
-            draft_name=draft_name,
-            texts_input=texts_input if replace_texts else None,
-            material_replacements=material_replacements if replace_materials else None,
-            output_root=drafts_folder,
-        )
-        generated_paths.append(summary["draft_path"])
         try:
-            _write_generated_draft_marker(
-                summary["draft_path"],
-                _build_generated_draft_marker(
-                    draft_name=draft_name,
-                    draft_path=summary["draft_path"],
-                    template_path=template_path,
-                    task_id=task_id,
-                    generator="official",
-                    batch_index=i,
-                    batch_count=batch_count,
-                    run_token=run_token,
-                ),
+            summary = replace_official_draft(
+                template_path=template_path,
+                draft_name=draft_name,
+                texts_input=texts_input if replace_texts else None,
+                material_replacements=material_replacements if replace_materials else None,
+                output_root=drafts_folder,
             )
+            generated_paths.append(summary["draft_path"])
+            batch_details.append({
+                "batch_index": i,
+                "draft_name": draft_name,
+                "draft_path": summary["draft_path"],
+                "expected_count": material_summary.get("expected_count", 0),
+                "selected_count": material_summary.get("selected_count", 0),
+                "missing_count": material_summary.get("missing_count", 0),
+                "selected_items": material_summary.get("selected_items", []),
+                "truncated_count": material_summary.get("truncated_count", 0),
+                "replace_strategy": replace_strategy,
+                "replace_mode": replace_mode,
+                "status": "ok",
+            })
+            try:
+                _write_generated_draft_marker(
+                    summary["draft_path"],
+                    _build_generated_draft_marker(
+                        draft_name=draft_name,
+                        draft_path=summary["draft_path"],
+                        template_path=template_path,
+                        task_id=task_id,
+                        generator="official",
+                        batch_index=i,
+                        batch_count=batch_count,
+                        run_token=run_token,
+                    ),
+                )
+            except Exception as exc:
+                logging.warning("managed draft marker write failed for %s: %s", summary["draft_path"], exc)
+            for warning in summary.get("warnings") or []:
+                if warning not in warnings:
+                    warnings.append(warning)
         except Exception as exc:
-            logging.warning("managed draft marker write failed for %s: %s", summary["draft_path"], exc)
-        for warning in summary.get("warnings") or []:
-            if warning not in warnings:
-                warnings.append(warning)
+            logging.exception("official batch generation failed at index %s", i)
+            failure_message = str(exc or "unknown error")
+            failed_batches.append({
+                "batch_index": i,
+                "draft_name": draft_name,
+                "expected_count": material_summary.get("expected_count", 0),
+                "selected_count": material_summary.get("selected_count", 0),
+                "missing_count": material_summary.get("missing_count", 0),
+                "selected_items": material_summary.get("selected_items", []),
+                "truncated_count": material_summary.get("truncated_count", 0),
+                "replace_strategy": replace_strategy,
+                "replace_mode": replace_mode,
+                "status": "failed",
+                "error": failure_message,
+            })
+            warning_message = f"第 {i + 1} 份生成失败：{failure_message}"
+            if warning_message not in warnings:
+                warnings.append(warning_message)
 
     try:
         cleaned_paths = _cleanup_managed_drafts(
@@ -1596,11 +1810,18 @@ def _generate_video_task_via_official_draft(
     except Exception as exc:
         logging.warning("managed draft cleanup failed: %s", exc)
 
+    if not generated_paths and failed_batches:
+        raise RuntimeError(f"all batch generations failed: {failed_batches[0].get('error') or 'unknown error'}")
+
     result = {'ok': True, 'message': 'batch generation completed', 'generated': len(generated_paths)}
     if warnings:
         result['warnings'] = warnings
     if generated_paths:
         result['generated_paths'] = generated_paths
+    if batch_details:
+        result['batch_details'] = batch_details
+    if failed_batches:
+        result['failed_batches'] = failed_batches
     if cleaned_paths:
         result['cleaned_paths'] = cleaned_paths
     return result
@@ -2767,8 +2988,10 @@ def generate_ai_task(task_id: str, user_id: int, key_id: int, task_type: str, pa
     app = create_app()
     with app.app_context():
         from app.models.ai_task import AITask
+        from app.models.user import User
         from app.models.user_api_key import UserApiKey
         from app.services.ai_service import generate_with_key
+        from app.views.api import _resolve_ai_runtime_key
 
         task = AITask.query.get(task_id)
         if not task:
@@ -2777,10 +3000,16 @@ def generate_ai_task(task_id: str, user_id: int, key_id: int, task_type: str, pa
         db.session.add(task)
         db.session.commit()
 
-        key = UserApiKey.query.filter_by(id=key_id, user_id=user_id).first()
+        key = None
+        if int(key_id or 0) > 0:
+            key = UserApiKey.query.filter_by(id=key_id, user_id=user_id).first()
+        else:
+            user = User.query.get(user_id)
+            if user:
+                key = _resolve_ai_runtime_key(user, task_type, None)
         if not key:
             task.status = "failed"
-            task.error_msg = "密钥不存在"
+            task.error_msg = "没有可用的 AI 账号或系统预设 Key"
             db.session.add(task)
             db.session.commit()
             return
@@ -2796,4 +3025,3 @@ def generate_ai_task(task_id: str, user_id: int, key_id: int, task_type: str, pa
                 task.result_text = result.get("text") or ""
         db.session.add(task)
         db.session.commit()
-

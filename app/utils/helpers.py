@@ -169,6 +169,19 @@ def set_configs(values: dict):
     _write_runtime_config_fallback(payload)
 
 
+def get_secure_config(key: str, default=''):
+    value = get_config(key, default)
+    try:
+        return _decrypt_sensitive_value(value)
+    except Exception:
+        return default
+
+
+def set_secure_config(key: str, value):
+    encrypted = _encrypt_sensitive_value('' if value is None else value)
+    set_config(key, encrypted)
+
+
 def get_material_folder():
     return get_config('material_folder')
 

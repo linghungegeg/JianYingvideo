@@ -19,6 +19,11 @@ from app.utils.volc_signer import sign_volc_request
 DEFAULT_OPENAI_BASE = "https://api.openai.com/v1"
 VOLC_TTS_URL = "https://openspeech.bytedance.com/api/v1/tts"
 
+_SILICONFLOW_SIZE_MAP = {
+    "1080x1920": "1024x1536",
+    "1920x1080": "1536x1024",
+}
+
 
 def _ensure_material_folder() -> Optional[str]:
     folder = get_material_folder()
@@ -105,6 +110,50 @@ def _normalize_openai_base(base_url: str) -> str:
     return base
 
 
+def _normalize_provider_payload(provider_code: str, task_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(payload or {})
+    code = str(provider_code or "").strip().lower()
+    if code == "siliconflow":
+        if task_type == "image":
+            normalized["model"] = normalized.get("model") or "Kwai-Kolors/Kolors"
+            requested_size = str(normalized.get("size") or "").strip()
+            if requested_size:
+                normalized["size"] = _SILICONFLOW_SIZE_MAP.get(requested_size, requested_size)
+    elif code == "chatanywhere":
+        if task_type == "text":
+            normalized["model"] = normalized.get("model") or "gpt-5-ca"
+    return normalized
+
+
+def _extract_model_candidates(payload: Dict[str, Any]) -> list:
+    candidates = []
+    seen = set()
+    for item in payload.get("model_candidates") or [payload.get("model")]:
+        model = str(item or "").strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        candidates.append(model)
+    return candidates
+
+
+def _should_retry_with_next_model(exc: Exception) -> bool:
+    if isinstance(exc, requests.HTTPError):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in {400, 408, 409, 422, 429, 500, 502, 503, 504}:
+            return True
+    message = str(exc or "").lower()
+    return any(token in message for token in [
+        "429",
+        "rate limit",
+        "timeout",
+        "temporarily unavailable",
+        "overloaded",
+        "bad request",
+        "model",
+    ])
+
+
 def _openai_headers(api_key: str) -> Dict[str, str]:
     return {
         "Authorization": f"Bearer {api_key}",
@@ -113,9 +162,14 @@ def _openai_headers(api_key: str) -> Dict[str, str]:
 
 
 def _openai_text(api_key: str, base_url: str, payload: Dict[str, Any]) -> str:
+    messages = []
+    system_prompt = str(payload.get("system_prompt") or "").strip()
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": payload.get("prompt", "")})
     params = {
         "model": payload.get("model") or "gpt-4o-mini",
-        "messages": [{"role": "user", "content": payload.get("prompt", "")}],
+        "messages": messages,
         "temperature": payload.get("temperature", 0.7),
     }
     if payload.get("max_tokens"):
@@ -131,7 +185,14 @@ def _openai_text(api_key: str, base_url: str, payload: Dict[str, Any]) -> str:
     except Exception:
         url = _normalize_openai_base(base_url) + "/chat/completions"
         resp = requests.post(url, headers=_openai_headers(api_key), json=params, timeout=180)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = (resp.text or "").strip()
+            detail = body[:600] if body else ""
+            if detail:
+                raise requests.HTTPError(f"{exc} | body={detail}", response=resp) from exc
+            raise
         data = resp.json()
         item = (data.get("choices") or [{}])[0]
         msg = item.get("message") or {}
@@ -327,6 +388,8 @@ def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, A
         return {"ok": False, "error": "请先在软件设置中配置素材库路径"}
 
     provider_code = user_key.provider.provider_code if user_key.provider else ""
+    payload = _normalize_provider_payload(provider_code, task_type, payload)
+    is_persisted_user_key = isinstance(user_key, UserApiKey) and bool(getattr(user_key, "id", 0))
     api_key = user_key.get_api_key()
     endpoint = user_key.endpoint or DEFAULT_OPENAI_BASE
     base_url = user_key.base_url or DEFAULT_OPENAI_BASE
@@ -337,7 +400,7 @@ def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, A
     saved_path = None
 
     try:
-        if provider_code == "openai":
+        if provider_code in ("openai", "chatanywhere", "siliconflow"):
             if task_type == "text":
                 text = _openai_text(api_key, base_url, payload)
                 result_text = text
@@ -393,10 +456,11 @@ def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, A
             raise ValueError("未知的服务商类型")
 
         result_path = saved_path
-        user_key.last_used_at = datetime.utcnow()
-        user_key.usage_count = (user_key.usage_count or 0) + 1
-        db.session.add(user_key)
-        db.session.commit()
+        if is_persisted_user_key:
+            user_key.last_used_at = datetime.utcnow()
+            user_key.usage_count = (user_key.usage_count or 0) + 1
+            db.session.add(user_key)
+            db.session.commit()
         if result_path and task_type != "text":
             material = UserMaterial(
                 user_id=user_key.user_id,
@@ -409,11 +473,19 @@ def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, A
     except Exception as exc:
         db.session.rollback()
         status = "failed"
-        error_msg = str(exc)
+        active_model = str(payload.get("model") or "").strip()
+        model_candidates = [str(item or "").strip() for item in (payload.get("model_candidates") or []) if str(item or "").strip()]
+        debug_parts = [f"provider={provider_code or '-'}"]
+        if active_model:
+            debug_parts.append(f"model={active_model}")
+        if model_candidates:
+            debug_parts.append(f"candidates={','.join(model_candidates)}")
+        debug_tail = " | " + " | ".join(debug_parts) if debug_parts else ""
+        error_msg = f"{exc}{debug_tail}"
 
     log = AIGenerationLog(
         user_id=user_key.user_id,
-        key_id=user_key.id,
+        key_id=user_key.id if is_persisted_user_key else None,
         provider_code=provider_code,
         task_type=task_type,
         prompt=payload.get("prompt"),
@@ -426,6 +498,143 @@ def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, A
 
     if status != "success":
         return {"ok": False, "error": error_msg or "生成失败"}
+    if task_type == "text":
+        return {"ok": True, "text": result_text or "", "path": result_path}
+    return {"ok": True, "path": result_path}
+
+
+def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, Any], save_text_file: bool = True) -> Dict[str, Any]:
+    folder = _user_ai_folder(user_key.user_id, task_type)
+    if not folder:
+        return {"ok": False, "error": "???????????????"}
+
+    provider_code = user_key.provider.provider_code if user_key.provider else ""
+    payload = _normalize_provider_payload(provider_code, task_type, payload)
+    is_persisted_user_key = isinstance(user_key, UserApiKey) and bool(getattr(user_key, "id", 0))
+    api_key = user_key.get_api_key()
+    base_url = user_key.base_url or DEFAULT_OPENAI_BASE
+    result_path = None
+    result_text = None
+    status = "success"
+    error_msg = None
+    saved_path = None
+
+    try:
+        if provider_code in ("openai", "chatanywhere", "siliconflow"):
+            attempts = _extract_model_candidates(payload) or [str(payload.get("model") or "").strip()]
+            last_exc = None
+            for index, candidate in enumerate(attempts):
+                attempt_payload = dict(payload or {})
+                if candidate:
+                    attempt_payload["model"] = candidate
+                try:
+                    if task_type == "text":
+                        text = _openai_text(api_key, base_url, attempt_payload)
+                        result_text = text
+                        if save_text_file:
+                            saved_path = _save_text(text, folder)
+                    elif task_type == "image":
+                        url, data, ext = _openai_image(api_key, base_url, attempt_payload)
+                        if data:
+                            saved_path = _save_binary(data, folder, ext)
+                        elif url:
+                            saved_path = _download_to_file(url, folder, ext)
+                        else:
+                            raise ValueError("??????")
+                    elif task_type == "audio":
+                        data, ext = _openai_audio(api_key, base_url, attempt_payload)
+                        saved_path = _save_binary(data, folder, ext)
+                    elif task_type == "video":
+                        url, data, ext = _openai_video(api_key, base_url, attempt_payload)
+                        if data:
+                            saved_path = _save_binary(data, folder, ext)
+                        elif url:
+                            saved_path = _download_to_file(url, folder, ext)
+                        else:
+                            raise ValueError("???????????????")
+                    else:
+                        raise ValueError("????????")
+                    payload = attempt_payload
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if index >= len(attempts) - 1 or not _should_retry_with_next_model(exc):
+                        raise
+                    time.sleep(min(2.0, 0.6 + index * 0.5))
+            if last_exc:
+                raise last_exc
+        elif provider_code == "volc":
+            app_id = user_key.get_api_secret()
+            cluster = user_key.endpoint
+            extra = payload.get("extra_body") or {}
+            if isinstance(extra, dict):
+                app_id = extra.get("app_id") or extra.get("appid") or app_id
+                cluster = extra.get("cluster") or cluster
+                if extra.get("custom_url"):
+                    payload["custom_url"] = extra.get("custom_url")
+            data, ext = _volc_tts_http(api_key, app_id, cluster, payload)
+            saved_path = _save_binary(data, folder, ext)
+        elif provider_code == "jimeng":
+            if task_type != "video":
+                raise ValueError("???????????")
+            ak = user_key.get_api_key()
+            sk = user_key.get_api_secret()
+            if not ak or not sk:
+                raise ValueError("???? AK/SK")
+            url, data, ext = _jimeng_signed_request(ak, sk, user_key.endpoint, payload)
+            if data:
+                saved_path = _save_binary(data, folder, ext)
+            elif url:
+                saved_path = _download_to_file(url, folder, ext)
+            else:
+                raise ValueError("??????")
+        else:
+            raise ValueError("????????")
+
+        result_path = saved_path
+        if is_persisted_user_key:
+            user_key.last_used_at = datetime.utcnow()
+            user_key.usage_count = (user_key.usage_count or 0) + 1
+            db.session.add(user_key)
+            db.session.commit()
+        if result_path and task_type != "text":
+            material = UserMaterial(
+                user_id=user_key.user_id,
+                file_path=result_path,
+                file_type=task_type,
+                source=provider_code or "ai"
+            )
+            db.session.add(material)
+            db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        status = "failed"
+        active_model = str(payload.get("model") or "").strip()
+        model_candidates = [str(item or "").strip() for item in (payload.get("model_candidates") or []) if str(item or "").strip()]
+        debug_parts = [f"provider={provider_code or '-'}"]
+        if active_model:
+            debug_parts.append(f"model={active_model}")
+        if model_candidates:
+            debug_parts.append(f"candidates={','.join(model_candidates)}")
+        debug_tail = " | " + " | ".join(debug_parts) if debug_parts else ""
+        error_msg = f"{exc}{debug_tail}"
+
+    log = AIGenerationLog(
+        user_id=user_key.user_id,
+        key_id=user_key.id if is_persisted_user_key else None,
+        provider_code=provider_code,
+        task_type=task_type,
+        prompt=payload.get("prompt"),
+        result_path=result_path,
+        status=status,
+        error_msg=error_msg,
+    )
+    db.session.add(log)
+    db.session.commit()
+
+    if status != "success":
+        return {"ok": False, "error": error_msg or "????"}
     if task_type == "text":
         return {"ok": True, "text": result_text or "", "path": result_path}
     return {"ok": True, "path": result_path}
