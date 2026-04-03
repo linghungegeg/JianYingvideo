@@ -1,5 +1,9 @@
-import json
+﻿import json
 import os
+import base64
+import ctypes
+import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -18,13 +22,22 @@ from app.utils.helpers import get_drafts_folder
 from app.utils.runtime_paths import app_resource_path
 from app.utils.jianying_mcp.utils.media_parser import parse_media_info
 
+try:
+    from Crypto.Cipher import AES
+except Exception:
+    AES = None
+
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
 _AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 _GG_ASSISTANT_SOFTWARE_KEY = "gg-jy-assistant"
 _OFFICIAL_READER_RUNTIME_DIRNAME = "official_reader"
-OFFICIAL_DRAFT_FIX_REVISION = "official-draft-fix-20260403-regression-guard"
+_OFFICIAL_READER_RUNTIME_MODE_ENV = "VF_OFFICIAL_READER_RUNTIME_MODE"
+_OFFICIAL_READER_ALLOW_GG_FALLBACK_ENV = "VF_OFFICIAL_READER_ALLOW_GG_FALLBACK"
+_OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS = (0, 7, 20, 33, 40, 47, 59, 66)
+_OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS = (76, 89, 99, 127)
+_OFFICIAL_DRAFT_CONTENT_CRYPT_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 
 def _quiet_subprocess_kwargs() -> dict:
@@ -110,6 +123,30 @@ def _detect_media_kind(path: str) -> str:
     return ""
 
 
+def _parse_replacement_media_info(path_value: str) -> dict:
+    source_path = str(path_value or "").strip()
+    info = parse_media_info(source_path) or {}
+    if not os.path.isfile(source_path):
+        return info
+    ext = os.path.splitext(source_path)[1].lower()
+    if ext not in _IMAGE_EXTS:
+        return info
+    if isinstance(info.get("width"), int) and info.get("width") > 0 and isinstance(info.get("height"), int) and info.get("height") > 0:
+        return info
+    try:
+        from PIL import Image
+
+        with Image.open(source_path) as img:
+            width, height = img.size
+        if width > 0:
+            info["width"] = int(width)
+        if height > 0:
+            info["height"] = int(height)
+    except Exception:
+        return info
+    return info
+
+
 def _clone_draft_tree(template_path: str, output_root: Optional[str], draft_name: str) -> str:
     normalized_template_path = normalize_draft_project_path(template_path)
     if not normalized_template_path or not os.path.isdir(normalized_template_path):
@@ -129,28 +166,100 @@ def _clone_draft_tree(template_path: str, output_root: Optional[str], draft_name
     return target_path
 
 
+def _get_draft_scaffold_path() -> str:
+    candidate = str(app_resource_path("runtime_tools", "jianying_draft_scaffold"))
+    return candidate if os.path.isdir(candidate) else ""
+
+
+def _copy_missing_entry(source_path: str, target_path: str) -> bool:
+    if os.path.exists(target_path):
+        return False
+    if os.path.isdir(source_path):
+        shutil.copytree(source_path, target_path)
+        return True
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    shutil.copy2(source_path, target_path)
+    return True
+
+
+def _ensure_cloned_official_draft_scaffold(cloned_draft_path: str) -> dict:
+    scaffold_root = _get_draft_scaffold_path()
+    report = {
+        "ok": False,
+        "scaffold_root": scaffold_root,
+        "copied": [],
+    }
+    if not scaffold_root:
+        return report
+
+    top_level_entries = [
+        "adjust_mask",
+        "common_attachment",
+        "materialResources",
+        "matting",
+        "qr_upload",
+        "Resources",
+        "smart_crop",
+        "subdraft",
+        "{01ecc63a-1a01-4cb1-9956-5b6889792879}",
+        "{9e8b9f6b-522e-4432-bf0b-54e4cfafd6fe}",
+        "{f65ab88d-5d29-4587-ad4a-75b9476d3447}",
+        "{f9ca7292-5597-4f99-b7b0-f3fe171abe69}",
+        "{fd4826c3-59a6-481d-8e62-ede163cf306d}",
+        "attachment_editing.json",
+        "attachment_pc_common.json",
+        "draft_agency_config.json",
+        "draft_biz_config.json",
+        "draft_settings",
+        "draft_virtual_store.json",
+        "performance_opt_info.json",
+        "template.json",
+        "timeline_layout.json",
+    ]
+    for name in top_level_entries:
+        source_path = os.path.join(scaffold_root, name)
+        if not os.path.exists(source_path):
+            continue
+        target_path = os.path.join(cloned_draft_path, name)
+        try:
+            if _copy_missing_entry(source_path, target_path):
+                report["copied"].append(name)
+        except Exception:
+            continue
+    report["ok"] = True
+    return report
+
+
+def _remove_official_cacheclone_top_level_templates(cloned_draft_path: str) -> list[str]:
+    removed: list[str] = []
+    for name in ("template.json", "template.tmp"):
+        target_path = os.path.join(cloned_draft_path, name)
+        if not os.path.isfile(target_path):
+            continue
+        try:
+            os.remove(target_path)
+            removed.append(target_path)
+        except Exception:
+            continue
+    return removed
+
+
 def _update_draft_meta_info(cloned_draft_path: str, draft_name: str) -> None:
     meta_path = os.path.join(cloned_draft_path, "draft_meta_info.json")
     if not os.path.exists(meta_path):
         return
-    try:
-        with open(meta_path, "r", encoding="utf-8") as handle:
-            meta = json.load(handle)
-    except Exception:
-        return
+    meta, is_plain = _load_draft_meta_info_payload(meta_path)
     if not isinstance(meta, dict):
         return
 
-    now_ms = int(time.time() * 1000)
+    now_us = int(time.time() * 1000000)
     meta["draft_name"] = draft_name
-    meta["draft_fold_path"] = cloned_draft_path
-    meta["tm_draft_create"] = now_ms
-    meta["tm_draft_modified"] = now_ms
-    try:
-        with open(meta_path, "w", encoding="utf-8") as handle:
-            json.dump(meta, handle, ensure_ascii=False, indent=2)
-    except Exception:
-        return
+    meta["draft_fold_path"] = _normalize_path_slashes(cloned_draft_path)
+    if "draft_id" in meta:
+        meta["draft_id"] = str(uuid.uuid4()).upper()
+    meta["tm_draft_create"] = now_us
+    meta["tm_draft_modified"] = now_us
+    _write_draft_meta_info_payload(meta_path, meta, is_plain)
 
 
 def _update_draft_meta_info_with_info_path(cloned_draft_path: str, draft_name: str, info_path: str) -> None:
@@ -158,32 +267,48 @@ def _update_draft_meta_info_with_info_path(cloned_draft_path: str, draft_name: s
     if not os.path.exists(meta_path):
         return
 
-    meta = None
-    if _looks_like_plain_json(meta_path):
-        loaded, err = load_json_file_with_encodings(meta_path)
-        if err is None and isinstance(loaded, dict):
-            meta = loaded
-    else:
-        # Keep consistent with gg flow: metadata may also be encrypted.
-        try:
-            loaded, _diag = _load_official_encrypted_draft_content(meta_path)
-            if isinstance(loaded, dict):
-                meta = loaded
-        except Exception:
-            meta = None
-
+    meta, is_plain = _load_draft_meta_info_payload(meta_path)
     if not isinstance(meta, dict):
         return
 
-    now_ms = int(time.time() * 1000)
+    now_us = int(time.time() * 1000000)
     meta["draft_name"] = draft_name
-    meta["draft_fold_path"] = cloned_draft_path
-    meta["draft_json_file"] = str(info_path or "").strip() or meta.get("draft_json_file")
-    meta["tm_draft_create"] = now_ms
-    meta["tm_draft_modified"] = now_ms
+    meta["draft_fold_path"] = _normalize_path_slashes(cloned_draft_path)
+    if "draft_json_file" in meta:
+        meta["draft_json_file"] = str(info_path or "").strip() or meta.get("draft_json_file")
+    meta["tm_draft_create"] = now_us
+    meta["tm_draft_modified"] = now_us
+    _write_draft_meta_info_payload(meta_path, meta, is_plain)
+
+
+def _load_draft_meta_info_payload(meta_path: str) -> tuple[Optional[dict], bool]:
+    if not meta_path or not os.path.exists(meta_path):
+        return None, True
+    if _looks_like_plain_json(meta_path):
+        loaded, err = load_json_file_with_encodings(meta_path)
+        if err is None and isinstance(loaded, dict):
+            return loaded, True
+        return None, True
     try:
+        loaded, _diag = _load_official_encrypted_draft_content(meta_path)
+    except Exception:
+        return None, False
+    if isinstance(loaded, dict):
+        return loaded, False
+    return None, False
+
+
+def _write_draft_meta_info_payload(meta_path: str, meta: dict, is_plain: bool) -> None:
+    if not meta_path or not isinstance(meta, dict):
+        return
+    try:
+        if is_plain:
+            with open(meta_path, "w", encoding="utf-8") as handle:
+                json.dump(meta, handle, ensure_ascii=False, indent=2)
+            return
+        payload_text, _diag = _encode_official_encrypted_draft_content_inprocess(meta)
         with open(meta_path, "w", encoding="utf-8") as handle:
-            json.dump(meta, handle, ensure_ascii=False, indent=2)
+            handle.write(payload_text)
     except Exception:
         return
 
@@ -210,11 +335,13 @@ def _candidate_root_meta_paths() -> list[str]:
     return deduped
 
 
-def _candidate_jianying_frame_thumbnail_dirs() -> list[str]:
+def _candidate_jianying_visual_cache_dirs() -> list[str]:
     home = Path.home()
     local_app_data = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
     candidates = [
         local_app_data / "JianyingPro" / "User Data" / "Cache" / "frameThumbnail",
+        local_app_data / "JianyingPro" / "User Data" / "Cache" / "segmentPrerenderCache",
+        local_app_data / "JianyingPro" / "User Data" / "Cache" / "prerender",
     ]
     deduped: list[str] = []
     seen: set[str] = set()
@@ -257,8 +384,8 @@ def _clear_directory_children(path_value: str) -> dict:
     return result
 
 
-def _clear_jianying_frame_thumbnail_cache() -> dict:
-    reports = [_clear_directory_children(path) for path in _candidate_jianying_frame_thumbnail_dirs()]
+def _clear_jianying_visual_caches() -> dict:
+    reports = [_clear_directory_children(path) for path in _candidate_jianying_visual_cache_dirs()]
     deleted_entries = sum(int(item.get("deleted") or 0) for item in reports)
     failed_entries = sum(len(item.get("failed") or []) for item in reports)
     return {
@@ -267,6 +394,731 @@ def _clear_jianying_frame_thumbnail_cache() -> dict:
         "failed_entries": failed_entries,
         "paths": reports,
     }
+
+
+def _deep_clone_json_like(data):
+    try:
+        return json.loads(json.dumps(data, ensure_ascii=False))
+    except Exception:
+        return data
+
+
+def _normalize_path_slashes(path_value: str) -> str:
+    return str(path_value or "").replace("\\", "/")
+
+
+def _iter_path_replacement_variants(path_value: str) -> list[str]:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return []
+    variants: list[str] = []
+    seen = set()
+    for candidate in (
+        raw,
+        raw.replace("\\", "/"),
+        raw.replace("/", "\\"),
+        _normalize_path_slashes(raw),
+    ):
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            variants.append(candidate)
+    return variants
+
+
+def _replace_string_path_tokens(text: str, replacements: dict[str, str]) -> str:
+    value = str(text or "")
+    if not value or not isinstance(replacements, dict):
+        return value
+    ordered = sorted(
+        ((str(old or ""), str(new or "")) for old, new in replacements.items() if str(old or "") and str(new or "")),
+        key=lambda pair: len(pair[0]),
+        reverse=True,
+    )
+    for old_path, new_path in ordered:
+        new_norm = _normalize_path_slashes(new_path)
+        new_back = new_norm.replace("/", "\\")
+        for old_variant in _iter_path_replacement_variants(old_path):
+            if old_variant in value:
+                replacement = new_back if "\\" in old_variant and "/" not in old_variant else new_norm
+                value = value.replace(old_variant, replacement)
+    return value
+
+
+def _apply_recursive_string_replacements(node, replacements: dict[str, str]):
+    if isinstance(node, dict):
+        for key, value in list(node.items()):
+            if isinstance(value, str):
+                node[key] = _replace_string_path_tokens(value, replacements)
+            else:
+                _apply_recursive_string_replacements(value, replacements)
+    elif isinstance(node, list):
+        for index, value in enumerate(list(node)):
+            if isinstance(value, str):
+                node[index] = _replace_string_path_tokens(value, replacements)
+            else:
+                _apply_recursive_string_replacements(value, replacements)
+
+
+def _local_appdata_jianying_dir() -> Path:
+    home = Path.home()
+    local_app_data = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
+    return local_app_data / "JianyingPro" / "User Data"
+
+
+def _template_draft_cache_root() -> Path:
+    return _local_appdata_jianying_dir() / "Resources" / "templateDraft"
+
+
+def _artist_effect_cache_root() -> Path:
+    return _local_appdata_jianying_dir() / "Cache" / "artistEffect"
+
+
+def _is_path_within_root(path_value: str, root_value: str) -> bool:
+    try:
+        path_norm = _normalize_abs_path(path_value)
+        root_norm = _normalize_abs_path(root_value)
+    except Exception:
+        return False
+    if not path_norm or not root_norm:
+        return False
+    return path_norm == root_norm or path_norm.startswith(root_norm + os.sep)
+
+
+def _clone_tree_once(source_dir: str, target_dir: str) -> str:
+    if os.path.exists(target_dir):
+        shutil.rmtree(target_dir, ignore_errors=True)
+    os.makedirs(os.path.dirname(target_dir), exist_ok=True)
+    shutil.copytree(source_dir, target_dir)
+    return target_dir
+
+
+def _clone_template_draft_cache_dir(source_dir: str) -> str:
+    source = str(source_dir or "").strip()
+    if not source or not os.path.isdir(source):
+        return ""
+    target_root = _template_draft_cache_root()
+    target_root.mkdir(parents=True, exist_ok=True)
+    target_dir = target_root / f"vf{uuid.uuid4().hex}"
+    return _clone_tree_once(source, str(target_dir))
+
+
+def _clone_artist_effect_dir(effect_dir: str) -> str:
+    source = str(effect_dir or "").strip()
+    if not source or not os.path.isdir(source):
+        return ""
+    source_path = Path(source)
+    effect_group = source_path.parent.name
+    target_root = _artist_effect_cache_root() / effect_group
+    target_root.mkdir(parents=True, exist_ok=True)
+    target_dir = target_root / f"vf{uuid.uuid4().hex}"
+    return _clone_tree_once(str(source_path), str(target_dir))
+
+
+def _resolve_nested_cache_semantic_path(cache_root: str, raw_value: str) -> str:
+    raw = str(raw_value or "").strip()
+    root = str(cache_root or "").strip()
+    if not raw or not root:
+        return raw
+    if os.path.isabs(raw):
+        return _normalize_path_slashes(raw)
+
+    rel = raw.replace("\\", "/").lstrip("/")
+    basename = os.path.basename(rel)
+    lower_rel = rel.lower()
+    candidates: list[str] = []
+
+    def add_candidate(*parts: str) -> None:
+        candidate = os.path.join(root, *parts)
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    if lower_rel.startswith("materials/video/"):
+        tail = rel.split("/", 2)[2] if rel.count("/") >= 2 else basename
+        if basename:
+            add_candidate("video", basename)
+            add_candidate("video", "cover", basename)
+        if tail:
+            add_candidate("video", tail)
+    elif lower_rel.startswith("materials/retouch_cover/"):
+        tail = rel.split("/", 2)[2] if rel.count("/") >= 2 else basename
+        if tail:
+            add_candidate("retouch_cover", tail)
+    elif lower_rel.startswith("materials/audio/"):
+        tail = rel.split("/", 2)[2] if rel.count("/") >= 2 else basename
+        if tail:
+            add_candidate("audio", tail)
+    elif lower_rel.startswith("materials/beat/"):
+        tail = rel.split("/", 2)[2] if rel.count("/") >= 2 else basename
+        if tail:
+            add_candidate("beats", tail)
+            add_candidate("beat", tail)
+    elif lower_rel.startswith("video/") or lower_rel.startswith("image/") or lower_rel.startswith("audio/") or lower_rel.startswith("retouch_cover/") or lower_rel.startswith("beat/") or lower_rel.startswith("beats/"):
+        add_candidate(*rel.split("/"))
+    elif basename:
+        add_candidate(basename)
+        add_candidate("video", basename)
+        add_candidate("video", "cover", basename)
+        add_candidate("retouch_cover", basename)
+
+    add_candidate(*rel.split("/"))
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return _normalize_path_slashes(candidate)
+    if candidates:
+        return _normalize_path_slashes(candidates[0])
+    return raw
+
+
+def _canonicalize_nested_cache_semantic_paths(current_nested: dict, cache_root: str) -> int:
+    changed = 0
+    root = str(cache_root or "").strip()
+    if not root or not os.path.isdir(root) or not isinstance(current_nested, dict):
+        return changed
+
+    current_nested["path"] = _normalize_path_slashes(root)
+
+    def rewrite_string_field(obj: dict, key: str) -> None:
+        nonlocal changed
+        if not isinstance(obj, dict):
+            return
+        value = obj.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return
+        rewritten = _resolve_nested_cache_semantic_path(root, value)
+        if rewritten != value:
+            obj[key] = rewritten
+            changed += 1
+
+    rewrite_string_field(current_nested, "static_cover_image_path")
+    static_cover_value = str(current_nested.get("static_cover_image_path") or "").strip()
+    static_cover_base = os.path.basename(static_cover_value.replace("\\", "/"))
+    if static_cover_base.lower().startswith("image_"):
+        desired_static_cover = _normalize_path_slashes(os.path.join(root, "video", static_cover_base))
+        if static_cover_value != desired_static_cover:
+            current_nested["static_cover_image_path"] = desired_static_cover
+            changed += 1
+
+    retouch_cover = current_nested.get("retouch_cover")
+    if isinstance(retouch_cover, dict):
+        rewrite_string_field(retouch_cover, "retouch_path")
+        rewrite_string_field(retouch_cover, "image_path")
+        if str(retouch_cover.get("retouch_path") or "").strip():
+            desired_keys = {"retouch_path", "frame_segment_id", "frame_timestamp", "image_crop", "report_extras"}
+            for key in list(retouch_cover.keys()):
+                if key not in desired_keys:
+                    retouch_cover.pop(key, None)
+                    changed += 1
+            if retouch_cover.get("image_crop") not in ({}, None):
+                retouch_cover["image_crop"] = {}
+                changed += 1
+
+    materials = current_nested.get("materials")
+    if isinstance(materials, dict):
+        for media_type in ("videos", "images", "audios"):
+            for item in materials.get(media_type) or []:
+                if not isinstance(item, dict):
+                    continue
+                rewrite_string_field(item, "path")
+                rewrite_string_field(item, "file_path")
+                rewrite_string_field(item, "material_path")
+
+        mutable_materials = (current_nested.get("mutable_config") or {}).get("mutable_materials") or []
+        for item in mutable_materials:
+            if not isinstance(item, dict):
+                continue
+            rewrite_string_field(item, "cover_path")
+            if item.get("is_user_modified") is not False:
+                item["is_user_modified"] = False
+                changed += 1
+
+    return changed
+
+
+def _iter_nested_draft_pairs(source_payload: dict, current_payload: dict):
+    if not isinstance(source_payload, dict) or not isinstance(current_payload, dict):
+        return
+    source_materials = source_payload.get("materials") or {}
+    current_materials = current_payload.get("materials") or {}
+    source_drafts = source_materials.get("drafts") or []
+    current_drafts = current_materials.get("drafts") or []
+    for source_item, current_item in zip(source_drafts, current_drafts):
+        if not isinstance(source_item, dict) or not isinstance(current_item, dict):
+            continue
+        source_nested = source_item.get("draft")
+        current_nested = current_item.get("draft")
+        if not isinstance(source_nested, dict) or not isinstance(current_nested, dict):
+            continue
+        yield source_item, source_nested, current_item, current_nested
+        yield from _iter_nested_draft_pairs(source_nested, current_nested)
+
+
+def _collect_material_items_by_id(payload: dict) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    materials = payload.get("materials") or {}
+    if not isinstance(materials, dict):
+        return result
+    for media_type in ("videos", "images", "audios"):
+        for item in materials.get(media_type) or []:
+            if not isinstance(item, dict):
+                continue
+            material_id = str(item.get("id") or "").strip()
+            if material_id:
+                result[material_id] = item
+    return result
+
+
+def _resolve_media_source_for_cache_copy(path_value: str, cloned_draft_path: str, old_root: str = "") -> str:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return ""
+    if os.path.isabs(raw) and os.path.isfile(raw):
+        return raw
+    if raw.startswith("materials/beat/"):
+        beat_tail = raw.split("/", 2)[2] if raw.count("/") >= 2 else ""
+        if beat_tail:
+            for rel in (os.path.join("beats", beat_tail), os.path.join("beat", beat_tail), raw.replace("/", os.sep)):
+                candidate = os.path.join(cloned_draft_path, rel)
+                if os.path.isfile(candidate):
+                    return candidate
+    if raw.startswith("materials/") or raw.startswith("video/") or raw.startswith("audio/") or raw.startswith("beat/") or raw.startswith("beats/"):
+        candidate = os.path.join(cloned_draft_path, raw.replace("/", os.sep))
+        if os.path.isfile(candidate):
+            return candidate
+    if old_root and os.path.isabs(raw):
+        try:
+            rel = os.path.relpath(raw, old_root)
+        except ValueError:
+            rel = ""
+        if rel:
+            candidate = os.path.join(old_root, rel)
+            if os.path.isfile(candidate):
+                return candidate
+    return ""
+
+
+def _copy_into_cache_target(source_path: str, target_path: str) -> str:
+    source = str(source_path or "").strip()
+    target = str(target_path or "").strip()
+    if not source or not target or not os.path.isfile(source):
+        return ""
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    source_ext = os.path.splitext(source)[1].lower()
+    target_ext = os.path.splitext(target)[1].lower()
+    if source_ext != target_ext and source_ext in _IMAGE_EXTS and target_ext in _IMAGE_EXTS:
+        try:
+            from PIL import Image
+
+            with Image.open(source) as image:
+                image.save(target)
+            shutil.copystat(source, target)
+            return target
+        except Exception:
+            return ""
+    shutil.copy2(source, target)
+    return target
+
+
+def _path_requires_preserved_image_target_name(path_value: str) -> bool:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return False
+    base_name = os.path.basename(raw)
+    ext = os.path.splitext(base_name)[1].lower()
+    if ext not in _IMAGE_EXTS:
+        return False
+    # Official nested templateDraft assets depend on placeholder filenames.
+    # Self-built draftpath placeholders should keep donor basenames instead.
+    if "##_material_placeholder_" in base_name:
+        return True
+    return False
+
+
+def _path_is_selfbuilt_draft_placeholder(path_value: str) -> bool:
+    raw = str(path_value or "").strip()
+    return raw.startswith("##_draftpath_placeholder_")
+
+
+def _collect_ordered_replacement_paths(material_replacements, expected_kind: str) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(material_replacements, dict):
+        return ordered
+    for _key, value in material_replacements.items():
+        path_text = str(value or "").strip()
+        if not path_text:
+            continue
+        media_kind = _detect_media_kind(path_text)
+        if expected_kind and media_kind != expected_kind:
+            continue
+        norm = _normalize_abs_path(path_text) if os.path.isabs(path_text) else path_text.replace("\\", "/")
+        if norm in seen:
+            continue
+        seen.add(norm)
+        ordered.append(path_text)
+    return ordered
+
+
+def _build_selfbuilt_visual_override_map(current_payload: dict, material_replacements) -> dict[str, str]:
+    if not isinstance(current_payload, dict):
+        return {}
+    materials = current_payload.get("materials") or {}
+    if not isinstance(materials, dict):
+        return {}
+
+    ordered_image_overrides = _collect_ordered_replacement_paths(material_replacements, "images")
+    if not ordered_image_overrides:
+        return {}
+
+    referenced_video_ids = _collect_referenced_material_ids(current_payload, "video")
+    if not referenced_video_ids:
+        return {}
+
+    candidates: list[dict] = []
+    for media_type in ("videos", "images"):
+        for item in materials.get(media_type) or []:
+            if not isinstance(item, dict):
+                continue
+            material_id = str(item.get("id") or "").strip()
+            if material_id and material_id not in referenced_video_ids:
+                continue
+            current_path = str(item.get("path") or item.get("file_path") or "").strip()
+            if not _path_is_selfbuilt_draft_placeholder(current_path):
+                continue
+            material_kind = str(item.get("type") or "").strip().lower()
+            if media_type == "images" or material_kind in {"photo", "image", "gif"}:
+                candidates.append(item)
+
+    if not candidates or len(ordered_image_overrides) < len(candidates):
+        return {}
+
+    override_map: dict[str, str] = {}
+    for item, override_path in zip(candidates, ordered_image_overrides):
+        material_id = str(item.get("id") or "").strip()
+        if material_id:
+            override_map[material_id] = override_path
+    return override_map
+
+
+def _collect_selfbuilt_visual_material_ids(current_payload: dict) -> set[str]:
+    result: set[str] = set()
+    if not isinstance(current_payload, dict):
+        return result
+    materials = current_payload.get("materials") or {}
+    if not isinstance(materials, dict):
+        return result
+    referenced_video_ids = _collect_referenced_material_ids(current_payload, "video")
+    if not referenced_video_ids:
+        return result
+    for media_type in ("videos", "images"):
+        for item in materials.get(media_type) or []:
+            if not isinstance(item, dict):
+                continue
+            material_id = str(item.get("id") or "").strip()
+            if material_id and material_id not in referenced_video_ids:
+                continue
+            current_path = str(item.get("path") or item.get("file_path") or "").strip()
+            if not _path_is_selfbuilt_draft_placeholder(current_path):
+                continue
+            material_kind = str(item.get("type") or "").strip().lower()
+            if media_type == "images" or material_kind in {"photo", "image", "gif"}:
+                if material_id:
+                    result.add(material_id)
+    return result
+
+
+def _payload_has_selfbuilt_draftpath_semantics(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    materials = payload.get("materials") or {}
+    if not isinstance(materials, dict):
+        return False
+    for media_type in ("videos", "images"):
+        for item in materials.get(media_type) or []:
+            if not isinstance(item, dict):
+                continue
+            for key in ("path", "file_path"):
+                value = str(item.get(key) or "").strip()
+                if _path_is_selfbuilt_draft_placeholder(value):
+                    return True
+    return False
+
+
+def _classify_draft_strategy(payload: dict) -> dict:
+    if _payload_has_official_nested_cache_semantics(payload):
+        return {
+            "draft_kind": "official_nested_template_draft",
+            "replacement_strategy": "official_minimal_rewrite",
+        }
+    if _payload_has_selfbuilt_draftpath_semantics(payload):
+        return {
+            "draft_kind": "selfbuilt_placeholder_draft",
+            "replacement_strategy": "selfbuilt_grouped_placeholder_rewrite",
+        }
+    return {
+        "draft_kind": "plain_or_unknown_draft",
+        "replacement_strategy": "generic_minimal_rewrite",
+    }
+
+
+def _sync_selfbuilt_plain_visual_materials_from_active(target_payload: dict, active_payload: dict) -> int:
+    if not isinstance(target_payload, dict) or not isinstance(active_payload, dict):
+        return 0
+    if not _payload_has_selfbuilt_draftpath_semantics(active_payload):
+        return 0
+
+    active_materials = active_payload.get("materials") or {}
+    target_materials = target_payload.get("materials") or {}
+    if not isinstance(active_materials, dict) or not isinstance(target_materials, dict):
+        return 0
+
+    active_map: dict[str, dict] = {}
+    for media_type in ("videos", "images"):
+        for item in active_materials.get(media_type) or []:
+            if not isinstance(item, dict):
+                continue
+            material_id = str(item.get("id") or "").strip()
+            path_value = str(item.get("path") or item.get("file_path") or "").strip()
+            if not material_id or not _path_is_selfbuilt_draft_placeholder(path_value):
+                continue
+            marker_end = path_value.find("##/")
+            rel_path = path_value[marker_end + 3 :] if marker_end >= 0 else path_value
+            active_map[material_id] = {
+                "path": rel_path.replace("\\", "/"),
+                "width": item.get("width"),
+                "height": item.get("height"),
+                "duration": item.get("duration"),
+                "material_name": item.get("material_name"),
+                "name": item.get("name"),
+            }
+
+    if not active_map:
+        return 0
+
+    changed = 0
+    for media_type in ("videos", "images"):
+        for item in target_materials.get(media_type) or []:
+            if not isinstance(item, dict):
+                continue
+            material_id = str(item.get("id") or "").strip()
+            active_item = active_map.get(material_id)
+            if not active_item:
+                continue
+            if item.get("path") != active_item["path"]:
+                item["path"] = active_item["path"]
+                changed += 1
+            if "file_path" in item and item.get("file_path") != active_item["path"]:
+                item["file_path"] = active_item["path"]
+                changed += 1
+            width = active_item.get("width")
+            height = active_item.get("height")
+            duration = active_item.get("duration")
+            if isinstance(width, int) and width > 0 and item.get("width") != width:
+                item["width"] = width
+                changed += 1
+            if isinstance(height, int) and height > 0 and item.get("height") != height:
+                item["height"] = height
+                changed += 1
+            if isinstance(duration, int) and duration > 0 and item.get("duration") != duration:
+                item["duration"] = duration
+                changed += 1
+            if "material_name" in item and item.get("material_name") != (active_item.get("material_name") or ""):
+                item["material_name"] = active_item.get("material_name") or ""
+                changed += 1
+            if "name" in item and item.get("name") != (active_item.get("name") or ""):
+                item["name"] = active_item.get("name") or ""
+                changed += 1
+    return changed
+
+
+def _refresh_artist_effect_content(effect_dir: str, replacement_values: list[str]) -> int:
+    effect_root = str(effect_dir or "").strip()
+    if not effect_root or not os.path.isdir(effect_root):
+        return 0
+    content_path = os.path.join(effect_root, "content.json")
+    changed = 0
+    texts = [str(v or "") for v in replacement_values if str(v or "").strip()]
+    if not texts:
+        return 0
+    content_path = os.path.join(effect_root, "content.json")
+    if os.path.isfile(content_path):
+        try:
+            payload = json.loads(Path(content_path).read_text(encoding="utf-8"))
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            text_index = 0
+
+            def walk(node):
+                nonlocal changed, text_index
+                if isinstance(node, dict):
+                    for key, value in list(node.items()):
+                        if key == "richText" and isinstance(value, str) and text_index < len(texts):
+                            replaced = re.sub(r">[^<>]*</font>", f">{texts[text_index]}</font>", value, count=1)
+                            if replaced != value:
+                                node[key] = replaced
+                                changed += 1
+                                text_index += 1
+                        else:
+                            walk(value)
+                elif isinstance(node, list):
+                    for item in node:
+                        walk(item)
+
+            walk(payload)
+            if changed:
+                Path(content_path).write_text(
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+
+    extra_path = os.path.join(effect_root, "extra.json")
+    if os.path.isfile(extra_path):
+        try:
+            extra_payload = json.loads(Path(extra_path).read_text(encoding="utf-8"))
+        except Exception:
+            extra_payload = None
+        if isinstance(extra_payload, dict):
+            original_texts = extra_payload.get("texts")
+            if isinstance(original_texts, list) and original_texts:
+                new_values = list(original_texts)
+                local_changed = 0
+                for idx in range(min(len(new_values), len(texts))):
+                    if str(new_values[idx] or "") != texts[idx]:
+                        new_values[idx] = texts[idx]
+                        local_changed += 1
+                if local_changed:
+                    extra_payload["texts"] = new_values
+                    Path(extra_path).write_text(
+                        json.dumps(extra_payload, ensure_ascii=False, separators=(",", ":")),
+                        encoding="utf-8",
+                    )
+                    changed += local_changed
+    return changed
+
+
+def _externalize_nested_official_cache_semantics(
+    current_payload: dict,
+    source_payload: dict,
+    cloned_draft_path: str,
+    text_replacements: dict,
+    *,
+    template_root_cache: Optional[dict[str, str]] = None,
+    artist_effect_cache: Optional[dict[str, str]] = None,
+) -> dict:
+    diagnostics = {
+        "template_draft_clones": 0,
+        "artist_effect_clones": 0,
+        "material_paths_externalized": 0,
+        "artist_effect_text_refreshes": 0,
+        "canonicalized_nested_paths": 0,
+        "template_draft_roots": [],
+        "artist_effect_roots": [],
+    }
+    template_root_cache = template_root_cache if isinstance(template_root_cache, dict) else {}
+    artist_effect_cache = artist_effect_cache if isinstance(artist_effect_cache, dict) else {}
+
+    for source_item, source_nested, current_item, current_nested in _iter_nested_draft_pairs(source_payload, current_payload):
+        old_template_root = str(source_nested.get("path") or "").strip()
+        if not old_template_root or not os.path.isabs(old_template_root) or not os.path.isdir(old_template_root):
+            continue
+        path_replacements: dict[str, str] = {}
+        if old_template_root not in template_root_cache:
+            new_template_root = _clone_template_draft_cache_dir(old_template_root)
+            if not new_template_root:
+                continue
+            template_root_cache[old_template_root] = new_template_root
+            diagnostics["template_draft_clones"] += 1
+            diagnostics["template_draft_roots"].append(_normalize_path_slashes(new_template_root))
+        new_template_root = template_root_cache[old_template_root]
+        path_replacements[old_template_root] = new_template_root
+        current_nested["path"] = _normalize_path_slashes(new_template_root)
+        if "draft_cover_path" in current_item or "draft_cover_path" in source_item:
+            current_item["draft_cover_path"] = None
+
+        source_items = _collect_material_items_by_id(source_nested)
+        current_items = _collect_material_items_by_id(current_nested)
+        for material_id, current_material in current_items.items():
+            source_material = source_items.get(material_id)
+            if not isinstance(source_material, dict):
+                continue
+            source_material_path = str(source_material.get("path") or source_material.get("file_path") or "").strip()
+            if not source_material_path or not _is_path_within_root(source_material_path, old_template_root):
+                continue
+            rel_path = os.path.relpath(source_material_path, old_template_root)
+            current_material_path = str(current_material.get("path") or current_material.get("file_path") or "").strip()
+            copy_source = _resolve_media_source_for_cache_copy(current_material_path, cloned_draft_path, old_root=old_template_root) or source_material_path
+            target_abs = os.path.join(new_template_root, rel_path)
+            keep_source_name_shape = (
+                source_material_path
+                and "##_material_placeholder_" in os.path.basename(source_material_path)
+                and os.path.splitext(source_material_path)[1].lower() in _IMAGE_EXTS
+            )
+            if (
+                copy_source
+                and not keep_source_name_shape
+                and os.path.splitext(copy_source)[1].lower() != os.path.splitext(target_abs)[1].lower()
+            ):
+                target_abs = os.path.join(os.path.dirname(target_abs), os.path.basename(copy_source))
+            written = _copy_into_cache_target(copy_source, target_abs)
+            if not written:
+                continue
+            current_material["path"] = _normalize_path_slashes(written)
+            if "file_path" in current_material:
+                current_material["file_path"] = _normalize_path_slashes(written)
+            diagnostics["material_paths_externalized"] += 1
+
+        source_cover = str(source_nested.get("static_cover_image_path") or "").strip()
+        current_cover = str(current_nested.get("static_cover_image_path") or "").strip()
+        if source_cover and _is_path_within_root(source_cover, old_template_root):
+            rel_cover = os.path.relpath(source_cover, old_template_root)
+            cover_source = _resolve_media_source_for_cache_copy(current_cover, cloned_draft_path, old_root=old_template_root) or source_cover
+            cover_target = os.path.join(new_template_root, rel_cover)
+            written_cover = _copy_into_cache_target(cover_source, cover_target)
+            if written_cover:
+                current_nested["static_cover_image_path"] = _normalize_path_slashes(written_cover)
+
+        nested_text_replacements: dict[str, str] = {}
+        ordered_material_ids = _collect_text_material_ids_in_track_order(current_nested)
+        for idx, material_id in enumerate(ordered_material_ids):
+            if idx in text_replacements:
+                nested_text_replacements[material_id] = str(text_replacements[idx] or "")
+
+        source_text_templates = ((source_nested.get("materials") or {}).get("text_templates") or [])
+        current_text_templates = ((current_nested.get("materials") or {}).get("text_templates") or [])
+        for source_tt, current_tt in zip(source_text_templates, current_text_templates):
+            if not isinstance(source_tt, dict) or not isinstance(current_tt, dict):
+                continue
+            old_tt_path = str(source_tt.get("path") or "").strip()
+            old_tt_dir = old_tt_path if os.path.isdir(old_tt_path) else os.path.dirname(old_tt_path)
+            if not old_tt_path or not os.path.isabs(old_tt_path) or not os.path.isdir(old_tt_dir):
+                continue
+            if old_tt_dir not in artist_effect_cache:
+                new_tt_dir = _clone_artist_effect_dir(old_tt_dir)
+                if not new_tt_dir:
+                    continue
+                artist_effect_cache[old_tt_dir] = new_tt_dir
+                diagnostics["artist_effect_clones"] += 1
+                diagnostics["artist_effect_roots"].append(_normalize_path_slashes(new_tt_dir))
+            new_tt_dir = artist_effect_cache[old_tt_dir]
+            path_replacements[old_tt_dir] = new_tt_dir
+            current_tt["path"] = _normalize_path_slashes(new_tt_dir)
+            material_id = str(current_tt.get("id") or "").strip()
+            replacement_text = nested_text_replacements.get(material_id)
+            if replacement_text:
+                current_tt["name"] = replacement_text
+                diagnostics["artist_effect_text_refreshes"] += _refresh_artist_effect_content(new_tt_dir, [replacement_text])
+
+        if path_replacements:
+            _apply_recursive_string_replacements(current_nested, path_replacements)
+            _apply_recursive_string_replacements(current_item, path_replacements)
+
+        diagnostics["canonicalized_nested_paths"] += _canonicalize_nested_cache_semantic_paths(
+            current_nested,
+            new_template_root,
+        )
+
+    return diagnostics
 
 
 def _norm_abs(path_value: str) -> str:
@@ -512,6 +1364,8 @@ def _iter_draft_content_targets(cloned_draft_path: str) -> list[str]:
 
 
 def _load_active_payload_with_fallback(primary_path: str, cloned_draft_path: str) -> tuple[dict, dict]:
+    primary_path = os.path.normpath(str(primary_path or "").strip()) if primary_path else ""
+    cloned_draft_path = os.path.normpath(str(cloned_draft_path or "").strip()) if cloned_draft_path else ""
     diagnostics = {
         "requested_primary_path": primary_path,
         "read_path": "",
@@ -599,15 +1453,15 @@ def _choose_payload_for_existing_file(target_path: str, active_payload: dict, sh
     existing, err = _load_plain_json(target_path)
     if err is not None or not isinstance(existing, dict):
         return None
-    file_name = os.path.basename(target_path).lower()
-    if file_name == "template.tmp":
-        return active_payload
-    if file_name == "template.json":
-        return shell_payload if isinstance(shell_payload, dict) else existing
     shape = _classify_payload_shape(existing)
     if shape == "active":
         return active_payload
     if shape == "shell":
+        return shell_payload if isinstance(shell_payload, dict) else existing
+    file_name = os.path.basename(target_path).lower()
+    if file_name == "template.tmp":
+        return active_payload
+    if file_name == "template.json":
         return shell_payload if isinstance(shell_payload, dict) else existing
     return None
 
@@ -620,6 +1474,146 @@ def _write_plain_payload_targets(active_payload: dict, shell_payload: Optional[d
             continue
         _write_json_file(target_path, payload)
         written_paths.append(target_path)
+    return written_paths
+
+
+def _apply_minimal_payload_updates(
+    payload: dict,
+    *,
+    cloned_draft_path: str,
+    source_draft_root: str,
+    texts_input,
+    localized_material_replacements,
+    source_payload_snapshot: Optional[dict] = None,
+    text_replacements: Optional[dict] = None,
+    template_root_cache: Optional[dict[str, str]] = None,
+    artist_effect_cache: Optional[dict[str, str]] = None,
+) -> dict:
+    diagnostics = {
+        "text_replaced": 0,
+        "material_replaced": 0,
+        "rebased_internal_paths": 0,
+        "hydrated_payload_materials": 0,
+        "sanitized_missing_cover_paths": 0,
+        "nested_visual_covers_refreshed": 0,
+        "cover_refreshed": False,
+        "cache_clone_semantics": {},
+    }
+    if not isinstance(payload, dict):
+        return diagnostics
+
+    diagnostics["text_replaced"] = _replace_texts(payload, texts_input)
+    diagnostics["material_replaced"] = _replace_materials(
+        payload,
+        localized_material_replacements,
+        cloned_draft_path,
+    )
+
+    has_official_nested_cache = _payload_has_official_nested_cache_semantics(payload)
+    if has_official_nested_cache and isinstance(source_payload_snapshot, dict):
+        diagnostics["cache_clone_semantics"] = _externalize_nested_official_cache_semantics(
+            payload,
+            source_payload_snapshot,
+            cloned_draft_path,
+            text_replacements or {},
+            template_root_cache=template_root_cache,
+            artist_effect_cache=artist_effect_cache,
+        )
+    else:
+        diagnostics["rebased_internal_paths"] = _rebase_source_internal_paths(
+            payload,
+            source_draft_root,
+            cloned_draft_path,
+        )
+        diagnostics["sanitized_missing_cover_paths"] = _sanitize_missing_cover_paths(
+            payload,
+            cloned_draft_path,
+        )
+
+    diagnostics["nested_visual_covers_refreshed"] = _refresh_nested_combination_visual_covers(
+        payload,
+        cloned_draft_path,
+    )
+    diagnostics["hydrated_payload_materials"] = _hydrate_missing_materials_from_payload_roots(
+        payload,
+        cloned_draft_path,
+        source_draft_root,
+    )
+    diagnostics["cover_refreshed"] = _refresh_draft_cover_from_visuals(payload, cloned_draft_path)
+    return diagnostics
+
+
+def _rewrite_plain_payload_targets_preserving_structure(
+    cloned_draft_path: str,
+    source_draft_root: str,
+    texts_input,
+    localized_material_replacements,
+    active_payload: Optional[dict] = None,
+    source_payload_snapshot: Optional[dict] = None,
+    text_replacements: Optional[dict] = None,
+    template_root_cache: Optional[dict[str, str]] = None,
+    artist_effect_cache: Optional[dict[str, str]] = None,
+) -> tuple[list[str], dict]:
+    written_paths: list[str] = []
+    diagnostics = {
+        "updated_files": {},
+        "text_replaced": 0,
+        "material_replaced": 0,
+        "rebased_internal_paths": 0,
+        "hydrated_payload_materials": 0,
+        "sanitized_missing_cover_paths": 0,
+        "nested_visual_covers_refreshed": 0,
+        "cover_refreshed": 0,
+    }
+
+    for target_path in _iter_plain_payload_targets(cloned_draft_path):
+        payload, err = _load_plain_json(target_path)
+        if err is not None or not isinstance(payload, dict):
+            continue
+        file_diag = _apply_minimal_payload_updates(
+            payload,
+            cloned_draft_path=cloned_draft_path,
+            source_draft_root=source_draft_root,
+            texts_input=texts_input,
+            localized_material_replacements=localized_material_replacements,
+            source_payload_snapshot=source_payload_snapshot,
+            text_replacements=text_replacements,
+            template_root_cache=template_root_cache,
+            artist_effect_cache=artist_effect_cache,
+        )
+        file_diag["selfbuilt_plain_visual_sync"] = _sync_selfbuilt_plain_visual_materials_from_active(
+            payload,
+            active_payload if isinstance(active_payload, dict) else {},
+        )
+
+        _write_json_file(target_path, payload)
+        written_paths.append(target_path)
+
+        diagnostics["updated_files"][target_path] = file_diag
+        diagnostics["text_replaced"] += int(file_diag.get("text_replaced") or 0)
+        diagnostics["material_replaced"] += int(file_diag.get("material_replaced") or 0)
+        diagnostics["rebased_internal_paths"] += int(file_diag.get("rebased_internal_paths") or 0)
+        diagnostics["hydrated_payload_materials"] += int(file_diag.get("hydrated_payload_materials") or 0)
+        diagnostics["sanitized_missing_cover_paths"] += int(file_diag.get("sanitized_missing_cover_paths") or 0)
+        diagnostics["nested_visual_covers_refreshed"] += int(file_diag.get("nested_visual_covers_refreshed") or 0)
+        if file_diag.get("cover_refreshed"):
+            diagnostics["cover_refreshed"] += 1
+
+    return written_paths, diagnostics
+
+
+def _ensure_top_level_plain_targets(active_payload: dict, shell_payload: Optional[dict], cloned_draft_path: str) -> list[str]:
+    written_paths: list[str] = []
+    top_template_json = os.path.join(cloned_draft_path, "template.json")
+    top_template_tmp = os.path.join(cloned_draft_path, "template.tmp")
+
+    shell_to_write = shell_payload if isinstance(shell_payload, dict) else active_payload
+    if isinstance(shell_to_write, dict):
+        _write_json_file(top_template_json, shell_to_write)
+        written_paths.append(top_template_json)
+    if isinstance(active_payload, dict):
+        _write_json_file(top_template_tmp, active_payload)
+        written_paths.append(top_template_tmp)
     return written_paths
 
 
@@ -703,6 +1697,61 @@ def _write_draft_content_targets(data: dict, cloned_draft_path: str) -> list[str
     return written
 
 
+def _write_top_level_payload_with_private_gg_writer(cloned_draft_path: str, data: dict) -> dict:
+    target_path = os.path.join(cloned_draft_path, "draft_content.json")
+    try:
+        payload_text, encode_diag = _encode_official_encrypted_draft_content_inprocess(data)
+
+        written_paths = []
+        for top_level_name in ("draft_content.json", "template-2.tmp"):
+            top_level_path = os.path.join(cloned_draft_path, top_level_name)
+            os.makedirs(os.path.dirname(top_level_path), exist_ok=True)
+            with open(top_level_path, "w", encoding="utf-8") as handle:
+                handle.write(payload_text)
+            written_paths.append(top_level_path)
+
+        mirror_root_name = "Timelines"
+        mirror_root = os.path.join(cloned_draft_path, mirror_root_name)
+        if os.path.isdir(mirror_root):
+            project_json_path = os.path.join(mirror_root, "project.json")
+            main_timeline_id = _load_main_timeline_id(project_json_path)
+            if main_timeline_id:
+                for mirror_name in ("draft_content.json", "template-2.tmp"):
+                    mirror_path = os.path.join(mirror_root, main_timeline_id, mirror_name)
+                    os.makedirs(os.path.dirname(mirror_path), exist_ok=True)
+                    with open(mirror_path, "w", encoding="utf-8") as handle:
+                        handle.write(payload_text)
+                    written_paths.append(mirror_path)
+        return {
+            "ok": True,
+            "skipped": False,
+            "target_path": target_path,
+            "runtime_utils_path": "",
+            "runtime_config_path": "",
+            "result": {
+                "status": "success",
+                "infoPath": target_path,
+                "payloadLength": len(payload_text),
+                "written_paths": [str(item).replace("\\", "/") for item in written_paths],
+                **encode_diag,
+                "timeline_root_name": mirror_root_name,
+            },
+            "reader_runtime": {},
+            "reader_runtime_selection": {},
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "target_path": target_path,
+            "runtime_utils_path": "",
+            "runtime_config_path": "",
+            "error": str(exc),
+            "reader_runtime": {},
+            "reader_runtime_selection": {},
+        }
+
+
 def _iter_draft_payloads(draft_data: dict):
     if not isinstance(draft_data, dict):
         return
@@ -740,6 +1789,26 @@ def _normalize_abs_path(value: str) -> str:
     return os.path.normcase(os.path.normpath(text))
 
 
+def _is_template_draft_cache_path(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text or not os.path.isabs(text):
+        return False
+    normalized = _normalize_path_slashes(text).lower()
+    return "/templatedraft/" in normalized
+
+
+def _payload_has_official_nested_cache_semantics(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for current_payload in _iter_draft_payloads(payload):
+        if current_payload is payload:
+            continue
+        nested_root = str(current_payload.get("path") or "").strip()
+        if _is_template_draft_cache_path(nested_root):
+            return True
+    return False
+
+
 def _map_template_draft_absolute_to_materials(path_value: str) -> str:
     raw = str(path_value or "").strip()
     if not raw or not os.path.isabs(raw):
@@ -760,8 +1829,9 @@ def _map_template_draft_absolute_to_materials(path_value: str) -> str:
     head = rel_parts[0].lower()
     if head == "materials":
         return "/".join(rel_parts)
-    # Official template caches are more stable when these direct roots keep
-    # JianYing's original layout instead of being forced back under materials/*.
+    # Keep official template cache roots aligned with JianYing's original layout.
+    # In practice, nested official drafts are more stable when video/audio/beat assets
+    # remain under direct roots like video/* instead of being rewritten to materials/*.
     if head in {"video", "image", "audio", "retouch_cover", "beat"}:
         return "/".join(rel_parts)
     return raw
@@ -818,7 +1888,7 @@ def _rebase_source_internal_paths(payload: dict, source_root: str, cloned_draft_
             changed += 1
             rebased_rel = str(rebased or "").strip().replace("\\", "/")
             if os.path.isabs(str(value or "").strip()) and rebased_rel and not os.path.isabs(rebased_rel):
-                asset_copy_pairs.append((str(value or "").strip(), rebased_rel))
+                asset_copy_pairs.append((str(value or "").strip(), str(rebased or "").strip().replace("\\", "/")))
 
     def rebase_nested_path_fields(node) -> None:
         if isinstance(node, dict):
@@ -828,7 +1898,7 @@ def _rebase_source_internal_paths(payload: dict, source_root: str, cloned_draft_
                     continue
                 if not isinstance(value, str):
                     continue
-                if key == "path" or key in {"file_path", "material_path", "beats_path", "audio_file_path"} or key.endswith("_path"):
+                if key == "path" or key in {"file_path", "material_path"} or key.endswith("_path"):
                     rebase_field(node, key)
         elif isinstance(node, list):
             for item in node:
@@ -870,7 +1940,7 @@ def _rebase_source_internal_paths(payload: dict, source_root: str, cloned_draft_
                             changed += 1
                             rebased_rel = str(rebased or "").strip().replace("\\", "/")
                             if os.path.isabs(str(value or "").strip()) and rebased_rel and not os.path.isabs(rebased_rel):
-                                asset_copy_pairs.append((str(value or "").strip(), rebased_rel))
+                                asset_copy_pairs.append((str(value or "").strip(), str(rebased or "").strip().replace("\\", "/")))
 
         for draft_item in materials.get("drafts") or []:
             if not isinstance(draft_item, dict):
@@ -885,7 +1955,7 @@ def _rebase_source_internal_paths(payload: dict, source_root: str, cloned_draft_
                         changed += 1
                         rebased_rel = str(rebased or "").strip().replace("\\", "/")
                         if os.path.isabs(str(value or "").strip()) and rebased_rel and not os.path.isabs(rebased_rel):
-                            asset_copy_pairs.append((str(value or "").strip(), rebased_rel))
+                            asset_copy_pairs.append((str(value or "").strip(), str(rebased or "").strip().replace("\\", "/")))
 
         rebase_nested_path_fields(current_payload)
 
@@ -943,6 +2013,7 @@ def _hydrate_missing_materials_from_payload_roots(payload: dict, cloned_draft_pa
         if os.path.isfile(dst_abs):
             return
 
+        lower_rel = rel_norm.lower()
         tail = rel_norm
         if tail.lower().startswith("materials/"):
             tail = tail.split("/", 1)[1] if "/" in tail else ""
@@ -954,8 +2025,20 @@ def _hydrate_missing_materials_from_payload_roots(payload: dict, cloned_draft_pa
             candidates.append(os.path.join(base_root, rel_norm.replace("/", os.sep)))
             if tail:
                 candidates.append(os.path.join(base_root, tail.replace("/", os.sep)))
+            if lower_rel.startswith("materials/beat/"):
+                beat_tail = rel_norm.split("/", 2)[2].replace("/", os.sep) if rel_norm.count("/") >= 2 else ""
+                if beat_tail:
+                    candidates.append(os.path.join(base_root, "beats", beat_tail))
+                    candidates.append(os.path.join(base_root, "beat", beat_tail))
+            elif lower_rel.startswith("beat/"):
+                beat_tail = rel_norm.split("/", 1)[1].replace("/", os.sep) if "/" in rel_norm else ""
+                if beat_tail:
+                    candidates.append(os.path.join(base_root, "beats", beat_tail))
+            elif lower_rel.startswith("beats/"):
+                beat_tail = rel_norm.split("/", 1)[1].replace("/", os.sep) if "/" in rel_norm else ""
+                if beat_tail:
+                    candidates.append(os.path.join(base_root, "beat", beat_tail))
 
-        lower_rel = rel_norm.lower()
         if lower_rel.startswith("materials/audio/"):
             file_name = os.path.basename(rel_norm)
             for cache_root in cache_music_roots:
@@ -1053,6 +2136,10 @@ def _sanitize_missing_cover_paths(payload: dict, cloned_draft_path: str) -> int:
     for current_payload in _iter_draft_payloads(payload):
         if not isinstance(current_payload, dict):
             continue
+        nested_root = str(current_payload.get("path") or "").strip()
+        if nested_root and os.path.isabs(nested_root) and os.path.isdir(nested_root):
+            # Official nested templateDraft payloads keep their own root-relative cover semantics.
+            continue
         static_cover = current_payload.get("static_cover_image_path")
         if isinstance(static_cover, str) and static_cover.strip() and not _path_exists(static_cover):
             current_payload["static_cover_image_path"] = ""
@@ -1066,6 +2153,365 @@ def _sanitize_missing_cover_paths(payload: dict, cloned_draft_path: str) -> int:
                     retouch_cover[key] = ""
                     fixed += 1
     return fixed
+
+
+def _sanitize_missing_cover_paths_in_data(data, cloned_draft_path: str) -> int:
+    fixed = 0
+
+    def _path_exists(path_value: str) -> bool:
+        text = str(path_value or "").strip()
+        if not text:
+            return False
+        if os.path.isabs(text):
+            return os.path.exists(text)
+        candidate = os.path.join(cloned_draft_path, text.replace("/", os.sep).replace("\\", os.sep))
+        return os.path.exists(candidate)
+
+    def _walk(node):
+        nonlocal fixed
+        if isinstance(node, dict):
+            nested_root = str(node.get("path") or "").strip() if isinstance(node.get("path"), str) else ""
+            if _is_template_draft_cache_path(nested_root):
+                return
+            for key, value in list(node.items()):
+                if isinstance(value, (dict, list)):
+                    _walk(value)
+                    continue
+                if not isinstance(value, str):
+                    continue
+                text = value.strip()
+                if not text:
+                    continue
+                if key in {"cover_path", "static_cover_image_path", "draft_cover_path", "live_photo_cover_path"}:
+                    if not _path_exists(text):
+                        node[key] = ""
+                        fixed += 1
+                elif key in {"image_path", "retouch_path"}:
+                    if not _path_exists(text):
+                        node[key] = ""
+                        fixed += 1
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(data)
+    return fixed
+
+
+def _repair_missing_relative_paths_in_data(data, cloned_draft_path: str) -> int:
+    fixed = 0
+    root_norm = os.path.normcase(os.path.normpath(cloned_draft_path))
+    basename_index: dict[str, list[str]] = {}
+
+    for cur_root, _dirs, files in os.walk(cloned_draft_path):
+        for name in files:
+            basename_index.setdefault(name.lower(), []).append(os.path.join(cur_root, name))
+
+    def _relative_to_root(path_value: str) -> str:
+        rel = os.path.relpath(path_value, cloned_draft_path)
+        return rel.replace("\\", "/")
+
+    def _walk(node):
+        nonlocal fixed
+        if isinstance(node, dict):
+            nested_root = str(node.get("path") or "").strip() if isinstance(node.get("path"), str) else ""
+            if _is_template_draft_cache_path(nested_root):
+                return
+            for key, value in list(node.items()):
+                if isinstance(value, (dict, list)):
+                    _walk(value)
+                    continue
+                if not isinstance(value, str):
+                    continue
+                text = value.strip()
+                if not text:
+                    continue
+                if key == "path" and text.startswith("##_draftpath_placeholder_"):
+                    node[key] = cloned_draft_path.replace("\\", "/")
+                    fixed += 1
+                    continue
+                if not (key == "path" or key.endswith("_path") or key in {"file_path", "material_path"}):
+                    continue
+                if os.path.isabs(text):
+                    norm = os.path.normcase(os.path.normpath(text))
+                    if norm == root_norm:
+                        node[key] = cloned_draft_path.replace("\\", "/")
+                        fixed += 1
+                    continue
+                candidate = os.path.join(cloned_draft_path, text.replace("/", os.sep).replace("\\", os.sep))
+                if os.path.exists(candidate):
+                    continue
+                basename = os.path.basename(text).lower()
+                matches = basename_index.get(basename) or []
+                if not matches:
+                    continue
+                best = matches[0]
+                desired_rel = _relative_to_root(best)
+                if desired_rel != text.replace("\\", "/"):
+                    node[key] = desired_rel
+                    fixed += 1
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(data)
+    return fixed
+
+
+def _strip_material_placeholder_tokens(cloned_draft_path: str) -> dict:
+    token_re = re.compile(r"##_material_placeholder_[0-9A-Fa-f-]+_##")
+    rel_map: dict[str, str] = {}
+    renamed_files = 0
+
+    for cur_root, _dirs, files in os.walk(cloned_draft_path):
+        for name in files:
+            if "##_material_placeholder_" not in name:
+                continue
+            new_name = token_re.sub("", name)
+            if not new_name or new_name == name:
+                continue
+            src = os.path.join(cur_root, name)
+            dst = os.path.join(cur_root, new_name)
+            if os.path.exists(dst):
+                continue
+            os.replace(src, dst)
+            old_rel = os.path.relpath(src, cloned_draft_path).replace("\\", "/")
+            new_rel = os.path.relpath(dst, cloned_draft_path).replace("\\", "/")
+            rel_map[old_rel] = new_rel
+            renamed_files += 1
+
+    updated_files = 0
+    if rel_map:
+        for cur_root, _dirs, files in os.walk(cloned_draft_path):
+            for name in files:
+                lower = name.lower()
+                if not lower.endswith((".json", ".tmp", ".bak")):
+                    continue
+                path = os.path.join(cur_root, name)
+                try:
+                    text = Path(path).read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                original = text
+                for old_rel, new_rel in rel_map.items():
+                    old_base = os.path.basename(old_rel)
+                    new_base = os.path.basename(new_rel)
+                    text = text.replace(old_rel, new_rel)
+                    text = text.replace(old_rel.replace("/", "\\"), new_rel.replace("/", "\\"))
+                    text = text.replace(old_base, new_base)
+                if text != original:
+                    Path(path).write_text(text, encoding="utf-8")
+                    updated_files += 1
+
+    return {
+        "renamed_files": renamed_files,
+        "updated_files": updated_files,
+        "mapping_count": len(rel_map),
+    }
+
+
+def _strip_material_placeholder_tokens_in_root(root_path: str) -> dict:
+    root = str(root_path or "").strip()
+    if not root or not os.path.isdir(root):
+        return {
+            "renamed_files": 0,
+            "updated_files": 0,
+            "mapping_count": 0,
+            "root": root,
+        }
+
+    token_re = re.compile(r"##_material_placeholder_[0-9A-Fa-f-]+_##")
+    rel_map: dict[str, str] = {}
+    renamed_files = 0
+
+    for cur_root, _dirs, files in os.walk(root):
+        for name in files:
+            if "##_material_placeholder_" not in name:
+                continue
+            new_name = token_re.sub("", name)
+            if not new_name or new_name == name:
+                continue
+            src = os.path.join(cur_root, name)
+            dst = os.path.join(cur_root, new_name)
+            try:
+                if os.path.exists(dst):
+                    os.remove(src)
+                else:
+                    os.replace(src, dst)
+                old_rel = os.path.relpath(src, root).replace("\\", "/")
+                new_rel = os.path.relpath(dst, root).replace("\\", "/")
+                rel_map[old_rel] = new_rel
+                renamed_files += 1
+            except Exception:
+                continue
+
+    updated_files = 0
+    if rel_map:
+        for cur_root, _dirs, files in os.walk(root):
+            for name in files:
+                lower = name.lower()
+                if not lower.endswith((".json", ".tmp", ".bak", ".extra")):
+                    continue
+                path = os.path.join(cur_root, name)
+                try:
+                    text = Path(path).read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                original = text
+                for old_rel, new_rel in rel_map.items():
+                    old_base = os.path.basename(old_rel)
+                    new_base = os.path.basename(new_rel)
+                    old_abs = _normalize_path_slashes(os.path.join(root, old_rel.replace("/", os.sep)))
+                    new_abs = _normalize_path_slashes(os.path.join(root, new_rel.replace("/", os.sep)))
+                    text = text.replace(old_abs, new_abs)
+                    text = text.replace(old_rel, new_rel)
+                    text = text.replace(old_rel.replace("/", "\\"), new_rel.replace("/", "\\"))
+                    text = text.replace(old_base, new_base)
+                if text != original:
+                    Path(path).write_text(text, encoding="utf-8")
+                    updated_files += 1
+
+    return {
+        "renamed_files": renamed_files,
+        "updated_files": updated_files,
+        "mapping_count": len(rel_map),
+        "root": root,
+    }
+
+
+def _find_main_timeline_dir(cloned_draft_path: str) -> str:
+    project_json_path = os.path.join(cloned_draft_path, "Timelines", "project.json")
+    main_timeline_id = _load_main_timeline_id(project_json_path)
+    if main_timeline_id:
+        candidate = os.path.join(cloned_draft_path, "Timelines", main_timeline_id)
+        if os.path.isdir(candidate):
+            return candidate
+
+    timelines_root = os.path.join(cloned_draft_path, "Timelines")
+    if not os.path.isdir(timelines_root):
+        return ""
+    for name in os.listdir(timelines_root):
+        candidate = os.path.join(timelines_root, name)
+        if os.path.isdir(candidate):
+            return candidate
+    return ""
+
+
+def _sync_generated_official_backup_payloads(cloned_draft_path: str, timeline_dir: str = "") -> list[str]:
+    final_payload_path = os.path.join(cloned_draft_path, "draft_content.json")
+    if not os.path.isfile(final_payload_path):
+        return []
+
+    try:
+        final_payload_text = Path(final_payload_path).read_text(encoding="utf-8")
+    except Exception:
+        return []
+
+    candidate_paths = [
+        os.path.join(cloned_draft_path, "draft_content.json.bak"),
+        os.path.join(timeline_dir, "draft_content.json.bak") if timeline_dir else "",
+    ]
+
+    backup_root = os.path.join(cloned_draft_path, ".backup")
+    if os.path.isdir(backup_root):
+        for root_dir, _dirs, filenames in os.walk(backup_root):
+            for filename in filenames:
+                if filename.lower().endswith(".bak"):
+                    candidate_paths.append(os.path.join(root_dir, filename))
+
+    synced_paths: list[str] = []
+    for backup_path in _merge_unique_paths(candidate_paths):
+        if not backup_path or not os.path.isfile(backup_path):
+            continue
+        try:
+            backup_payload, _diag = _decode_official_encrypted_draft_content_inprocess(backup_path)
+        except Exception:
+            continue
+        if not isinstance(backup_payload, dict):
+            continue
+        try:
+            with open(backup_path, "w", encoding="utf-8") as handle:
+                handle.write(final_payload_text)
+            synced_paths.append(_normalize_path_slashes(backup_path))
+        except Exception:
+            continue
+    return synced_paths
+
+
+def _finalize_generated_official_draft(cloned_draft_path: str, *, cacheclone_mode: bool = False) -> dict:
+    diagnostics = {
+        "copied_top_level": [],
+        "sanitized_files": {},
+        "synced_backup_payloads": [],
+    }
+    if not cloned_draft_path or not os.path.isdir(cloned_draft_path):
+        return diagnostics
+
+    timeline_dir = _find_main_timeline_dir(cloned_draft_path)
+    scaffold_root = _get_draft_scaffold_path()
+
+    if not cacheclone_mode:
+        for name in ("template.json", "template.tmp"):
+            target_path = os.path.join(cloned_draft_path, name)
+            if os.path.isfile(target_path):
+                continue
+            source_candidates = []
+            if timeline_dir:
+                source_candidates.append(os.path.join(timeline_dir, name))
+            if name == "template.tmp":
+                source_candidates.append(os.path.join(cloned_draft_path, "template-2.tmp"))
+            if scaffold_root and name == "template.json":
+                source_candidates.append(os.path.join(scaffold_root, name))
+            for source_path in source_candidates:
+                if not source_path or not os.path.isfile(source_path):
+                    continue
+                try:
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    shutil.copy2(source_path, target_path)
+                    diagnostics["copied_top_level"].append(name)
+                    break
+                except Exception:
+                    continue
+    else:
+        diagnostics["removed_top_level"] = _remove_official_cacheclone_top_level_templates(cloned_draft_path)
+        diagnostics["synced_backup_payloads"] = _sync_generated_official_backup_payloads(
+            cloned_draft_path,
+            timeline_dir=timeline_dir,
+        )
+
+    sanitize_targets = _merge_unique_paths(
+        [
+            os.path.join(cloned_draft_path, "draft_content.json"),
+            os.path.join(cloned_draft_path, "draft_content.json.bak"),
+            os.path.join(cloned_draft_path, "template-2.tmp"),
+            os.path.join(timeline_dir, "template.json") if timeline_dir else "",
+            os.path.join(timeline_dir, "template.tmp") if timeline_dir else "",
+            os.path.join(timeline_dir, "draft_content.json") if timeline_dir else "",
+            os.path.join(timeline_dir, "draft_content.json.bak") if timeline_dir else "",
+            os.path.join(timeline_dir, "template-2.tmp") if timeline_dir else "",
+        ]
+    )
+
+    for target_path in sanitize_targets:
+        if not target_path or not os.path.isfile(target_path) or not _looks_like_plain_json(target_path):
+            continue
+        try:
+            with open(target_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            continue
+        has_official_nested_cache = _payload_has_official_nested_cache_semantics(payload)
+        repaired = 0 if has_official_nested_cache else _repair_missing_relative_paths_in_data(payload, cloned_draft_path)
+        fixed = 0 if has_official_nested_cache else _sanitize_missing_cover_paths_in_data(payload, cloned_draft_path)
+        if repaired <= 0 and fixed <= 0:
+            continue
+        _write_json_file(target_path, payload)
+        diagnostics["sanitized_files"][target_path] = {
+            "repaired_paths": repaired,
+            "sanitized_covers": fixed,
+        }
+
+    return diagnostics
 
 
 def _is_locked_track(track: dict) -> bool:
@@ -1153,12 +2599,6 @@ def _collect_text_material_ids_in_track_order(payload: dict) -> list[str]:
             continue
         if _is_locked_track(track):
             continue
-        # gg-jy-assistant only targets normal text tracks (attribute == 0)
-        try:
-            if int(track.get("attribute") or 0) != 0:
-                continue
-        except Exception:
-            continue
         for segment in track.get("segments") or []:
             if not isinstance(segment, dict):
                 continue
@@ -1205,21 +2645,42 @@ def _write_text_content(item: dict, new_text: str) -> None:
         item["recognize_text"] = new_text
 
 
-def _candidate_gg_roots() -> list[str]:
-    candidates = []
-    env_root = str(os.environ.get("GG_JY_ASSISTANT_ROOT") or "").strip()
-    if env_root:
-        candidates.append(env_root)
+def _get_private_reader_runtime_mode() -> str:
+    raw = str(os.environ.get(_OFFICIAL_READER_RUNTIME_MODE_ENV) or "").strip().lower()
+    if raw in {"legacy_0330", "legacy-0330", "0330", "legacy"}:
+        return "legacy_0330"
+    return "current"
 
-    for raw in (
-        r"D:\gg-jy-assistant",
-        r"E:\gg-jy-assistant",
-    ):
-        candidates.append(raw)
+
+def _allow_legacy_gg_reader_fallback() -> bool:
+    raw = str(os.environ.get(_OFFICIAL_READER_ALLOW_GG_FALLBACK_ENV) or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _candidate_gg_roots(runtime_mode: Optional[str] = None) -> list[str]:
+    mode = runtime_mode or _get_private_reader_runtime_mode()
+    candidates = []
 
     bundled_root = app_resource_path("runtime_tools", _OFFICIAL_READER_RUNTIME_DIRNAME)
-    if bundled_root.exists():
-        candidates.append(str(bundled_root))
+    env_root = str(os.environ.get("GG_JY_ASSISTANT_ROOT") or "").strip()
+    external_roots = [
+        r"D:\gg-jy-assistant",
+        r"E:\gg-jy-assistant",
+    ]
+    if mode == "legacy_0330":
+        if env_root:
+            candidates.append(env_root)
+        candidates.extend(external_roots)
+        if bundled_root.exists():
+            candidates.append(str(bundled_root))
+    else:
+        if bundled_root.exists():
+            candidates.append(str(bundled_root))
+        if env_root:
+            candidates.append(env_root)
+        # External GG installs are dev/debug fallbacks only. Packaged builds should
+        # always resolve the bundled official_reader runtime above first.
+        candidates.extend(external_roots)
 
     deduped = []
     seen = set()
@@ -1238,7 +2699,7 @@ def _resolve_reader_utils_path(root: str) -> str:
         return packaged_semantic
 
     unpacked_semantic = os.path.join(root, "resources", "app.asar.unpacked", "build", "electron", "utils")
-    if os.path.exists(os.path.join(root, "resources", "app.asar.unpacked")):
+    if os.path.isdir(unpacked_semantic):
         return unpacked_semantic
 
     source_utils = os.path.join(root, "resources", "app_source", "build", "electron", "utils")
@@ -1248,15 +2709,19 @@ def _resolve_reader_utils_path(root: str) -> str:
     return packaged_semantic
 
 
-def _candidate_reader_config_paths(root: str) -> list[Path]:
+def _candidate_reader_config_paths(root: str, runtime_mode: Optional[str] = None) -> list[Path]:
+    mode = runtime_mode or _get_private_reader_runtime_mode()
     home = Path.home()
     roaming_config = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming") / _GG_ASSISTANT_SOFTWARE_KEY / "config.json"
-    candidates = [
-        roaming_config,
+    bundled_candidates = [
         Path(root) / "userdata" / _GG_ASSISTANT_SOFTWARE_KEY / "config.json",
         Path(root) / "user_data" / "config.json",
         Path(root) / "config.json",
     ]
+    if mode == "legacy_0330":
+        candidates = [roaming_config, *bundled_candidates]
+    else:
+        candidates = [*bundled_candidates, roaming_config]
     deduped: list[Path] = []
     seen = set()
     for item in candidates:
@@ -1316,8 +2781,83 @@ def _resolve_gg_like_timeline_root(primary_path: str) -> str:
     return os.path.join(project_root, root_name)
 
 
-def _resolve_private_reader_runtime() -> dict:
-    for root in _candidate_gg_roots():
+def _compute_totalmem_parity_digits() -> tuple[str, str]:
+    total_mem = 0
+    try:
+        if os.name == "nt":
+            class MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = MemoryStatusEx()
+            status.dwLength = ctypes.sizeof(MemoryStatusEx)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                total_mem = int(status.ullTotalPhys)
+        else:
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+            phys_pages = int(os.sysconf("SC_PHYS_PAGES"))
+            total_mem = page_size * phys_pages
+    except Exception:
+        total_mem = 0
+
+    even_count = 0
+    odd_count = 0
+    for char in str(total_mem or ""):
+        if not char.isdigit():
+            continue
+        if int(char) % 2 == 0:
+            even_count += 1
+        else:
+            odd_count += 1
+    return str(even_count % 10), str(odd_count % 10)
+
+
+def _refresh_private_reader_g6_token(raw_g6: str) -> str:
+    text = "".join(ch for ch in str(raw_g6 or "").strip() if ch.isdigit())
+    if len(text) < 26:
+        return str(raw_g6 or "").strip()
+
+    chars = list(text[:26])
+    chars[0:10] = list(f"{int(time.time()):010d}"[-10:])
+    parity_even, parity_odd = _compute_totalmem_parity_digits()
+    chars[16] = parity_even
+    chars[17] = parity_odd
+    return "".join(chars)
+
+
+def _summarize_private_reader_runtime(runtime: dict) -> dict:
+    if not isinstance(runtime, dict):
+        return {}
+    return {
+        "runtime_mode": str(runtime.get("runtime_mode") or "").strip(),
+        "root": str(runtime.get("root") or "").replace("\\", "/"),
+        "config_path": str(runtime.get("config_path") or "").replace("\\", "/"),
+        "user_data_path": str(runtime.get("user_data_path") or "").replace("\\", "/"),
+        "utils_path": str(runtime.get("utils_path") or "").replace("\\", "/"),
+        "cppreader_path": str(runtime.get("cppreader_path") or "").replace("\\", "/"),
+        "k6": str(runtime.get("k6") or "").strip(),
+        "g6_prefix": str(runtime.get("g6_value") or "").strip()[:10],
+        "g6_token_length": len(str(runtime.get("g6_token") or "").strip()),
+        "timeline_root_name": _compute_gg_timeline_root_dirname(str(runtime.get("k6") or "").strip()),
+    }
+
+
+def _resolve_private_reader_runtime(runtime_mode: Optional[str] = None) -> dict:
+    mode = runtime_mode or _get_private_reader_runtime_mode()
+    selection_report = {
+        "runtime_mode": mode,
+        "roots": [],
+    }
+    for root in _candidate_gg_roots(mode):
         cppreader_path = os.path.join(root, "resources", "enhance", "win32", "x64", "cppreader.exe")
         utils_path = _resolve_reader_utils_path(root)
         has_reader_context = (
@@ -1325,47 +2865,74 @@ def _resolve_private_reader_runtime() -> dict:
             or os.path.exists(os.path.join(root, "resources", "app.asar.unpacked"))
             or os.path.isdir(utils_path)
         )
+        root_report = {
+            "root": str(root).replace("\\", "/"),
+            "cppreader_exists": os.path.exists(cppreader_path),
+            "utils_path": str(utils_path).replace("\\", "/"),
+            "has_reader_context": has_reader_context,
+            "config_attempts": [],
+        }
+        selection_report["roots"].append(root_report)
         if not (os.path.exists(cppreader_path) and has_reader_context):
             continue
 
-        for config_path in _candidate_reader_config_paths(root):
+        for config_path in _candidate_reader_config_paths(root, mode):
+            config_report = {
+                "config_path": str(config_path).replace("\\", "/"),
+                "exists": config_path.exists(),
+            }
+            root_report["config_attempts"].append(config_report)
             if not config_path.exists():
                 continue
             try:
                 config = json.loads(config_path.read_text(encoding="utf-8"))
             except Exception:
+                config_report["parse_ok"] = False
                 continue
             if not isinstance(config, dict):
+                config_report["parse_ok"] = False
                 continue
+            config_report["parse_ok"] = True
 
-            g6 = str(config.get("g6") or "").strip()
+            g6 = _refresh_private_reader_g6_token(str(config.get("g6") or "").strip())
             k6 = str(config.get("k6") or "").strip()
             k6p_raw = str(config.get("k6p") or "").strip()
+            config_report["k6"] = k6
+            config_report["g6_prefix"] = g6[:10]
             if len(g6) < 11 or not k6 or not k6p_raw:
+                config_report["usable"] = False
                 continue
             try:
                 api_param = json.loads(json.dumps(k6p_raw))
                 api_param = __import__("base64").b64decode(api_param).decode("utf-8")
             except Exception:
+                config_report["usable"] = False
                 continue
             if len(api_param) < 20:
+                config_report["usable"] = False
                 continue
+            config_report["usable"] = True
 
             user_data_path = str(config_path.parent).replace("\\", "/")
             if os.path.basename(user_data_path).lower() == "user_data":
                 bundled_userdata = Path(root) / "userdata" / _GG_ASSISTANT_SOFTWARE_KEY
                 if bundled_userdata.is_dir():
                     user_data_path = str(bundled_userdata).replace("\\", "/")
-            return {
+            runtime = {
+                "runtime_mode": mode,
                 "root": root,
                 "cppreader_path": cppreader_path,
                 "utils_path": utils_path,
                 "g6_token": g6[10:],
+                "g6_value": g6,
                 "k6": k6,
                 "api_param": api_param,
                 "user_data_path": user_data_path,
                 "config_path": str(config_path),
+                "selection_report": selection_report,
             }
+            selection_report["selected"] = _summarize_private_reader_runtime(runtime)
+            return runtime
 
     raise ValueError("private gg reader runtime not found")
 
@@ -1388,6 +2955,225 @@ def _build_ascii_reader_shadow_root(source_root: str) -> str:
     shadow_root.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source_root, shadow_root)
     return str(shadow_root)
+
+
+def _run_private_pjs_reader_to_payload(draft_content_path: str, runtime: dict) -> tuple[dict, dict]:
+    read_script = r"""
+const fs = require("fs");
+const path = require("path");
+const Module = require("module");
+const os = require("os");
+
+const utilsPath = process.argv[1];
+const configPath = process.argv[2];
+const userDataPath = process.argv[3];
+const cppreaderSource = process.argv[4];
+const infoPath = process.argv[5];
+const freshG6 = process.argv[6];
+
+function buildStoreKeyMap() {
+  return {
+    TRIAL_TIME_LEFT: "t",
+    LATEST_INTERNET_TIMESTAMP_S: "lits",
+    LATEST_INTERNET_TIMESTAMP_S_CHECK_FAIL_COUNT: "litscfc",
+    NOT_SHOW_NOTICE_INFO_AGAIN_WORDS: "nsniaw",
+    OFFLINE_ACTIVATION: "oa",
+    DISABLED: "d",
+    CONTACT: "c",
+    FIRST_PROJECT_CLICK_DEVIATION: "fpcd",
+    FIRST_PROJECT_CLICK_ABS: "fpca",
+    PROJECT_INIT_CLICK_FOCUS: "picf",
+    OPENPATH_JY: "oj",
+    JY_PATH: "jyp",
+    BATCH_REPLACE_CLICK_EXPORT_WINDOW: "brcew",
+    IS_3_EXIT_WINDOW: "i3ew",
+    PRESET_OPTIONS: "po",
+    DISABLE_GPU: "dg",
+    THNTEN: "thnten",
+    REPLACEMENT_PATH: "rp",
+    LET_ME_CREATE_REPLACEMENT: "lmcr",
+    MATCHERDATA_PATH: "mdp",
+    PROFESSIONALDATA_PATH: "pdp",
+    K6: "k6",
+    K6_TRIAL_USING_PRODUCT_CODE: "k6p",
+    G6: "g6",
+    BIG_MODEL_MEDIUM: "bmm",
+    BIG_MODEL_SOURCE: "bms",
+    BIG_MODEL_URL: "bmu",
+    BIG_MODEL_NAME: "bmn",
+    BIG_MODEL_API_KEY: "bmak",
+  };
+}
+
+class SimpleStore {
+  constructor() {
+    this.data = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (freshG6) {
+      this.data.g6 = freshG6;
+    }
+    this.data.lits = Math.floor(Date.now() / 1000);
+    this.data.litscfc = 0;
+    this.data.oa = true;
+    this.data.d = false;
+  }
+  get(key) {
+    return this.data[key];
+  }
+  set(key, value) {
+    this.data[key] = value;
+  }
+}
+
+function installStubs() {
+  const storeKeys = buildStoreKeyMap();
+  const originalLoad = Module._load;
+  Module._load = function patchedLoad(request, parent, isMain) {
+    if (request === "electron") {
+      return {
+        app: {
+          isPackaged: true,
+          getPath(name) {
+            if (name === "userData") {
+              return userDataPath;
+            }
+            return "";
+          },
+          getVersion() {
+            return "2.4.3";
+          },
+          getName() {
+            return "gg-jy-assistant";
+          },
+          focus() {},
+        },
+        screen: {
+          getPrimaryDisplay() {
+            return { size: { width: 1920, height: 1080 } };
+          },
+        },
+        dialog: {},
+      };
+    }
+    if (request === "./const" && parent && /utils\\p\.js$/i.test(parent.filename)) {
+      return {
+        IS_EN: false,
+        STORE_KEY: storeKeys,
+        SOFTWARE_KEYNAME: "gg-jy-assistant",
+      };
+    }
+    if (
+      request === "../methods/activation" ||
+      request === "../activation" ||
+      request === "../../methods/activation"
+    ) {
+      return {
+        getApiParamK() {
+          return "12548043886245103004";
+        },
+        handleGetActivationStatus() {
+          return { status: "official", tier: "vip", isForever: true, gt: 1893456000 };
+        },
+        getMacAddrPure() {
+          return "00-00-00-00-00-00";
+        },
+      };
+    }
+    if (request === "ffmpeg-static") {
+      return "C:/Windows/System32/where.exe";
+    }
+    if (request === "semver") {
+      return {
+        gte() {
+          return true;
+        },
+      };
+    }
+    if (request === "electron-store") {
+      return SimpleStore;
+    }
+    if (request === "json-bigint") {
+      return { parse: JSON.parse, stringify: JSON.stringify };
+    }
+    if (request === "../../robot" || request === "../robot" || request === "./robot") {
+      return {
+        robot: {
+          keyTap() {},
+        },
+        rbClick() {},
+      };
+    }
+    if (request === "chokidar") {
+      return {
+        watch() {
+          return { on() { return this; }, close() {} };
+        },
+      };
+    }
+    return originalLoad.apply(this, arguments);
+  };
+}
+
+function ensureCppreaderMirror() {
+  const mirrorPath = path.join(utilsPath, "enhance", "win32", "x64", "cppreader.exe");
+  fs.mkdirSync(path.dirname(mirrorPath), { recursive: true });
+  if (!fs.existsSync(mirrorPath) && fs.existsSync(cppreaderSource)) {
+    fs.copyFileSync(cppreaderSource, mirrorPath);
+  }
+}
+
+async function main() {
+  installStubs();
+  ensureCppreaderMirror();
+  const pmod = require(path.join(utilsPath, "p.js"));
+  const readResult = await pmod.p({ infoPath });
+  if (!readResult || readResult.status !== "success") {
+    process.stderr.write(JSON.stringify(readResult || { status: "error", data: "empty result" }));
+    process.exit(3);
+  }
+  process.stdout.write(readResult.data || "");
+}
+
+main().catch((error) => {
+  process.stderr.write(error && error.stack ? error.stack : String(error));
+  process.exit(1);
+});
+"""
+    result = subprocess.run(
+        [
+            "node",
+            "-e",
+            read_script,
+            runtime["utils_path"],
+            runtime["config_path"],
+            runtime["user_data_path"],
+            runtime["cppreader_path"],
+            draft_content_path,
+            runtime.get("g6_value") or "",
+        ],
+        capture_output=True,
+        check=False,
+        **_quiet_subprocess_kwargs(),
+    )
+    stdout_text = (result.stdout or b"").decode("utf-8", errors="ignore").strip()
+    stderr_text = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
+    if result.returncode != 0:
+        raise ValueError(stderr_text or stdout_text or f"private gg pjs reader failed ({result.returncode})")
+    try:
+        data = json.loads(stdout_text)
+    except Exception as exc:
+        raise ValueError(f"private gg pjs reader json parse failed: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("private gg pjs reader returned non-object payload")
+
+    diagnostics = {
+        "reader": "private_gg_pjs_reader",
+        "cppreader_path": runtime["cppreader_path"],
+        "config_path": runtime["config_path"],
+        "matched_candidate": draft_content_path,
+        "reader_utils_path": runtime["utils_path"],
+        "reader_user_data_path": runtime["user_data_path"],
+    }
+    return data, diagnostics
 
 
 def _run_private_reader_to_payload(draft_content_path: str, runtime: dict) -> tuple[dict, dict]:
@@ -1626,10 +3412,117 @@ def _apply_gg_polyfill_defaults(data: dict, k6: str) -> dict:
     return data
 
 
+def _decode_official_encrypted_draft_content_inprocess(draft_content_path: str) -> tuple[dict, dict]:
+    if AES is None:
+        raise ValueError("pycryptodome AES runtime is unavailable")
+
+    container_text = Path(draft_content_path).read_text(encoding="utf-8").strip()
+    offsets = (
+        *_OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS,
+        *_OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS,
+    )
+    if len(container_text) < offsets[-1] + 4:
+        raise ValueError("official encrypted payload is too short")
+
+    extracted_parts: list[str] = []
+    body_parts: list[str] = []
+    last_offset = 0
+    for offset in offsets:
+        extracted_parts.append(container_text[offset : offset + 4])
+        if offset - last_offset > 4:
+            body_parts.append(container_text[last_offset + 4 : offset])
+        last_offset = offset
+    body_parts.append(container_text[last_offset + 4 :])
+
+    key_text = "".join(extracted_parts[: len(_OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS)])
+    iv_text = "".join(extracted_parts[len(_OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS) :])
+    encrypted_bytes = base64.b64decode("".join(body_parts), validate=True)
+    if len(encrypted_bytes) <= 16:
+        raise ValueError("official encrypted payload body is too short")
+
+    cipher = AES.new(key_text.encode("utf-8"), AES.MODE_GCM, nonce=iv_text.encode("utf-8"))
+    plain_bytes = cipher.decrypt_and_verify(encrypted_bytes[:-16], encrypted_bytes[-16:])
+    data = json.loads(plain_bytes.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("official encrypted payload decoded to non-object JSON")
+
+    diagnostics = {
+        "reader": "official_inprocess_aesgcm",
+        "matched_candidate": draft_content_path,
+        "embedded_key_offsets": list(_OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS),
+        "embedded_iv_offsets": list(_OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS),
+        "container_length": len(container_text),
+        "body_base64_length": sum(len(item) for item in body_parts),
+        "body_binary_length": len(encrypted_bytes),
+        "plain_length": len(plain_bytes),
+    }
+    return data, diagnostics
+
+
+def _encode_official_encrypted_draft_content_inprocess(data: dict) -> tuple[str, dict]:
+    if AES is None:
+        raise ValueError("pycryptodome AES runtime is unavailable")
+    if not isinstance(data, dict):
+        raise ValueError("official payload writer expects object JSON")
+
+    plain_text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    key_text = "".join(secrets.choice(_OFFICIAL_DRAFT_CONTENT_CRYPT_ALPHABET) for _ in range(32))
+    iv_text = "".join(secrets.choice(_OFFICIAL_DRAFT_CONTENT_CRYPT_ALPHABET) for _ in range(16))
+    cipher = AES.new(key_text.encode("utf-8"), AES.MODE_GCM, nonce=iv_text.encode("utf-8"))
+    encrypted_bytes, auth_tag = cipher.encrypt_and_digest(plain_text.encode("utf-8"))
+    body_text = base64.b64encode(encrypted_bytes + auth_tag).decode("ascii")
+
+    offsets = (
+        *_OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS,
+        *_OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS,
+    )
+    embedded_chunks = [key_text[index * 4 : (index + 1) * 4] for index in range(8)]
+    embedded_chunks.extend(iv_text[index * 4 : (index + 1) * 4] for index in range(4))
+
+    container_parts = [embedded_chunks[0]]
+    body_cursor = 0
+    previous_offset = offsets[0]
+    for offset, chunk in zip(offsets[1:], embedded_chunks[1:]):
+        body_slice_len = offset - previous_offset - 4
+        if body_slice_len < 0:
+            raise ValueError("official encrypted payload offsets are invalid")
+        if body_cursor + body_slice_len > len(body_text):
+            raise ValueError("official encrypted payload body is too short for embedded offsets")
+        container_parts.append(body_text[body_cursor : body_cursor + body_slice_len])
+        container_parts.append(chunk)
+        body_cursor += body_slice_len
+        previous_offset = offset
+    container_parts.append(body_text[body_cursor:])
+
+    container_text = "".join(container_parts)
+    diagnostics = {
+        "writer": "official_inprocess_aesgcm",
+        "plain_length": len(plain_text),
+        "body_binary_length": len(encrypted_bytes) + len(auth_tag),
+        "body_base64_length": len(body_text),
+        "container_length": len(container_text),
+        "embedded_key_offsets": list(_OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS),
+        "embedded_iv_offsets": list(_OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS),
+    }
+    return container_text, diagnostics
+
+
 def _load_official_encrypted_draft_content(draft_content_path: str) -> tuple[dict, dict]:
+    try:
+        return _decode_official_encrypted_draft_content_inprocess(draft_content_path)
+    except Exception:
+        if not _allow_legacy_gg_reader_fallback():
+            raise
+
     runtime = _resolve_private_reader_runtime()
     try:
-        return _run_private_reader_to_payload(draft_content_path, runtime)
+        try:
+            data, diagnostics = _run_private_pjs_reader_to_payload(draft_content_path, runtime)
+        except Exception:
+            data, diagnostics = _run_private_reader_to_payload(draft_content_path, runtime)
+        diagnostics["reader_runtime"] = _summarize_private_reader_runtime(runtime)
+        diagnostics["reader_runtime_selection"] = runtime.get("selection_report") or {}
+        return data, diagnostics
     except Exception as primary_exc:
         source_root = os.path.dirname(str(draft_content_path or "").strip())
         if not source_root or not os.path.isdir(source_root) or not _path_has_non_ascii(source_root):
@@ -1638,11 +3531,16 @@ def _load_official_encrypted_draft_content(draft_content_path: str) -> tuple[dic
         try:
             shadow_root = _build_ascii_reader_shadow_root(source_root)
             shadow_path = os.path.join(shadow_root, os.path.basename(draft_content_path))
-            data, diagnostics = _run_private_reader_to_payload(shadow_path, runtime)
+            try:
+                data, diagnostics = _run_private_pjs_reader_to_payload(shadow_path, runtime)
+            except Exception:
+                data, diagnostics = _run_private_reader_to_payload(shadow_path, runtime)
             diagnostics["matched_candidate"] = draft_content_path
             diagnostics["shadow_read_path"] = shadow_path
             diagnostics["shadow_read_mode"] = "ascii_shadow_copy"
             diagnostics["primary_error"] = str(primary_exc)
+            diagnostics["reader_runtime"] = _summarize_private_reader_runtime(runtime)
+            diagnostics["reader_runtime_selection"] = runtime.get("selection_report") or {}
             return data, diagnostics
         finally:
             if shadow_root:
@@ -1660,8 +3558,19 @@ def _replace_texts(payload: dict, texts_input) -> int:
         if not isinstance(materials, dict):
             continue
         text_items = materials.get("texts") or []
+        text_template_items = materials.get("text_templates") or []
         if not isinstance(text_items, list):
             continue
+        ordered_text_items = [item for item in text_items if isinstance(item, dict)]
+        for idx in sorted(replacements.keys()):
+            if idx < 0 or idx >= len(ordered_text_items):
+                continue
+            item = ordered_text_items[idx]
+            new_text = replacements[idx]
+            old_text = _extract_text_content(item)
+            if old_text != new_text:
+                _write_text_content(item, new_text)
+                replaced += 1
         text_by_id = {}
         for item in text_items:
             if not isinstance(item, dict):
@@ -1669,25 +3578,79 @@ def _replace_texts(payload: dict, texts_input) -> int:
             material_id = str(item.get("id") or "").strip()
             if material_id:
                 text_by_id[material_id] = item
+        text_template_by_id = {}
+        if isinstance(text_template_items, list):
+            for item in text_template_items:
+                if not isinstance(item, dict):
+                    continue
+                material_id = str(item.get("id") or "").strip()
+                if material_id:
+                    text_template_by_id[material_id] = item
         ordered_material_ids = _collect_text_material_ids_in_track_order(current_payload)
         if not ordered_material_ids:
             continue
         for idx, material_id in enumerate(ordered_material_ids):
             if idx not in replacements:
                 continue
-            item = text_by_id.get(material_id)
-            if not isinstance(item, dict):
-                continue
-            old_text = _extract_text_content(item)
-            if old_text == "":
-                continue
             new_text = replacements[idx]
-            _write_text_content(item, new_text)
-            replaced += 1
+            item = text_by_id.get(material_id)
+            if isinstance(item, dict):
+                old_text = _extract_text_content(item)
+                if old_text != new_text and old_text != "":
+                    _write_text_content(item, new_text)
+                    replaced += 1
+
+            template_item = text_template_by_id.get(material_id)
+            if isinstance(template_item, dict):
+                template_item["name"] = new_text
+                template_path = str(template_item.get("path") or "").strip()
+                template_dir = template_path if os.path.isdir(template_path) else os.path.dirname(template_path)
+                if template_dir and os.path.isdir(template_dir):
+                    basename = os.path.basename(template_dir).lower()
+                    if not basename.startswith("vf"):
+                        cloned_dir = _clone_artist_effect_dir(template_dir)
+                        if cloned_dir:
+                            template_dir = cloned_dir
+                            template_item["path"] = _normalize_path_slashes(cloned_dir)
+                    _refresh_artist_effect_content(template_dir, [new_text])
+                    replaced += 1
     return replaced
 
 
-def _replace_materials(payload: dict, material_replacements) -> int:
+def _apply_draft_placeholder_material_override(
+    current_path: str,
+    override_path: str,
+    cloned_draft_path: str,
+) -> str:
+    raw_current = str(current_path or "").strip()
+    raw_override = str(override_path or "").strip()
+    if not raw_current or os.path.isabs(raw_current) or not os.path.isfile(raw_override):
+        return raw_override
+    prefix = ""
+    tail = raw_current.replace("\\", "/")
+    if raw_current.startswith("##_draftpath_placeholder_"):
+        marker_end = raw_current.find("##/")
+        if marker_end < 0:
+            return raw_override
+        prefix = raw_current[: marker_end + 3]
+        tail = raw_current[marker_end + 3 :].replace("\\", "/")
+    rel_dir = os.path.dirname(tail).replace("\\", "/")
+    preserve_target_name = _path_requires_preserved_image_target_name(raw_current)
+    base_name = os.path.basename(tail) if preserve_target_name else (os.path.basename(raw_override) or os.path.basename(tail))
+    if not rel_dir or not base_name:
+        return raw_override
+    target_abs = os.path.join(cloned_draft_path, rel_dir.replace("/", os.sep), base_name)
+    try:
+        written = _copy_into_cache_target(raw_override, target_abs)
+        if not written:
+            return raw_override
+    except Exception:
+        return raw_override
+    rel_path = f"{rel_dir}/{base_name}"
+    return f"{prefix}{rel_path}" if prefix else rel_path
+
+
+def _replace_materials(payload: dict, material_replacements, cloned_draft_path: str = "") -> int:
     if not isinstance(material_replacements, dict) or not material_replacements:
         return 0
 
@@ -1698,6 +3661,9 @@ def _replace_materials(payload: dict, material_replacements) -> int:
             continue
         referenced_video_ids = _collect_referenced_material_ids(current_payload, "video")
         referenced_audio_ids = _collect_referenced_material_ids(current_payload, "audio")
+        selfbuilt_visual_material_ids = _collect_selfbuilt_visual_material_ids(current_payload)
+        selfbuilt_visual_override_map = _build_selfbuilt_visual_override_map(current_payload, material_replacements)
+        replaced_durations: dict[str, int] = {}
         for media_type in ("videos", "images", "audios"):
             items = materials.get(media_type) or []
             if not isinstance(items, list):
@@ -1715,12 +3681,18 @@ def _replace_materials(payload: dict, material_replacements) -> int:
                     if material_id and material_id not in referenced_audio_ids:
                         continue
                 current_path = item.get("path") or item.get("file_path") or ""
-                override_path = _lookup_material_override(
-                    material_replacements,
-                    material_name=item.get("material_name") or item.get("name"),
-                    material_path=current_path,
-                    material_id=material_id,
-                )
+                override_path = ""
+                if material_id and material_id in selfbuilt_visual_override_map:
+                    override_path = selfbuilt_visual_override_map.get(material_id) or ""
+                elif material_id and material_id in selfbuilt_visual_material_ids:
+                    continue
+                if not override_path:
+                    override_path = _lookup_material_override(
+                        material_replacements,
+                        material_name=item.get("material_name") or item.get("name"),
+                        material_path=current_path,
+                        material_id=material_id,
+                    )
                 if not override_path:
                     continue
                 override_kind = _detect_media_kind(override_path)
@@ -1735,16 +3707,23 @@ def _replace_materials(payload: dict, material_replacements) -> int:
                     current_kind = _detect_media_kind(current_path) or media_type
                 if override_kind and current_kind and override_kind != current_kind:
                     continue
+                metadata_source_path = override_path
+                override_path = _apply_draft_placeholder_material_override(
+                    current_path,
+                    override_path,
+                    cloned_draft_path,
+                )
                 item["path"] = override_path
                 if "file_path" in item:
                     item["file_path"] = override_path
                 base_name = os.path.basename(override_path)
-                if base_name:
+                preserve_blank_names = _path_is_selfbuilt_draft_placeholder(current_path)
+                if base_name and not preserve_blank_names:
                     if "material_name" in item:
                         item["material_name"] = base_name
                     if "name" in item:
                         item["name"] = base_name
-                media_info = parse_media_info(override_path) or {}
+                media_info = _parse_replacement_media_info(metadata_source_path)
                 width = media_info.get("width")
                 height = media_info.get("height")
                 duration = media_info.get("duration")
@@ -1753,9 +3732,64 @@ def _replace_materials(payload: dict, material_replacements) -> int:
                 if isinstance(height, int) and height > 0:
                     item["height"] = height
                 if isinstance(duration, (int, float)) and duration > 0:
-                    item["duration"] = int(round(float(duration) * 1000000))
+                    duration_us = int(round(float(duration) * 1000000))
+                    item["duration"] = duration_us
+                    if material_id and media_type in ("videos", "audios"):
+                        replaced_durations[material_id] = duration_us
                 replaced += 1
+        if replaced_durations:
+            _clamp_replaced_segment_source_timeranges(current_payload, replaced_durations)
     return replaced
+
+
+def _clamp_replaced_segment_source_timeranges(payload: dict, material_durations: dict[str, int]) -> int:
+    if not isinstance(payload, dict) or not isinstance(material_durations, dict) or not material_durations:
+        return 0
+    tracks = payload.get("tracks") or []
+    if not isinstance(tracks, list):
+        return 0
+
+    adjusted = 0
+    for track in tracks:
+        if not isinstance(track, dict):
+            continue
+        track_type = str(track.get("type") or "").strip().lower()
+        if track_type not in ("audio", "video"):
+            continue
+        segments = track.get("segments") or []
+        if not isinstance(segments, list):
+            continue
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            material_id = str(seg.get("material_id") or "").strip()
+            material_duration = material_durations.get(material_id)
+            if not isinstance(material_duration, int) or material_duration <= 0:
+                continue
+            sr = seg.get("source_timerange")
+            if not isinstance(sr, dict):
+                continue
+            start_us = max(0, _safe_int(sr.get("start"), 0))
+            duration_us = max(0, _safe_int(sr.get("duration"), 0))
+            if start_us < material_duration and start_us + duration_us <= material_duration:
+                continue
+
+            if start_us >= material_duration:
+                start_us = max(0, material_duration - 1)
+                new_duration_us = 1
+            else:
+                new_duration_us = max(1, material_duration - start_us)
+
+            sr["start"] = start_us
+            sr["duration"] = new_duration_us
+
+            tr = seg.get("target_timerange")
+            if isinstance(tr, dict):
+                current_target_duration = max(0, _safe_int(tr.get("duration"), 0))
+                if current_target_duration <= 0 or new_duration_us < current_target_duration:
+                    tr["duration"] = new_duration_us
+            adjusted += 1
+    return adjusted
 
 
 def _resolve_payload_media_path(path_value: str, cloned_draft_path: str, payload_root: str = "") -> str:
@@ -1865,50 +3899,86 @@ def _write_visual_cover_image(source_path: str, target_path: str, timestamp_us: 
     target = str(target_path or "").strip()
     if not source or not target or not os.path.isfile(source):
         return False
+    if os.path.normcase(os.path.normpath(source)) == os.path.normcase(os.path.normpath(target)):
+        return False
     os.makedirs(os.path.dirname(target), exist_ok=True)
+
+    def normalize_image_to_target(source_image_path: str) -> bool:
+        try:
+            from PIL import Image, ImageOps
+
+            target_size = None
+            target_mode = ""
+            target_alpha = None
+            if os.path.isfile(target):
+                with Image.open(target) as existing_img:
+                    target_size = existing_img.size
+                    target_mode = str(existing_img.mode or "")
+                    if "A" in target_mode:
+                        target_alpha = existing_img.convert("RGBA").getchannel("A")
+
+            with Image.open(source_image_path) as src_img:
+                output_img = src_img
+                if target_size:
+                    output_img = ImageOps.fit(output_img, target_size)
+                if target_mode:
+                    if "A" in target_mode:
+                        output_img = output_img.convert("RGBA")
+                        if target_alpha is not None:
+                            output_img.putalpha(target_alpha)
+                        output_img = output_img.convert(target_mode)
+                    else:
+                        output_img = output_img.convert(target_mode)
+                elif os.path.splitext(target)[1].lower() in {".jpg", ".jpeg"}:
+                    output_img = output_img.convert("RGB")
+
+                if os.path.splitext(target)[1].lower() in {".jpg", ".jpeg"}:
+                    if output_img.mode not in {"RGB", "L"}:
+                        output_img = output_img.convert("RGB")
+                    output_img.save(target, format="JPEG", quality=90)
+                else:
+                    output_img.save(target)
+            return True
+        except Exception:
+            return False
 
     ext = os.path.splitext(source)[1].lower()
     target_ext = os.path.splitext(target)[1].lower()
     if ext in _IMAGE_EXTS:
-        try:
-            from PIL import Image
-
-            with Image.open(source) as img:
-                if target_ext in {".jpg", ".jpeg"}:
-                    img.convert("RGB").save(target, format="JPEG", quality=90)
-                else:
-                    img.save(target)
+        if normalize_image_to_target(source):
             return True
-        except Exception:
-            if ext == target_ext:
-                try:
-                    shutil.copy2(source, target)
-                    return True
-                except Exception:
-                    return False
-            ffmpeg = find_ffmpeg()
-            if not ffmpeg:
+        if ext == target_ext:
+            try:
+                shutil.copy2(source, target)
+                return True
+            except Exception:
                 return False
-            result = subprocess.run(
-                [
-                    ffmpeg,
-                    "-y",
-                    "-i",
-                    source,
-                    target,
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-                **_quiet_subprocess_kwargs(),
-            )
-            return result.returncode == 0 and os.path.isfile(target) and os.path.getsize(target) > 0
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            return False
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                source,
+                target,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            **_quiet_subprocess_kwargs(),
+        )
+        return result.returncode == 0 and os.path.isfile(target) and os.path.getsize(target) > 0
 
     if ext not in _VIDEO_EXTS:
         return False
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         return False
+    temp_frame_path = ""
+    if os.path.isfile(target) and target_ext in _IMAGE_EXTS:
+        temp_frame_path = f"{target}.vf_cover_frame.tmp.png"
     cmd = [ffmpeg, "-y"]
     if timestamp_us > 0:
         cmd.extend(["-ss", f"{timestamp_us / 1000000.0:.6f}"])
@@ -1918,7 +3988,7 @@ def _write_visual_cover_image(source_path: str, target_path: str, timestamp_us: 
             source,
             "-frames:v",
             "1",
-            target,
+            temp_frame_path or target,
         ]
     )
     result = subprocess.run(
@@ -1928,7 +3998,21 @@ def _write_visual_cover_image(source_path: str, target_path: str, timestamp_us: 
         check=False,
         **_quiet_subprocess_kwargs(),
     )
-    return result.returncode == 0 and os.path.isfile(target) and os.path.getsize(target) > 0
+    if result.returncode != 0:
+        if temp_frame_path and os.path.isfile(temp_frame_path):
+            try:
+                os.remove(temp_frame_path)
+            except Exception:
+                pass
+        return False
+    if temp_frame_path:
+        ok = normalize_image_to_target(temp_frame_path)
+        try:
+            os.remove(temp_frame_path)
+        except Exception:
+            pass
+        return ok and os.path.isfile(target) and os.path.getsize(target) > 0
+    return os.path.isfile(target) and os.path.getsize(target) > 0
 
 
 def _iter_draft_cover_targets(cloned_draft_path: str) -> list[str]:
@@ -1963,37 +4047,6 @@ def _sync_cover_targets(primary_path: str, cloned_draft_path: str) -> int:
     return synced
 
 
-def _ensure_placeholder_cover_aliases(cloned_draft_path: str) -> dict:
-    video_cover_root = os.path.join(cloned_draft_path, "video", "cover")
-    materials_video_root = os.path.join(cloned_draft_path, "materials", "video")
-    report = {
-        "copied": 0,
-        "aliases": [],
-    }
-    if not os.path.isdir(video_cover_root):
-        return report
-
-    for root, _, files in os.walk(video_cover_root):
-        for filename in files:
-            if "_water_mark" not in filename.lower():
-                continue
-            source_path = os.path.join(root, filename)
-            target_path = os.path.join(materials_video_root, filename)
-            if os.path.exists(target_path):
-                continue
-            try:
-                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                shutil.copy2(source_path, target_path)
-                report["copied"] += 1
-                report["aliases"].append({
-                    "source": source_path,
-                    "target": target_path,
-                })
-            except Exception:
-                continue
-    return report
-
-
 def _build_nested_cover_relative_path(current_payload: dict) -> str:
     existing = str(current_payload.get("static_cover_image_path") or "").strip().replace("\\", "/")
     if existing and not os.path.isabs(existing):
@@ -2005,56 +4058,130 @@ def _build_nested_cover_relative_path(current_payload: dict) -> str:
     return f"materials/video/cover_{current_id}.png"
 
 
+def _iter_official_nested_cover_targets(current_payload: dict, nested_root: str) -> list[str]:
+    nested_root_norm = os.path.normcase(os.path.normpath(nested_root))
+    candidates: list[str] = []
+
+    def append_if_nested_file(path_value: object) -> None:
+        target_path = str(path_value or "").strip()
+        if not target_path or not os.path.isabs(target_path) or not os.path.isfile(target_path):
+            return
+        target_norm = os.path.normcase(os.path.normpath(target_path))
+        if target_norm != nested_root_norm and not target_norm.startswith(nested_root_norm + os.sep):
+            return
+        candidates.append(target_path)
+
+    append_if_nested_file(current_payload.get("static_cover_image_path"))
+
+    retouch_cover = current_payload.get("retouch_cover")
+    if isinstance(retouch_cover, dict):
+        append_if_nested_file(retouch_cover.get("image_path"))
+
+    mutable_materials = (current_payload.get("mutable_config") or {}).get("mutable_materials") or []
+    if isinstance(mutable_materials, list):
+        for item in mutable_materials:
+            if isinstance(item, dict):
+                append_if_nested_file(item.get("cover_path"))
+
+    for root_dir in (nested_root, os.path.join(nested_root, "video", "cover")):
+        if not os.path.isdir(root_dir):
+            continue
+        try:
+            for entry_name in os.listdir(root_dir):
+                entry_path = os.path.join(root_dir, entry_name)
+                if os.path.isfile(entry_path) and os.path.splitext(entry_name)[1].lower() in _IMAGE_EXTS:
+                    candidates.append(entry_path)
+        except Exception:
+            continue
+
+    return _merge_unique_paths(candidates)
+
+
+def _iter_official_nested_root_preview_targets(current_payload: dict, nested_root: str) -> list[str]:
+    nested_root_norm = os.path.normcase(os.path.normpath(nested_root))
+    candidates: list[str] = []
+
+    def append_if_nested_file(path_value: object) -> None:
+        target_path = str(path_value or "").strip()
+        if not target_path or not os.path.isabs(target_path) or not os.path.isfile(target_path):
+            return
+        target_norm = os.path.normcase(os.path.normpath(target_path))
+        if target_norm != nested_root_norm and not target_norm.startswith(nested_root_norm + os.sep):
+            return
+        candidates.append(target_path)
+
+    append_if_nested_file(current_payload.get("static_cover_image_path"))
+
+    retouch_cover = current_payload.get("retouch_cover")
+    if isinstance(retouch_cover, dict):
+        append_if_nested_file(retouch_cover.get("image_path"))
+
+    if os.path.isdir(nested_root):
+        try:
+            for entry_name in os.listdir(nested_root):
+                entry_path = os.path.join(nested_root, entry_name)
+                if os.path.isfile(entry_path) and os.path.splitext(entry_name)[1].lower() in _IMAGE_EXTS:
+                    candidates.append(entry_path)
+        except Exception:
+            pass
+
+    return _merge_unique_paths(candidates)
+
+
+def _iter_official_nested_material_cover_pairs(current_payload: dict, nested_root: str, cloned_draft_path: str):
+    nested_root_norm = os.path.normcase(os.path.normpath(nested_root))
+    mutable_materials = (current_payload.get("mutable_config") or {}).get("mutable_materials") or []
+    if not isinstance(mutable_materials, list):
+        return
+
+    payload_root = str(current_payload.get("path") or "").strip()
+    for item in mutable_materials:
+        if not isinstance(item, dict):
+            continue
+        material_id = str(item.get("id") or "").strip()
+        target_path = str(item.get("cover_path") or "").strip()
+        if not material_id or not target_path or not os.path.isabs(target_path) or not os.path.isfile(target_path):
+            continue
+        target_norm = os.path.normcase(os.path.normpath(target_path))
+        if target_norm != nested_root_norm and not target_norm.startswith(nested_root_norm + os.sep):
+            continue
+
+        material = _find_visual_material_by_id(current_payload, material_id)
+        if not isinstance(material, dict):
+            continue
+        source_path = _resolve_payload_media_path(
+            material.get("path") or material.get("file_path"),
+            cloned_draft_path,
+            payload_root=payload_root,
+        )
+        if source_path and os.path.isfile(source_path):
+            yield source_path, target_path
+
+
 def _refresh_nested_combination_visual_covers(payload: dict, cloned_draft_path: str) -> int:
     if not isinstance(payload, dict):
         return 0
 
     refreshed = 0
-    cover_path_by_nested_payload: dict[int, str] = {}
-    clone_root = str(cloned_draft_path).replace("\\", "/")
-
     for current_payload in _iter_draft_payloads(payload):
         if current_payload is payload:
             continue
         source_path, timestamp_us = _select_nested_visual_cover_source(current_payload, cloned_draft_path)
         if not source_path:
             continue
-        relative_cover_path = _build_nested_cover_relative_path(current_payload)
-        target_abs = os.path.join(cloned_draft_path, relative_cover_path.replace("/", os.sep))
-        if not _write_visual_cover_image(source_path, target_abs, timestamp_us=timestamp_us):
+        nested_root = str(current_payload.get("path") or "").strip()
+        if nested_root and os.path.isabs(nested_root) and os.path.isdir(nested_root):
+            # Official nested templateDraft thumbnails have extra private semantics that
+            # are not fully reversed yet. Do not mutate those cache files in the stable
+            # replacement path; keep this branch disabled until the display-cache rules
+            # are reconstructed separately.
             continue
 
-        current_payload["path"] = clone_root
-        current_payload["static_cover_image_path"] = relative_cover_path
-        retouch_cover = current_payload.get("retouch_cover")
-        if isinstance(retouch_cover, dict):
-            retouch_cover["retouch_path"] = ""
-            retouch_cover["image_path"] = relative_cover_path
-            retouch_cover["base_type"] = "image"
-            if "frame_segment_id" in retouch_cover:
-                retouch_cover["frame_segment_id"] = ""
-            if "frame_timestamp" in retouch_cover:
-                retouch_cover["frame_timestamp"] = 0
-        cover_path_by_nested_payload[id(current_payload)] = relative_cover_path
-        refreshed += 1
-
-    if not cover_path_by_nested_payload:
-        return refreshed
-
-    for owner_payload in _iter_draft_payloads(payload):
-        materials = owner_payload.get("materials") or {}
-        if not isinstance(materials, dict):
-            continue
-        for draft_item in materials.get("drafts") or []:
-            if not isinstance(draft_item, dict):
-                continue
-            nested_payload = draft_item.get("draft")
-            if not isinstance(nested_payload, dict):
-                continue
-            relative_cover_path = cover_path_by_nested_payload.get(id(nested_payload))
-            if not relative_cover_path:
-                continue
-            draft_item["draft_cover_path"] = relative_cover_path
+        cover_rel = _build_nested_cover_relative_path(current_payload)
+        cover_target = os.path.join(cloned_draft_path, cover_rel.replace("/", os.sep))
+        if _write_visual_cover_image(source_path, cover_target, timestamp_us):
+            current_payload["static_cover_image_path"] = _normalize_path_slashes(cover_rel)
+            refreshed += 1
 
     return refreshed
 
@@ -2142,23 +4269,36 @@ def replace_official_draft(
     material_replacements=None,
     output_root: Optional[str] = None,
 ):
-    fix_revision = OFFICIAL_DRAFT_FIX_REVISION
+    fix_revision = "official-draft-fix-20260330-cacheclone2"
     material_replacements = _normalize_material_replacement_map(material_replacements)
     source_info_path, source_info_diag = _resolve_source_info_path_from_root_meta(template_path)
-    normalized_template_path = normalize_draft_project_path(template_path) or template_path
-    source_primary_path = source_info_path or _resolve_primary_draft_content_path(normalized_template_path)
-    source_draft_root = os.path.dirname(source_primary_path) or normalized_template_path
+    source_info_path = os.path.normpath(str(source_info_path or "").strip()) if source_info_path else ""
+    normalized_template_path = os.path.normpath(normalize_draft_project_path(template_path) or template_path)
+    source_primary_path = os.path.normpath(source_info_path or _resolve_primary_draft_content_path(normalized_template_path))
+    source_draft_root = os.path.normpath(os.path.dirname(source_primary_path) or normalized_template_path)
     source_payload, diagnostics = _load_active_payload_with_fallback(source_primary_path, source_draft_root)
 
     cloned_draft_path = _clone_draft_tree(template_path, output_root, draft_name)
     _update_draft_meta_info(cloned_draft_path, draft_name)
+    cacheclone_mode = "cacheclone" in str(fix_revision or "").lower()
+    if cacheclone_mode:
+        summary_scaffold = {
+            "ok": True,
+            "scaffold_root": _get_draft_scaffold_path(),
+            "copied": [],
+            "skipped_for_cacheclone": True,
+        }
+    else:
+        summary_scaffold = _ensure_cloned_official_draft_scaffold(cloned_draft_path)
     source_read_path = str((diagnostics or {}).get("read_path") or "").strip() or source_primary_path
     working_path = _resolve_cloned_info_path(
         cloned_draft_path,
         source_read_path,
         source_draft_root=source_draft_root,
     )
+    source_payload_snapshot = _deep_clone_json_like(source_payload)
     working_payload = source_payload
+    strategy_info = _classify_draft_strategy(source_payload)
 
     _update_draft_meta_info_with_info_path(cloned_draft_path, draft_name, working_path)
     localized_material_replacements = _localize_material_replacements_for_draft(material_replacements, cloned_draft_path)
@@ -2178,32 +4318,66 @@ def replace_official_draft(
     summary["diagnostics"]["source_info_resolution"] = source_info_diag
     summary["diagnostics"]["write_info_path"] = working_path
     summary["diagnostics"]["source_draft_root"] = source_draft_root
+    summary["diagnostics"]["draft_kind"] = strategy_info.get("draft_kind")
+    summary["diagnostics"]["replacement_strategy"] = strategy_info.get("replacement_strategy")
+    summary["diagnostics"]["scaffold_sync"] = summary_scaffold
     shell_payload, shell_payload_path = _select_best_plain_shell_payload(cloned_draft_path)
     summary["diagnostics"]["shell_payload_path"] = shell_payload_path
 
-    summary["text_replaced"] = _replace_texts(working_payload, texts_input)
-    summary["material_replaced"] = _replace_materials(working_payload, localized_material_replacements)
+    text_replacements = _build_text_replacement_map(texts_input)
+    shared_template_root_cache: dict[str, str] = {}
+    shared_artist_effect_cache: dict[str, str] = {}
+    payload_update_diag = _apply_minimal_payload_updates(
+        working_payload,
+        cloned_draft_path=cloned_draft_path,
+        source_draft_root=source_draft_root,
+        texts_input=texts_input,
+        localized_material_replacements=localized_material_replacements,
+        source_payload_snapshot=source_payload_snapshot,
+        text_replacements=text_replacements,
+        template_root_cache=shared_template_root_cache,
+        artist_effect_cache=shared_artist_effect_cache,
+    )
+    summary["text_replaced"] = int(payload_update_diag.get("text_replaced") or 0)
+    summary["material_replaced"] = int(payload_update_diag.get("material_replaced") or 0)
     summary["diagnostics"]["localized_material_replacements"] = len(localized_material_replacements or {})
-    summary["diagnostics"]["rebased_internal_paths"] = _rebase_source_internal_paths(
-        working_payload,
-        source_draft_root,
-        cloned_draft_path,
-    )
-    summary["diagnostics"]["hydrated_payload_materials"] = _hydrate_missing_materials_from_payload_roots(
-        working_payload,
-        cloned_draft_path,
-        source_draft_root,
-    )
-    summary["diagnostics"]["sanitized_missing_cover_paths"] = _sanitize_missing_cover_paths(
-        working_payload,
-        cloned_draft_path,
-    )
-    summary["diagnostics"]["nested_visual_covers_refreshed"] = _refresh_nested_combination_visual_covers(
-        working_payload,
-        cloned_draft_path,
-    )
-    summary["diagnostics"]["cover_refreshed"] = _refresh_draft_cover_from_visuals(working_payload, cloned_draft_path)
-    summary["diagnostics"]["placeholder_cover_aliases"] = _ensure_placeholder_cover_aliases(cloned_draft_path)
+    summary["diagnostics"]["rebased_internal_paths"] = payload_update_diag.get("rebased_internal_paths") or 0
+    summary["diagnostics"]["hydrated_payload_materials"] = payload_update_diag.get("hydrated_payload_materials") or 0
+    summary["diagnostics"]["sanitized_missing_cover_paths"] = payload_update_diag.get("sanitized_missing_cover_paths") or 0
+    summary["diagnostics"]["cache_clone_semantics"] = payload_update_diag.get("cache_clone_semantics") or {}
+    summary["diagnostics"]["nested_visual_covers_refreshed"] = payload_update_diag.get("nested_visual_covers_refreshed") or 0
+    summary["diagnostics"]["cover_refreshed"] = bool(payload_update_diag.get("cover_refreshed"))
+
+    if isinstance(shell_payload, dict):
+        shell_payload_update_diag = _apply_minimal_payload_updates(
+            shell_payload,
+            cloned_draft_path=cloned_draft_path,
+            source_draft_root=source_draft_root,
+            texts_input=texts_input,
+            localized_material_replacements=localized_material_replacements,
+            source_payload_snapshot=source_payload_snapshot,
+            text_replacements=text_replacements,
+            template_root_cache=shared_template_root_cache,
+            artist_effect_cache=shared_artist_effect_cache,
+        )
+        summary["diagnostics"]["shell_rebased_internal_paths"] = (
+            shell_payload_update_diag.get("rebased_internal_paths") or 0
+        )
+        summary["diagnostics"]["shell_hydrated_payload_materials"] = (
+            shell_payload_update_diag.get("hydrated_payload_materials") or 0
+        )
+        summary["diagnostics"]["shell_sanitized_missing_cover_paths"] = (
+            shell_payload_update_diag.get("sanitized_missing_cover_paths") or 0
+        )
+        summary["diagnostics"]["shell_cache_clone_semantics"] = (
+            shell_payload_update_diag.get("cache_clone_semantics") or {}
+        )
+        summary["diagnostics"]["shell_nested_visual_covers_refreshed"] = (
+            shell_payload_update_diag.get("nested_visual_covers_refreshed") or 0
+        )
+        summary["diagnostics"]["shell_cover_refreshed"] = bool(
+            shell_payload_update_diag.get("cover_refreshed")
+        )
 
     if not summary["text_replaced"] and texts_input:
         summary["warnings"].append("no text material matched")
@@ -2213,13 +4387,49 @@ def replace_official_draft(
     read_mode = str((diagnostics or {}).get("read_mode") or "").strip()
     info_written_paths = _write_by_info_path_with_main_timeline_mirror(working_path, working_payload, cloned_draft_path)
     draft_content_written_paths = _write_draft_content_targets(working_payload, cloned_draft_path)
-    plain_written_paths = _write_plain_payload_targets(working_payload, shell_payload, cloned_draft_path)
-    written_paths = _merge_unique_paths(info_written_paths, draft_content_written_paths, plain_written_paths)
-    if read_mode.startswith("encrypted"):
-        summary["diagnostics"]["write_mode"] = "encrypted_source_rewritten_to_info_path_with_main_timeline_mirror_plus_draft_content_plus_plain_targets"
+    gg_writer_writeback = _write_top_level_payload_with_private_gg_writer(cloned_draft_path, working_payload)
+    plain_written_paths, plain_rewrite_diag = _rewrite_plain_payload_targets_preserving_structure(
+        cloned_draft_path,
+        source_draft_root,
+        texts_input,
+        localized_material_replacements,
+        working_payload,
+        source_payload_snapshot,
+        text_replacements,
+        shared_template_root_cache,
+        shared_artist_effect_cache,
+    )
+    top_level_plain_paths = [] if cacheclone_mode else _ensure_top_level_plain_targets(
+        working_payload,
+        shell_payload,
+        cloned_draft_path,
+    )
+    written_paths = _merge_unique_paths(info_written_paths, draft_content_written_paths, plain_written_paths, top_level_plain_paths)
+    summary["diagnostics"]["plain_target_rewrite"] = plain_rewrite_diag
+    summary["diagnostics"]["gg_writer_writeback"] = gg_writer_writeback
+    summary["diagnostics"]["material_placeholder_cleanup"] = {
+        "skipped": True,
+        "reason": "preserve official placeholder filename semantics",
+        "renamed_files": 0,
+        "updated_files": 0,
+        "mapping_count": 0,
+    }
+    summary["diagnostics"]["external_cache_placeholder_cleanup"] = []
+    if cacheclone_mode:
+        summary["diagnostics"]["removed_cacheclone_top_level_templates"] = _remove_official_cacheclone_top_level_templates(
+            cloned_draft_path
+        )
+    summary["diagnostics"]["finalized_official_draft"] = _finalize_generated_official_draft(
+        cloned_draft_path,
+        cacheclone_mode=cacheclone_mode,
+    )
+    if gg_writer_writeback.get("ok"):
+        summary["diagnostics"]["write_mode"] = "top_level_rewritten_with_private_gg_writer_plus_info_path_mirror_plus_plain_targets"
+    elif read_mode.startswith("encrypted"):
+        summary["diagnostics"]["write_mode"] = "encrypted_source_rewritten_with_private_gg_writer_plus_info_path_mirror_plus_plain_targets"
     else:
         summary["diagnostics"]["write_mode"] = "info_path_with_main_timeline_mirror_plus_draft_content_plus_plain_targets"
     summary["written_paths"] = list(written_paths)
-    summary["diagnostics"]["frame_thumbnail_cache_cleared"] = _clear_jianying_frame_thumbnail_cache()
+    summary["diagnostics"]["visual_caches_cleared"] = _clear_jianying_visual_caches()
 
     return summary

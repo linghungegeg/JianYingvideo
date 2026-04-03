@@ -1,0 +1,25 @@
+{
+  "description": "Verified regression templates covering official nested drafts and self-built placeholder drafts.",
+  "templates": [
+    {
+      "name": "official_4y3",
+      "path": "E:\\jycaogao\\JianYingPro Drafts\\4\u67083\u65e5"
+    },
+    {
+      "name": "official_4y3_1",
+      "path": "E:\\jycaogao\\JianYingPro Drafts\\4\u67083\u65e5 (1)"
+    },
+    {
+      "name": "official_4y3_2",
+      "path": "E:\\jycaogao\\JianYingPro Drafts\\4\u67083\u65e5 (2)"
+    },
+    {
+      "name": "official_4y3_3",
+      "path": "E:\\jycaogao\\JianYingPro Drafts\\4\u67083\u65e5 (3)"
+    },
+    {
+      "name": "selfbuilt_0314_01",
+      "path": "E:\\jycaogao\\JianYingPro Drafts\\0314-01"
+    }
+  ]
+}
