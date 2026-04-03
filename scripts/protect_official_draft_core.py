@@ -45,6 +45,26 @@ def materialize_relative_targets(output_root: Path) -> list[str]:
     return generated_targets
 
 
+def overlay_targets_into_workspace(output_root: Path, workspace_root: Path) -> list[str]:
+    copied_paths: list[str] = []
+    for relative_path in CORE_TARGETS:
+        source_path = output_root / relative_path
+        if not source_path.exists():
+            continue
+        target_path = workspace_root / relative_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        copied_paths.append(str(target_path.resolve()))
+
+    for runtime_dir in output_root.glob("pyarmor_runtime_*"):
+        if not runtime_dir.is_dir():
+            continue
+        target_runtime_dir = workspace_root / runtime_dir.name
+        shutil.copytree(runtime_dir, target_runtime_dir, dirs_exist_ok=True)
+        copied_paths.append(str(target_runtime_dir.resolve()))
+    return copied_paths
+
+
 def build_command(pyarmor_exe: Path, output_root: Path, mode: str) -> list[str]:
     command = [str(pyarmor_exe), "gen", "-O", str(output_root)]
     if mode == "full":
@@ -60,6 +80,7 @@ def main() -> None:
     parser.add_argument("--no-mix-str", action="store_true", help="disable --mix-str")
     parser.add_argument("--no-assert-call", action="store_true", help="disable --assert-call")
     parser.add_argument("--no-assert-import", action="store_true", help="disable --assert-import")
+    parser.add_argument("--overlay-into", default="", help="copy protected targets into an existing workspace")
     args = parser.parse_args()
 
     output_root = Path(args.output).resolve()
@@ -94,6 +115,15 @@ def main() -> None:
     print("Runtime dirs:")
     for item in runtime_dirs:
         print(f"  - {item}")
+
+    overlay_root_text = str(args.overlay_into or "").strip()
+    if overlay_root_text:
+        overlay_root = Path(overlay_root_text).resolve()
+        overlay_root.mkdir(parents=True, exist_ok=True)
+        copied_paths = overlay_targets_into_workspace(output_root, overlay_root)
+        print("Overlay copied into workspace:")
+        for item in copied_paths:
+            print(f"  - {item}")
 
 
 if __name__ == "__main__":

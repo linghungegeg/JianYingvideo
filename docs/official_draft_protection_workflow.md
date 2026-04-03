@@ -24,8 +24,6 @@ This repository already has a working PyArmor toolchain in the local virtualenv:
 - `venv\\Scripts\\pyarmor.exe`
 - `venv312\\Scripts\\pyarmor.exe`
 
-The desktop build script now includes the official draft core modules in `PYARMOR_TARGETS`.
-
 ## Local Protection Smoke
 
 Generate protected core modules with local PyArmor:
@@ -36,9 +34,27 @@ venv\Scripts\python.exe scripts\protect_official_draft_core.py --clean
 
 The helper tries a stronger PyArmor mode first. If the local trial license blocks it, it falls back to a minimal mode that still obfuscates the two core modules.
 
+## Overlay Into A Build Workspace
+
+To protect an existing staged workspace without editing the main packaging script:
+
+```powershell
+venv\Scripts\python.exe scripts\protect_official_draft_core.py `
+  --clean `
+  --overlay-into E:\JianYingApi\VideoFactory\build\obfuscated
+```
+
+This copies:
+
+- protected `official_draft_codec.py`
+- protected `draft_replacement_strategy.py`
+- `pyarmor_runtime_*`
+
+into the target workspace.
+
 ## Release Build
 
-Build with obfuscation:
+Recommended sequence:
 
 ```powershell
 venv\Scripts\python.exe scripts\build_desktop_bundle.py `
@@ -49,6 +65,8 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py `
   --use-default-official-drafts `
   --obfuscate
 ```
+
+Then overlay the protected draft core into the generated workspace or release staging directory used for packaging.
 
 ## Why This Shape
 
