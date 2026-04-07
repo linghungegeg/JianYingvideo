@@ -148,6 +148,36 @@ def collect_selfbuilt_visual_material_ids(
     return result
 
 
+def collect_official_placeholder_visual_material_ids(
+    current_payload: dict,
+    collect_referenced_material_ids: Callable[[dict, str], set[str]],
+    image_exts: set[str],
+) -> set[str]:
+    result: set[str] = set()
+    if not isinstance(current_payload, dict):
+        return result
+    materials = current_payload.get("materials") or {}
+    if not isinstance(materials, dict):
+        return result
+    referenced_video_ids = collect_referenced_material_ids(current_payload, "video")
+    if not referenced_video_ids:
+        return result
+    for media_type in ("videos", "images"):
+        for item in materials.get(media_type) or []:
+            if not isinstance(item, dict):
+                continue
+            material_id = str(item.get("id") or "").strip()
+            if not material_id or material_id not in referenced_video_ids:
+                continue
+            current_path = str(item.get("path") or item.get("file_path") or "").strip()
+            if not path_requires_preserved_image_target_name(current_path, image_exts):
+                continue
+            material_kind = str(item.get("type") or "").strip().lower()
+            if media_type == "images" or material_kind in {"photo", "image", "gif"}:
+                result.add(material_id)
+    return result
+
+
 def payload_has_selfbuilt_draftpath_semantics(payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -395,6 +425,11 @@ def replace_materials(
             current_payload,
             collect_referenced_material_ids,
         )
+        official_placeholder_visual_ids = collect_official_placeholder_visual_material_ids(
+            current_payload,
+            collect_referenced_material_ids,
+            image_exts,
+        )
         selfbuilt_visual_override_map = build_selfbuilt_visual_override_map(
             current_payload,
             material_replacements,
@@ -416,10 +451,26 @@ def replace_materials(
                         continue
                     if material_name_is_excluded(item):
                         continue
+                    current_path = item.get("path") or item.get("file_path") or ""
+                    material_kind = str(item.get("type") or "").strip().lower()
+                    if (
+                        official_placeholder_visual_ids
+                        and material_id
+                        and material_id not in official_placeholder_visual_ids
+                        and (
+                            media_type == "images"
+                            or material_kind in {"photo", "image", "gif"}
+                        )
+                    ):
+                        continue
                 elif media_type == "audios":
                     if material_id and material_id not in referenced_audio_ids:
                         continue
-                current_path = item.get("path") or item.get("file_path") or ""
+                    current_path = item.get("path") or item.get("file_path") or ""
+                    material_kind = str(item.get("type") or "").strip().lower()
+                else:
+                    current_path = item.get("path") or item.get("file_path") or ""
+                    material_kind = str(item.get("type") or "").strip().lower()
                 override_path = ""
                 if material_id and material_id in selfbuilt_visual_override_map:
                     override_path = selfbuilt_visual_override_map.get(material_id) or ""
@@ -435,7 +486,6 @@ def replace_materials(
                 if not override_path:
                     continue
                 override_kind = detect_media_kind(override_path)
-                material_kind = str(item.get("type") or "").strip().lower()
                 if material_kind in ("video",):
                     current_kind = "videos"
                 elif material_kind in ("photo", "gif", "image"):

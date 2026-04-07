@@ -7,7 +7,6 @@ import subprocess
 import tempfile
 import time
 import uuid
-import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -17,11 +16,10 @@ from app.services.jianying.local_draft_service import (
 )
 from app.services.jianying import official_draft_codec as official_codec
 from app.services.jianying.draft_replacement_strategy import (
-    classify_draft_strategy,
     copy_into_cache_target as _strategy_copy_into_cache_target,
+    path_requires_preserved_image_target_name,
     payload_has_selfbuilt_draftpath_semantics,
     replace_materials,
-    sync_selfbuilt_plain_visual_materials_from_active,
 )
 from app.utils.ffmpeg_utils import find_ffmpeg
 from app.utils.helpers import get_drafts_folder
@@ -38,6 +36,10 @@ _OFFICIAL_READER_RUNTIME_MODE_ENV = "VF_OFFICIAL_READER_RUNTIME_MODE"
 _OFFICIAL_READER_ALLOW_GG_FALLBACK_ENV = "VF_OFFICIAL_READER_ALLOW_GG_FALLBACK"
 _OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS = official_codec.OFFICIAL_DRAFT_CONTENT_EMBEDDED_KEY_OFFSETS
 _OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS = official_codec.OFFICIAL_DRAFT_CONTENT_EMBEDDED_IV_OFFSETS
+
+
+def _copy_into_cache_target(source_path: str, target_path: str) -> str:
+    return _strategy_copy_into_cache_target(source_path, target_path, _IMAGE_EXTS)
 
 
 def _quiet_subprocess_kwargs() -> dict:
@@ -112,10 +114,6 @@ def _lookup_material_override(material_replacements, material_name=None, materia
     return None
 
 
-def _copy_into_cache_target(source_path: str, target_path: str) -> str:
-    return _strategy_copy_into_cache_target(source_path, target_path, _IMAGE_EXTS)
-
-
 def _detect_media_kind(path: str) -> str:
     ext = os.path.splitext(str(path or ""))[1].lower()
     if ext in _IMAGE_EXTS:
@@ -151,7 +149,7 @@ def _parse_replacement_media_info(path_value: str) -> dict:
     return info
 
 
-def _clone_draft_tree(template_path: str, output_root: Optional[str], draft_name: str) -> str:
+def _clone_draft_tree(template_path: str, output_root: Optional[str], draft_name: str) -> tuple[str, str]:
     normalized_template_path = normalize_draft_project_path(template_path)
     if not normalized_template_path or not os.path.isdir(normalized_template_path):
         raise ValueError("template_path is invalid")
@@ -163,89 +161,46 @@ def _clone_draft_tree(template_path: str, output_root: Optional[str], draft_name
         raise ValueError("drafts folder is not configured")
 
     os.makedirs(drafts_root, exist_ok=True)
-    target_path = os.path.join(drafts_root, draft_name)
-    if os.path.exists(target_path):
-        raise FileExistsError(f"draft already exists: {target_path}")
-    shutil.copytree(normalized_template_path, target_path)
-    return target_path
+    final_path = os.path.join(drafts_root, draft_name)
+    if os.path.exists(final_path):
+        raise FileExistsError(f"draft already exists: {final_path}")
+    staging_root = tempfile.mkdtemp(prefix="vf_official_stage_")
+    staging_path = os.path.join(staging_root, draft_name)
+    shutil.copytree(normalized_template_path, staging_path)
+    return staging_path, final_path
 
 
-def _get_draft_scaffold_path() -> str:
-    candidate = str(app_resource_path("runtime_tools", "jianying_draft_scaffold"))
-    return candidate if os.path.isdir(candidate) else ""
+def _map_path_between_roots(path_value: str, old_root: str, new_root: str) -> str:
+    raw_path = str(path_value or "").strip()
+    if not raw_path:
+        return raw_path
+    try:
+        old_norm = _norm_abs(old_root)
+        path_norm = _norm_abs(raw_path)
+        if path_norm == old_norm or path_norm.startswith(old_norm + os.sep):
+            rel_path = os.path.relpath(path_norm, old_norm)
+            return os.path.join(new_root, rel_path)
+    except Exception:
+        return raw_path
+    return raw_path
 
 
-def _copy_missing_entry(source_path: str, target_path: str) -> bool:
-    if os.path.exists(target_path):
-        return False
-    if os.path.isdir(source_path):
-        shutil.copytree(source_path, target_path)
-        return True
-    os.makedirs(os.path.dirname(target_path), exist_ok=True)
-    shutil.copy2(source_path, target_path)
-    return True
-
-
-def _ensure_cloned_official_draft_scaffold(cloned_draft_path: str) -> dict:
-    scaffold_root = _get_draft_scaffold_path()
-    report = {
-        "ok": False,
-        "scaffold_root": scaffold_root,
-        "copied": [],
-    }
-    if not scaffold_root:
-        return report
-
-    top_level_entries = [
-        "adjust_mask",
-        "common_attachment",
-        "materialResources",
-        "matting",
-        "qr_upload",
-        "Resources",
-        "smart_crop",
-        "subdraft",
-        "{01ecc63a-1a01-4cb1-9956-5b6889792879}",
-        "{9e8b9f6b-522e-4432-bf0b-54e4cfafd6fe}",
-        "{f65ab88d-5d29-4587-ad4a-75b9476d3447}",
-        "{f9ca7292-5597-4f99-b7b0-f3fe171abe69}",
-        "{fd4826c3-59a6-481d-8e62-ede163cf306d}",
-        "attachment_editing.json",
-        "attachment_pc_common.json",
-        "draft_agency_config.json",
-        "draft_biz_config.json",
-        "draft_settings",
-        "draft_virtual_store.json",
-        "performance_opt_info.json",
-        "template.json",
-        "timeline_layout.json",
-    ]
-    for name in top_level_entries:
-        source_path = os.path.join(scaffold_root, name)
-        if not os.path.exists(source_path):
-            continue
-        target_path = os.path.join(cloned_draft_path, name)
-        try:
-            if _copy_missing_entry(source_path, target_path):
-                report["copied"].append(name)
-        except Exception:
-            continue
-    report["ok"] = True
-    return report
-
-
-def _remove_official_cacheclone_top_level_templates(cloned_draft_path: str) -> list[str]:
-    removed: list[str] = []
-    for name in ("template.json", "template.tmp"):
-        target_path = os.path.join(cloned_draft_path, name)
-        if not os.path.isfile(target_path):
-            continue
-        try:
-            os.remove(target_path)
-            removed.append(target_path)
-        except Exception:
-            continue
-    return removed
+def _publish_generated_draft(staging_path: str, final_path: str) -> str:
+    if not staging_path or not final_path:
+        raise ValueError("staging_path/final_path is required")
+    final_parent = os.path.dirname(final_path)
+    if final_parent:
+        os.makedirs(final_parent, exist_ok=True)
+    if os.path.exists(final_path):
+        raise FileExistsError(f"draft already exists: {final_path}")
+    shutil.move(staging_path, final_path)
+    staging_root = os.path.dirname(staging_path)
+    try:
+        if staging_root and os.path.isdir(staging_root) and not os.listdir(staging_root):
+            os.rmdir(staging_root)
+    except Exception:
+        pass
+    return final_path
 
 
 def _update_draft_meta_info(cloned_draft_path: str, draft_name: str) -> None:
@@ -263,7 +218,8 @@ def _update_draft_meta_info(cloned_draft_path: str, draft_name: str) -> None:
         meta["draft_id"] = str(uuid.uuid4()).upper()
     meta["tm_draft_create"] = now_us
     meta["tm_draft_modified"] = now_us
-    _write_draft_meta_info_payload(meta_path, meta, is_plain)
+    normalized = _normalize_generated_draft_meta(meta, cloned_draft_path, draft_name)
+    _write_draft_meta_info_payload(meta_path, normalized, is_plain)
 
 
 def _update_draft_meta_info_with_info_path(cloned_draft_path: str, draft_name: str, info_path: str) -> None:
@@ -282,7 +238,8 @@ def _update_draft_meta_info_with_info_path(cloned_draft_path: str, draft_name: s
         meta["draft_json_file"] = str(info_path or "").strip() or meta.get("draft_json_file")
     meta["tm_draft_create"] = now_us
     meta["tm_draft_modified"] = now_us
-    _write_draft_meta_info_payload(meta_path, meta, is_plain)
+    normalized = _normalize_generated_draft_meta(meta, cloned_draft_path, draft_name, info_path)
+    _write_draft_meta_info_payload(meta_path, normalized, is_plain)
 
 
 def _load_draft_meta_info_payload(meta_path: str) -> tuple[Optional[dict], bool]:
@@ -313,6 +270,231 @@ def _write_draft_meta_info_payload(meta_path: str, meta: dict, is_plain: bool) -
         official_codec.write_official_draft_payload(meta_path, meta)
     except Exception:
         return
+
+
+def _sum_directory_file_sizes(path_value: str) -> int:
+    total = 0
+    try:
+        for path_obj in Path(path_value).rglob("*"):
+            if path_obj.is_file():
+                total += int(path_obj.stat().st_size or 0)
+    except Exception:
+        return 0
+    return total
+
+
+def _iter_payload_material_paths(payload: dict, material_keys: tuple[str, ...] = ("videos", "audios")):
+    if not isinstance(payload, dict):
+        return
+    materials = payload.get("materials") or {}
+    if isinstance(materials, dict):
+        for material_key in material_keys:
+            for item in materials.get(material_key) or []:
+                if not isinstance(item, dict):
+                    continue
+                path_value = str(item.get("path") or item.get("file_path") or "").strip()
+                if path_value:
+                    yield path_value
+    for value in payload.values():
+        if isinstance(value, dict):
+            yield from _iter_payload_material_paths(value, material_keys)
+        elif isinstance(value, list):
+            for child in value:
+                if isinstance(child, dict):
+                    yield from _iter_payload_material_paths(child, material_keys)
+
+
+def _estimate_generated_timeline_materials_size(payload: dict, cloned_draft_path: str) -> int:
+    draft_total = _sum_directory_file_sizes(cloned_draft_path)
+    if not isinstance(payload, dict):
+        return draft_total
+
+    draft_root_norm = _norm_abs(cloned_draft_path)
+    external_total = 0
+    counted_paths: set[str] = set()
+    for raw_path in _iter_payload_material_paths(payload):
+        resolved_path = (
+            raw_path
+            if os.path.isabs(raw_path)
+            else os.path.join(cloned_draft_path, raw_path.replace("/", os.sep))
+        )
+        if not os.path.isfile(resolved_path):
+            continue
+        norm_path = _norm_abs(resolved_path)
+        if norm_path == draft_root_norm or norm_path.startswith(draft_root_norm + os.sep):
+            continue
+        lowered = norm_path.replace("\\", "/").lower()
+        if "/cache/effect/" in lowered:
+            continue
+        if norm_path in counted_paths:
+            continue
+        counted_paths.add(norm_path)
+        try:
+            external_total += int(os.path.getsize(resolved_path) or 0)
+        except Exception:
+            continue
+
+    return draft_total + external_total
+
+
+def _normalize_generated_draft_meta(
+    meta: dict,
+    cloned_draft_path: str,
+    draft_name: str,
+    info_path: str = "",
+    payload: Optional[dict] = None,
+) -> dict:
+    normalized = dict(meta or {})
+    now_us = int(time.time() * 1000000)
+    draft_content_path = str(info_path or os.path.join(cloned_draft_path, "draft_content.json")).strip()
+    draft_file_size = 0
+    draft_duration = 0
+    try:
+        if draft_content_path and os.path.isfile(draft_content_path):
+            payload, err = load_json_file_with_encodings(draft_content_path)
+            if err is None and isinstance(payload, dict):
+                draft_duration = int(payload.get("duration") or 0)
+    except Exception:
+        draft_duration = 0
+
+    draft_file_size = _estimate_generated_timeline_materials_size(payload or {}, cloned_draft_path)
+
+    normalized["draft_id"] = str(normalized.get("draft_id") or "").strip() or str(uuid.uuid4()).upper()
+    normalized["draft_name"] = draft_name
+    normalized["draft_fold_path"] = _normalize_path_slashes(cloned_draft_path)
+    normalized["draft_root_path"] = _normalize_path_slashes(os.path.dirname(cloned_draft_path))
+    normalized["draft_json_file"] = None
+    normalized["draft_cover"] = "draft_cover.jpg"
+    normalized["draft_need_rename_folder"] = False
+    normalized["draft_is_invisible"] = False
+    normalized["cloud_draft_cover"] = False
+    normalized["cloud_draft_sync"] = False
+    normalized["draft_cloud_last_action_download"] = False
+    normalized["draft_cloud_purchase_info"] = ""
+    normalized["draft_cloud_template_id"] = ""
+    normalized["draft_cloud_tutorial_info"] = ""
+    normalized["draft_cloud_videocut_purchase_info"] = ""
+    normalized["tm_draft_cloud_completed"] = ""
+    normalized["tm_draft_cloud_entry_id"] = -1
+    normalized["tm_draft_cloud_modified"] = 0
+    normalized["tm_draft_cloud_parent_entry_id"] = -1
+    normalized["tm_draft_cloud_space_id"] = -1
+    normalized["tm_draft_cloud_user_id"] = -1
+    normalized["draft_timeline_materials_size_"] = draft_file_size
+    if draft_duration > 0:
+        normalized["tm_duration"] = draft_duration
+    normalized["tm_draft_create"] = now_us
+    normalized["tm_draft_modified"] = now_us
+    if not str(normalized.get("draft_removable_storage_device") or "").strip():
+        drive, _tail = os.path.splitdrive(cloned_draft_path)
+        normalized["draft_removable_storage_device"] = drive or ""
+    return normalized
+
+
+def _build_generated_root_meta_entry(meta: dict, cloned_draft_path: str, info_path: str) -> dict:
+    draft_size = int(meta.get("draft_timeline_materials_size_") or 0)
+    return {
+        "cloud_draft_cover": bool(meta.get("cloud_draft_cover", False)),
+        "cloud_draft_sync": bool(meta.get("cloud_draft_sync", False)),
+        "draft_cloud_last_action_download": bool(meta.get("draft_cloud_last_action_download", False)),
+        "draft_cloud_purchase_info": str(meta.get("draft_cloud_purchase_info") or ""),
+        "draft_cloud_template_id": str(meta.get("draft_cloud_template_id") or ""),
+        "draft_cloud_tutorial_info": str(meta.get("draft_cloud_tutorial_info") or ""),
+        "draft_cloud_videocut_purchase_info": str(meta.get("draft_cloud_videocut_purchase_info") or ""),
+        "draft_cover": _normalize_path_slashes(os.path.join(cloned_draft_path, "draft_cover.jpg")),
+        "draft_fold_path": _normalize_path_slashes(cloned_draft_path),
+        "draft_id": str(meta.get("draft_id") or "").strip(),
+        "draft_is_ai_shorts": bool(meta.get("draft_is_ai_shorts", False)),
+        "draft_is_cloud_temp_draft": bool(meta.get("draft_is_cloud_temp_draft", False)),
+        "draft_is_invisible": bool(meta.get("draft_is_invisible", False)),
+        "draft_is_web_article_video": bool(meta.get("draft_is_web_article_video", False)),
+        "draft_json_file": _normalize_path_slashes(info_path),
+        "draft_name": str(meta.get("draft_name") or os.path.basename(cloned_draft_path.rstrip("\\/"))),
+        "draft_new_version": str(meta.get("draft_new_version") or ""),
+        "draft_root_path": _normalize_path_slashes(str(meta.get("draft_root_path") or os.path.dirname(cloned_draft_path))),
+        "draft_timeline_materials_size": draft_size,
+        "draft_type": str(meta.get("draft_type") or ""),
+        "draft_web_article_video_enter_from": str(meta.get("draft_web_article_video_enter_from") or ""),
+        "streaming_edit_draft_ready": True,
+        "tm_draft_cloud_completed": meta.get("tm_draft_cloud_completed") or "",
+        "tm_draft_cloud_entry_id": int(meta.get("tm_draft_cloud_entry_id") or -1),
+        "tm_draft_cloud_modified": int(meta.get("tm_draft_cloud_modified") or 0),
+        "tm_draft_cloud_parent_entry_id": int(meta.get("tm_draft_cloud_parent_entry_id") or -1),
+        "tm_draft_cloud_space_id": int(meta.get("tm_draft_cloud_space_id") or -1),
+        "tm_draft_cloud_user_id": int(meta.get("tm_draft_cloud_user_id") or -1),
+        "tm_draft_create": int(meta.get("tm_draft_create") or 0),
+        "tm_draft_modified": int(meta.get("tm_draft_modified") or 0),
+        "tm_draft_removed": int(meta.get("tm_draft_removed") or 0),
+        "tm_duration": int(meta.get("tm_duration") or 0),
+    }
+
+
+def _sync_generated_root_meta_index(cloned_draft_path: str, info_path: str, meta: dict) -> None:
+    if not isinstance(meta, dict):
+        return
+    draft_id = str(meta.get("draft_id") or "").strip()
+    draft_fold_path = _normalize_path_slashes(cloned_draft_path)
+    draft_json_file = _normalize_path_slashes(info_path)
+    entry = _build_generated_root_meta_entry(meta, cloned_draft_path, info_path)
+    for root_meta_path in _candidate_root_meta_paths():
+        if not os.path.exists(root_meta_path):
+            continue
+        payload, err = load_json_file_with_encodings(root_meta_path)
+        if err is not None or not isinstance(payload, dict):
+            continue
+        entries = payload.get("all_draft_store") or []
+        if not isinstance(entries, list):
+            entries = []
+        filtered_entries = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            item_draft_id = str(item.get("draft_id") or "").strip()
+            item_fold_path = _normalize_path_slashes(str(item.get("draft_fold_path") or "").strip())
+            item_json_file = _normalize_path_slashes(str(item.get("draft_json_file") or "").strip())
+            if draft_id and item_draft_id == draft_id:
+                continue
+            if item_fold_path and item_fold_path == draft_fold_path:
+                continue
+            if item_json_file and item_json_file == draft_json_file:
+                continue
+            filtered_entries.append(item)
+        filtered_entries.append(entry)
+        filtered_entries.sort(
+            key=lambda item: int(item.get("tm_draft_modified") or item.get("tm_draft_create") or 0),
+            reverse=True,
+        )
+        payload["all_draft_store"] = filtered_entries
+        payload["draft_ids"] = len(filtered_entries)
+        payload["root_path"] = _normalize_path_slashes(
+            str(payload.get("root_path") or os.path.dirname(root_meta_path))
+        )
+        with open(root_meta_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+
+def _finalize_generated_draft_meta_and_root_index(
+    cloned_draft_path: str,
+    draft_name: str,
+    info_path: str,
+    payload: Optional[dict],
+) -> dict:
+    meta_path = os.path.join(cloned_draft_path, "draft_meta_info.json")
+    if not os.path.exists(meta_path):
+        return {}
+    meta, is_plain = _load_draft_meta_info_payload(meta_path)
+    if not isinstance(meta, dict):
+        return {}
+    normalized = _normalize_generated_draft_meta(
+        meta,
+        cloned_draft_path,
+        draft_name,
+        info_path,
+        payload,
+    )
+    _write_draft_meta_info_payload(meta_path, normalized, is_plain)
+    _sync_generated_root_meta_index(cloned_draft_path, info_path, normalized)
+    return normalized
 
 
 def _resolve_primary_draft_content_path(cloned_draft_path: str) -> str:
@@ -386,8 +568,12 @@ def _clear_directory_children(path_value: str) -> dict:
     return result
 
 
-def _clear_jianying_visual_caches() -> dict:
-    reports = [_clear_directory_children(path) for path in _candidate_jianying_visual_cache_dirs()]
+def _clear_jianying_frame_thumbnail_cache() -> dict:
+    reports = []
+    for path in _candidate_jianying_visual_cache_dirs():
+        if os.path.basename(os.path.normpath(path)).lower() != "framethumbnail":
+            continue
+        reports.append(_clear_directory_children(path))
     deleted_entries = sum(int(item.get("deleted") or 0) for item in reports)
     failed_entries = sum(len(item.get("failed") or []) for item in reports)
     return {
@@ -765,6 +951,26 @@ def _refresh_artist_effect_content(effect_dir: str, replacement_values: list[str
     return changed
 
 
+def _is_template_draft_cache_path(path_value: str) -> bool:
+    raw = str(path_value or "").strip()
+    if not raw or not os.path.isabs(raw):
+        return False
+    normalized = raw.replace("\\", "/").lower()
+    return "/templateDraft/".lower() in normalized
+
+
+def _payload_has_official_nested_cache_semantics(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for current_payload in _iter_draft_payloads(payload):
+        if current_payload is payload:
+            continue
+        nested_root = str(current_payload.get("path") or "").strip()
+        if _is_template_draft_cache_path(nested_root):
+            return True
+    return False
+
+
 def _externalize_nested_official_cache_semantics(
     current_payload: dict,
     source_payload: dict,
@@ -1017,6 +1223,19 @@ def _write_json_file(path: str, data: dict) -> None:
         json.dump(data, handle, ensure_ascii=False, indent=2)
 
 
+def _write_compact_json_file(path: str, data: dict) -> None:
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, separators=(",", ":"))
+
+
+def _write_payload_file_preserving_container(path: str, data: dict) -> None:
+    file_name = os.path.basename(str(path or "")).lower()
+    if file_name in {"draft_content.json", "draft_content.json.bak", "template-2.tmp"}:
+        official_codec.write_official_draft_payload(path, data)
+        return
+    _write_json_file(path, data)
+
+
 def _looks_like_plain_json(path: str) -> bool:
     if not path or not os.path.exists(path):
         return False
@@ -1181,24 +1400,6 @@ def _load_active_payload_with_fallback(primary_path: str, cloned_draft_path: str
     raise ValueError("draft content read failed: no usable payload source")
 
 
-def _select_best_plain_active_payload(cloned_draft_path: str) -> tuple[Optional[dict], str]:
-    best_data = None
-    best_path = ""
-    best_score = (-1, -1, -1, -1, -1)
-    for target in _iter_plain_payload_targets(cloned_draft_path):
-        data, err = _load_plain_json(target)
-        if err is not None or not isinstance(data, dict):
-            continue
-        if _classify_payload_shape(data) != "active":
-            continue
-        score = _payload_activity_score(data)
-        if score > best_score:
-            best_score = score
-            best_data = data
-            best_path = target
-    return best_data, best_path
-
-
 def _select_best_plain_shell_payload(cloned_draft_path: str) -> tuple[Optional[dict], str]:
     best_data = None
     best_path = ""
@@ -1245,154 +1446,6 @@ def _write_plain_payload_targets(active_payload: dict, shell_payload: Optional[d
     return written_paths
 
 
-def _apply_minimal_payload_updates(
-    payload: dict,
-    *,
-    cloned_draft_path: str,
-    source_draft_root: str,
-    texts_input,
-    localized_material_replacements,
-    source_payload_snapshot: Optional[dict] = None,
-    text_replacements: Optional[dict] = None,
-    template_root_cache: Optional[dict[str, str]] = None,
-    artist_effect_cache: Optional[dict[str, str]] = None,
-) -> dict:
-    diagnostics = {
-        "text_replaced": 0,
-        "material_replaced": 0,
-        "rebased_internal_paths": 0,
-        "hydrated_payload_materials": 0,
-        "sanitized_missing_cover_paths": 0,
-        "nested_visual_covers_refreshed": 0,
-        "cover_refreshed": False,
-        "cache_clone_semantics": {},
-    }
-    if not isinstance(payload, dict):
-        return diagnostics
-
-    diagnostics["text_replaced"] = _replace_texts(payload, texts_input)
-    diagnostics["material_replaced"] = replace_materials(
-        payload,
-        localized_material_replacements,
-        cloned_draft_path=cloned_draft_path,
-        image_exts=_IMAGE_EXTS,
-        detect_media_kind=_detect_media_kind,
-        normalize_abs_path=_normalize_abs_path,
-        collect_referenced_material_ids=_collect_referenced_material_ids,
-        material_name_is_excluded=_material_name_is_excluded,
-        lookup_material_override=_lookup_material_override,
-        parse_replacement_media_info=_parse_replacement_media_info,
-        safe_int=_safe_int,
-    )
-
-    has_official_nested_cache = _payload_has_official_nested_cache_semantics(payload)
-    if has_official_nested_cache and isinstance(source_payload_snapshot, dict):
-        diagnostics["cache_clone_semantics"] = _externalize_nested_official_cache_semantics(
-            payload,
-            source_payload_snapshot,
-            cloned_draft_path,
-            text_replacements or {},
-            template_root_cache=template_root_cache,
-            artist_effect_cache=artist_effect_cache,
-        )
-    else:
-        diagnostics["rebased_internal_paths"] = _rebase_source_internal_paths(
-            payload,
-            source_draft_root,
-            cloned_draft_path,
-        )
-        diagnostics["sanitized_missing_cover_paths"] = _sanitize_missing_cover_paths(
-            payload,
-            cloned_draft_path,
-        )
-
-    diagnostics["nested_visual_covers_refreshed"] = _refresh_nested_combination_visual_covers(
-        payload,
-        cloned_draft_path,
-    )
-    diagnostics["hydrated_payload_materials"] = _hydrate_missing_materials_from_payload_roots(
-        payload,
-        cloned_draft_path,
-        source_draft_root,
-    )
-    diagnostics["cover_refreshed"] = _refresh_draft_cover_from_visuals(payload, cloned_draft_path)
-    return diagnostics
-
-
-def _rewrite_plain_payload_targets_preserving_structure(
-    cloned_draft_path: str,
-    source_draft_root: str,
-    texts_input,
-    localized_material_replacements,
-    active_payload: Optional[dict] = None,
-    source_payload_snapshot: Optional[dict] = None,
-    text_replacements: Optional[dict] = None,
-    template_root_cache: Optional[dict[str, str]] = None,
-    artist_effect_cache: Optional[dict[str, str]] = None,
-) -> tuple[list[str], dict]:
-    written_paths: list[str] = []
-    diagnostics = {
-        "updated_files": {},
-        "text_replaced": 0,
-        "material_replaced": 0,
-        "rebased_internal_paths": 0,
-        "hydrated_payload_materials": 0,
-        "sanitized_missing_cover_paths": 0,
-        "nested_visual_covers_refreshed": 0,
-        "cover_refreshed": 0,
-    }
-
-    for target_path in _iter_plain_payload_targets(cloned_draft_path):
-        payload, err = _load_plain_json(target_path)
-        if err is not None or not isinstance(payload, dict):
-            continue
-        file_diag = _apply_minimal_payload_updates(
-            payload,
-            cloned_draft_path=cloned_draft_path,
-            source_draft_root=source_draft_root,
-            texts_input=texts_input,
-            localized_material_replacements=localized_material_replacements,
-            source_payload_snapshot=source_payload_snapshot,
-            text_replacements=text_replacements,
-            template_root_cache=template_root_cache,
-            artist_effect_cache=artist_effect_cache,
-        )
-        file_diag["selfbuilt_plain_visual_sync"] = sync_selfbuilt_plain_visual_materials_from_active(
-            payload,
-            active_payload if isinstance(active_payload, dict) else {},
-        )
-
-        _write_json_file(target_path, payload)
-        written_paths.append(target_path)
-
-        diagnostics["updated_files"][target_path] = file_diag
-        diagnostics["text_replaced"] += int(file_diag.get("text_replaced") or 0)
-        diagnostics["material_replaced"] += int(file_diag.get("material_replaced") or 0)
-        diagnostics["rebased_internal_paths"] += int(file_diag.get("rebased_internal_paths") or 0)
-        diagnostics["hydrated_payload_materials"] += int(file_diag.get("hydrated_payload_materials") or 0)
-        diagnostics["sanitized_missing_cover_paths"] += int(file_diag.get("sanitized_missing_cover_paths") or 0)
-        diagnostics["nested_visual_covers_refreshed"] += int(file_diag.get("nested_visual_covers_refreshed") or 0)
-        if file_diag.get("cover_refreshed"):
-            diagnostics["cover_refreshed"] += 1
-
-    return written_paths, diagnostics
-
-
-def _ensure_top_level_plain_targets(active_payload: dict, shell_payload: Optional[dict], cloned_draft_path: str) -> list[str]:
-    written_paths: list[str] = []
-    top_template_json = os.path.join(cloned_draft_path, "template.json")
-    top_template_tmp = os.path.join(cloned_draft_path, "template.tmp")
-
-    shell_to_write = shell_payload if isinstance(shell_payload, dict) else active_payload
-    if isinstance(shell_to_write, dict):
-        _write_json_file(top_template_json, shell_to_write)
-        written_paths.append(top_template_json)
-    if isinstance(active_payload, dict):
-        _write_json_file(top_template_tmp, active_payload)
-        written_paths.append(top_template_tmp)
-    return written_paths
-
-
 def _merge_unique_paths(*path_lists: list[str]) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
@@ -1406,13 +1459,21 @@ def _merge_unique_paths(*path_lists: list[str]) -> list[str]:
     return merged
 
 
+def _safe_material_folder_name(name: str, fallback: str) -> str:
+    raw = str(name or "")
+    raw = re.sub(r"[\r\n\t]+", " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", raw).strip(" .")
+    return cleaned or fallback
+
+
 def _localize_material_replacements_for_draft(material_replacements: dict, cloned_draft_path: str) -> dict:
     if not isinstance(material_replacements, dict) or not material_replacements:
         return {}
 
     localized: dict[str, str] = {}
-    copied_by_source: dict[str, str] = {}
-    target_root = os.path.join(cloned_draft_path, "materialResources", "_vf_replacements")
+    copied_by_key_source: dict[tuple[str, str], str] = {}
+    target_root = os.path.join(cloned_draft_path, "materialResources")
     os.makedirs(target_root, exist_ok=True)
 
     for key, source_path in material_replacements.items():
@@ -1425,21 +1486,28 @@ def _localize_material_replacements_for_draft(material_replacements: dict, clone
             continue
 
         source_norm = _normalize_abs_path(source_abs)
-        if source_norm in copied_by_source:
-            localized[key] = copied_by_source[source_norm]
+        folder_name = _safe_material_folder_name(
+            os.path.splitext(str(key or "").strip())[0],
+            "_vf_replacements",
+        )
+        copy_key = (str(key or "").strip().lower(), source_norm)
+        if copy_key in copied_by_key_source:
+            localized[key] = copied_by_key_source[copy_key]
             continue
 
+        slot_root = os.path.join(target_root, folder_name)
+        os.makedirs(slot_root, exist_ok=True)
         base_name = os.path.basename(source_abs) or f"{uuid.uuid4().hex}.bin"
-        dst_path = os.path.join(target_root, base_name)
+        dst_path = os.path.join(slot_root, base_name)
         if os.path.exists(dst_path):
             stem, ext = os.path.splitext(base_name)
-            dst_path = os.path.join(target_root, f"{stem}_{uuid.uuid4().hex[:8]}{ext}")
+            dst_path = os.path.join(slot_root, f"{stem}_{uuid.uuid4().hex[:8]}{ext}")
         try:
             shutil.copy2(source_abs, dst_path)
             resolved = os.path.abspath(dst_path)
         except Exception:
             resolved = source_abs
-        copied_by_source[source_norm] = resolved
+        copied_by_key_source[copy_key] = resolved
         localized[key] = resolved
 
     return localized
@@ -1448,7 +1516,10 @@ def _localize_material_replacements_for_draft(material_replacements: dict, clone
 def _write_by_info_path_with_main_timeline_mirror(read_path: str, data: dict, cloned_draft_path: str) -> list[str]:
     if not read_path:
         return []
-    _write_json_file(read_path, data)
+    if os.path.basename(read_path).lower() == "draft_content.json":
+        _write_compact_json_file(read_path, data)
+    else:
+        _write_payload_file_preserving_container(read_path, data)
     written = [read_path]
 
     file_name = os.path.basename(read_path)
@@ -1460,7 +1531,10 @@ def _write_by_info_path_with_main_timeline_mirror(read_path: str, data: dict, cl
     if os.path.normcase(os.path.normpath(mirror_path)) == os.path.normcase(os.path.normpath(read_path)):
         return written
     os.makedirs(os.path.dirname(mirror_path), exist_ok=True)
-    _write_json_file(mirror_path, data)
+    if file_name.lower() == "draft_content.json":
+        _write_compact_json_file(mirror_path, data)
+    else:
+        _write_payload_file_preserving_container(mirror_path, data)
     written.append(mirror_path)
     return written
 
@@ -1468,64 +1542,9 @@ def _write_by_info_path_with_main_timeline_mirror(read_path: str, data: dict, cl
 def _write_draft_content_targets(data: dict, cloned_draft_path: str) -> list[str]:
     written: list[str] = []
     for target in _iter_draft_content_targets(cloned_draft_path):
-        _write_json_file(target, data)
+        _write_payload_file_preserving_container(target, data)
         written.append(target)
     return written
-
-
-def _write_top_level_payload_with_private_gg_writer(cloned_draft_path: str, data: dict) -> dict:
-    target_path = os.path.join(cloned_draft_path, "draft_content.json")
-    try:
-        payload_text, encode_diag = official_codec.dump_official_draft_payload(data)
-
-        written_paths = []
-        for top_level_name in ("draft_content.json", "template-2.tmp"):
-            top_level_path = os.path.join(cloned_draft_path, top_level_name)
-            os.makedirs(os.path.dirname(top_level_path), exist_ok=True)
-            with open(top_level_path, "w", encoding="utf-8") as handle:
-                handle.write(payload_text)
-            written_paths.append(top_level_path)
-
-        mirror_root_name = "Timelines"
-        mirror_root = os.path.join(cloned_draft_path, mirror_root_name)
-        if os.path.isdir(mirror_root):
-            project_json_path = os.path.join(mirror_root, "project.json")
-            main_timeline_id = _load_main_timeline_id(project_json_path)
-            if main_timeline_id:
-                for mirror_name in ("draft_content.json", "template-2.tmp"):
-                    mirror_path = os.path.join(mirror_root, main_timeline_id, mirror_name)
-                    os.makedirs(os.path.dirname(mirror_path), exist_ok=True)
-                    with open(mirror_path, "w", encoding="utf-8") as handle:
-                        handle.write(payload_text)
-                    written_paths.append(mirror_path)
-        return {
-            "ok": True,
-            "skipped": False,
-            "target_path": target_path,
-            "runtime_utils_path": "",
-            "runtime_config_path": "",
-            "result": {
-                "status": "success",
-                "infoPath": target_path,
-                "payloadLength": len(payload_text),
-                "written_paths": [str(item).replace("\\", "/") for item in written_paths],
-                **encode_diag,
-                "timeline_root_name": mirror_root_name,
-            },
-            "reader_runtime": {},
-            "reader_runtime_selection": {},
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "skipped": False,
-            "target_path": target_path,
-            "runtime_utils_path": "",
-            "runtime_config_path": "",
-            "error": str(exc),
-            "reader_runtime": {},
-            "reader_runtime_selection": {},
-        }
 
 
 def _iter_draft_payloads(draft_data: dict):
@@ -1563,26 +1582,6 @@ def _normalize_abs_path(value: str) -> str:
     if not text:
         return ""
     return os.path.normcase(os.path.normpath(text))
-
-
-def _is_template_draft_cache_path(value: str) -> bool:
-    text = str(value or "").strip()
-    if not text or not os.path.isabs(text):
-        return False
-    normalized = _normalize_path_slashes(text).lower()
-    return "/templatedraft/" in normalized
-
-
-def _payload_has_official_nested_cache_semantics(payload: dict) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    for current_payload in _iter_draft_payloads(payload):
-        if current_payload is payload:
-            continue
-        nested_root = str(current_payload.get("path") or "").strip()
-        if _is_template_draft_cache_path(nested_root):
-            return True
-    return False
 
 
 def _map_template_draft_absolute_to_materials(path_value: str) -> str:
@@ -1668,6 +1667,14 @@ def _rebase_source_internal_paths(payload: dict, source_root: str, cloned_draft_
 
     def rebase_nested_path_fields(node) -> None:
         if isinstance(node, dict):
+            nested_payload_path = node.get("path")
+            if (
+                node is not payload
+                and isinstance(nested_payload_path, str)
+                and os.path.isabs(nested_payload_path)
+                and os.path.isdir(nested_payload_path)
+            ):
+                return
             for key, value in list(node.items()):
                 if isinstance(value, (dict, list)):
                     rebase_nested_path_fields(value)
@@ -1685,6 +1692,19 @@ def _rebase_source_internal_paths(payload: dict, source_root: str, cloned_draft_
             continue
 
         payload_path = current_payload.get("path")
+        nested_official_payload = (
+            current_payload is not payload
+            and isinstance(payload_path, str)
+            and os.path.isabs(payload_path)
+            and os.path.isdir(payload_path)
+        )
+
+        if nested_official_payload:
+            # Official nested templateDraft payloads carry their own private root/path
+            # semantics. Rewriting them into draft-relative paths breaks the unresolved
+            # main-video binding chain when that slot is not being replaced.
+            continue
+
         if isinstance(payload_path, str) and os.path.isabs(payload_path):
             payload_norm = _normalize_abs_path(payload_path)
             if payload_norm == source_norm:
@@ -1929,365 +1949,6 @@ def _sanitize_missing_cover_paths(payload: dict, cloned_draft_path: str) -> int:
                     retouch_cover[key] = ""
                     fixed += 1
     return fixed
-
-
-def _sanitize_missing_cover_paths_in_data(data, cloned_draft_path: str) -> int:
-    fixed = 0
-
-    def _path_exists(path_value: str) -> bool:
-        text = str(path_value or "").strip()
-        if not text:
-            return False
-        if os.path.isabs(text):
-            return os.path.exists(text)
-        candidate = os.path.join(cloned_draft_path, text.replace("/", os.sep).replace("\\", os.sep))
-        return os.path.exists(candidate)
-
-    def _walk(node):
-        nonlocal fixed
-        if isinstance(node, dict):
-            nested_root = str(node.get("path") or "").strip() if isinstance(node.get("path"), str) else ""
-            if _is_template_draft_cache_path(nested_root):
-                return
-            for key, value in list(node.items()):
-                if isinstance(value, (dict, list)):
-                    _walk(value)
-                    continue
-                if not isinstance(value, str):
-                    continue
-                text = value.strip()
-                if not text:
-                    continue
-                if key in {"cover_path", "static_cover_image_path", "draft_cover_path", "live_photo_cover_path"}:
-                    if not _path_exists(text):
-                        node[key] = ""
-                        fixed += 1
-                elif key in {"image_path", "retouch_path"}:
-                    if not _path_exists(text):
-                        node[key] = ""
-                        fixed += 1
-        elif isinstance(node, list):
-            for item in node:
-                _walk(item)
-
-    _walk(data)
-    return fixed
-
-
-def _repair_missing_relative_paths_in_data(data, cloned_draft_path: str) -> int:
-    fixed = 0
-    root_norm = os.path.normcase(os.path.normpath(cloned_draft_path))
-    basename_index: dict[str, list[str]] = {}
-
-    for cur_root, _dirs, files in os.walk(cloned_draft_path):
-        for name in files:
-            basename_index.setdefault(name.lower(), []).append(os.path.join(cur_root, name))
-
-    def _relative_to_root(path_value: str) -> str:
-        rel = os.path.relpath(path_value, cloned_draft_path)
-        return rel.replace("\\", "/")
-
-    def _walk(node):
-        nonlocal fixed
-        if isinstance(node, dict):
-            nested_root = str(node.get("path") or "").strip() if isinstance(node.get("path"), str) else ""
-            if _is_template_draft_cache_path(nested_root):
-                return
-            for key, value in list(node.items()):
-                if isinstance(value, (dict, list)):
-                    _walk(value)
-                    continue
-                if not isinstance(value, str):
-                    continue
-                text = value.strip()
-                if not text:
-                    continue
-                if key == "path" and text.startswith("##_draftpath_placeholder_"):
-                    node[key] = cloned_draft_path.replace("\\", "/")
-                    fixed += 1
-                    continue
-                if not (key == "path" or key.endswith("_path") or key in {"file_path", "material_path"}):
-                    continue
-                if os.path.isabs(text):
-                    norm = os.path.normcase(os.path.normpath(text))
-                    if norm == root_norm:
-                        node[key] = cloned_draft_path.replace("\\", "/")
-                        fixed += 1
-                    continue
-                candidate = os.path.join(cloned_draft_path, text.replace("/", os.sep).replace("\\", os.sep))
-                if os.path.exists(candidate):
-                    continue
-                basename = os.path.basename(text).lower()
-                matches = basename_index.get(basename) or []
-                if not matches:
-                    continue
-                best = matches[0]
-                desired_rel = _relative_to_root(best)
-                if desired_rel != text.replace("\\", "/"):
-                    node[key] = desired_rel
-                    fixed += 1
-        elif isinstance(node, list):
-            for item in node:
-                _walk(item)
-
-    _walk(data)
-    return fixed
-
-
-def _strip_material_placeholder_tokens(cloned_draft_path: str) -> dict:
-    token_re = re.compile(r"##_material_placeholder_[0-9A-Fa-f-]+_##")
-    rel_map: dict[str, str] = {}
-    renamed_files = 0
-
-    for cur_root, _dirs, files in os.walk(cloned_draft_path):
-        for name in files:
-            if "##_material_placeholder_" not in name:
-                continue
-            new_name = token_re.sub("", name)
-            if not new_name or new_name == name:
-                continue
-            src = os.path.join(cur_root, name)
-            dst = os.path.join(cur_root, new_name)
-            if os.path.exists(dst):
-                continue
-            os.replace(src, dst)
-            old_rel = os.path.relpath(src, cloned_draft_path).replace("\\", "/")
-            new_rel = os.path.relpath(dst, cloned_draft_path).replace("\\", "/")
-            rel_map[old_rel] = new_rel
-            renamed_files += 1
-
-    updated_files = 0
-    if rel_map:
-        for cur_root, _dirs, files in os.walk(cloned_draft_path):
-            for name in files:
-                lower = name.lower()
-                if not lower.endswith((".json", ".tmp", ".bak")):
-                    continue
-                path = os.path.join(cur_root, name)
-                try:
-                    text = Path(path).read_text(encoding="utf-8")
-                except Exception:
-                    continue
-                original = text
-                for old_rel, new_rel in rel_map.items():
-                    old_base = os.path.basename(old_rel)
-                    new_base = os.path.basename(new_rel)
-                    text = text.replace(old_rel, new_rel)
-                    text = text.replace(old_rel.replace("/", "\\"), new_rel.replace("/", "\\"))
-                    text = text.replace(old_base, new_base)
-                if text != original:
-                    Path(path).write_text(text, encoding="utf-8")
-                    updated_files += 1
-
-    return {
-        "renamed_files": renamed_files,
-        "updated_files": updated_files,
-        "mapping_count": len(rel_map),
-    }
-
-
-def _strip_material_placeholder_tokens_in_root(root_path: str) -> dict:
-    root = str(root_path or "").strip()
-    if not root or not os.path.isdir(root):
-        return {
-            "renamed_files": 0,
-            "updated_files": 0,
-            "mapping_count": 0,
-            "root": root,
-        }
-
-    token_re = re.compile(r"##_material_placeholder_[0-9A-Fa-f-]+_##")
-    rel_map: dict[str, str] = {}
-    renamed_files = 0
-
-    for cur_root, _dirs, files in os.walk(root):
-        for name in files:
-            if "##_material_placeholder_" not in name:
-                continue
-            new_name = token_re.sub("", name)
-            if not new_name or new_name == name:
-                continue
-            src = os.path.join(cur_root, name)
-            dst = os.path.join(cur_root, new_name)
-            try:
-                if os.path.exists(dst):
-                    os.remove(src)
-                else:
-                    os.replace(src, dst)
-                old_rel = os.path.relpath(src, root).replace("\\", "/")
-                new_rel = os.path.relpath(dst, root).replace("\\", "/")
-                rel_map[old_rel] = new_rel
-                renamed_files += 1
-            except Exception:
-                continue
-
-    updated_files = 0
-    if rel_map:
-        for cur_root, _dirs, files in os.walk(root):
-            for name in files:
-                lower = name.lower()
-                if not lower.endswith((".json", ".tmp", ".bak", ".extra")):
-                    continue
-                path = os.path.join(cur_root, name)
-                try:
-                    text = Path(path).read_text(encoding="utf-8")
-                except Exception:
-                    continue
-                original = text
-                for old_rel, new_rel in rel_map.items():
-                    old_base = os.path.basename(old_rel)
-                    new_base = os.path.basename(new_rel)
-                    old_abs = _normalize_path_slashes(os.path.join(root, old_rel.replace("/", os.sep)))
-                    new_abs = _normalize_path_slashes(os.path.join(root, new_rel.replace("/", os.sep)))
-                    text = text.replace(old_abs, new_abs)
-                    text = text.replace(old_rel, new_rel)
-                    text = text.replace(old_rel.replace("/", "\\"), new_rel.replace("/", "\\"))
-                    text = text.replace(old_base, new_base)
-                if text != original:
-                    Path(path).write_text(text, encoding="utf-8")
-                    updated_files += 1
-
-    return {
-        "renamed_files": renamed_files,
-        "updated_files": updated_files,
-        "mapping_count": len(rel_map),
-        "root": root,
-    }
-
-
-def _find_main_timeline_dir(cloned_draft_path: str) -> str:
-    project_json_path = os.path.join(cloned_draft_path, "Timelines", "project.json")
-    main_timeline_id = _load_main_timeline_id(project_json_path)
-    if main_timeline_id:
-        candidate = os.path.join(cloned_draft_path, "Timelines", main_timeline_id)
-        if os.path.isdir(candidate):
-            return candidate
-
-    timelines_root = os.path.join(cloned_draft_path, "Timelines")
-    if not os.path.isdir(timelines_root):
-        return ""
-    for name in os.listdir(timelines_root):
-        candidate = os.path.join(timelines_root, name)
-        if os.path.isdir(candidate):
-            return candidate
-    return ""
-
-
-def _sync_generated_official_backup_payloads(cloned_draft_path: str, timeline_dir: str = "") -> list[str]:
-    final_payload_path = os.path.join(cloned_draft_path, "draft_content.json")
-    if not os.path.isfile(final_payload_path):
-        return []
-
-    try:
-        final_payload_text = Path(final_payload_path).read_text(encoding="utf-8")
-    except Exception:
-        return []
-
-    candidate_paths = [
-        os.path.join(cloned_draft_path, "draft_content.json.bak"),
-        os.path.join(timeline_dir, "draft_content.json.bak") if timeline_dir else "",
-    ]
-
-    backup_root = os.path.join(cloned_draft_path, ".backup")
-    if os.path.isdir(backup_root):
-        for root_dir, _dirs, filenames in os.walk(backup_root):
-            for filename in filenames:
-                if filename.lower().endswith(".bak"):
-                    candidate_paths.append(os.path.join(root_dir, filename))
-
-    synced_paths: list[str] = []
-    for backup_path in _merge_unique_paths(candidate_paths):
-        if not backup_path or not os.path.isfile(backup_path):
-            continue
-        try:
-            backup_payload, _diag = official_codec.load_official_draft_payload(backup_path)
-        except Exception:
-            continue
-        if not isinstance(backup_payload, dict):
-            continue
-        try:
-            with open(backup_path, "w", encoding="utf-8") as handle:
-                handle.write(final_payload_text)
-            synced_paths.append(_normalize_path_slashes(backup_path))
-        except Exception:
-            continue
-    return synced_paths
-
-
-def _finalize_generated_official_draft(cloned_draft_path: str, *, cacheclone_mode: bool = False) -> dict:
-    diagnostics = {
-        "copied_top_level": [],
-        "sanitized_files": {},
-        "synced_backup_payloads": [],
-    }
-    if not cloned_draft_path or not os.path.isdir(cloned_draft_path):
-        return diagnostics
-
-    timeline_dir = _find_main_timeline_dir(cloned_draft_path)
-    scaffold_root = _get_draft_scaffold_path()
-
-    if not cacheclone_mode:
-        for name in ("template.json", "template.tmp"):
-            target_path = os.path.join(cloned_draft_path, name)
-            if os.path.isfile(target_path):
-                continue
-            source_candidates = []
-            if timeline_dir:
-                source_candidates.append(os.path.join(timeline_dir, name))
-            if name == "template.tmp":
-                source_candidates.append(os.path.join(cloned_draft_path, "template-2.tmp"))
-            if scaffold_root and name == "template.json":
-                source_candidates.append(os.path.join(scaffold_root, name))
-            for source_path in source_candidates:
-                if not source_path or not os.path.isfile(source_path):
-                    continue
-                try:
-                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                    shutil.copy2(source_path, target_path)
-                    diagnostics["copied_top_level"].append(name)
-                    break
-                except Exception:
-                    continue
-    else:
-        diagnostics["removed_top_level"] = _remove_official_cacheclone_top_level_templates(cloned_draft_path)
-        diagnostics["synced_backup_payloads"] = _sync_generated_official_backup_payloads(
-            cloned_draft_path,
-            timeline_dir=timeline_dir,
-        )
-
-    sanitize_targets = _merge_unique_paths(
-        [
-            os.path.join(cloned_draft_path, "draft_content.json"),
-            os.path.join(cloned_draft_path, "draft_content.json.bak"),
-            os.path.join(cloned_draft_path, "template-2.tmp"),
-            os.path.join(timeline_dir, "template.json") if timeline_dir else "",
-            os.path.join(timeline_dir, "template.tmp") if timeline_dir else "",
-            os.path.join(timeline_dir, "draft_content.json") if timeline_dir else "",
-            os.path.join(timeline_dir, "draft_content.json.bak") if timeline_dir else "",
-            os.path.join(timeline_dir, "template-2.tmp") if timeline_dir else "",
-        ]
-    )
-
-    for target_path in sanitize_targets:
-        if not target_path or not os.path.isfile(target_path) or not _looks_like_plain_json(target_path):
-            continue
-        try:
-            with open(target_path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except Exception:
-            continue
-        has_official_nested_cache = _payload_has_official_nested_cache_semantics(payload)
-        repaired = 0 if has_official_nested_cache else _repair_missing_relative_paths_in_data(payload, cloned_draft_path)
-        fixed = 0 if has_official_nested_cache else _sanitize_missing_cover_paths_in_data(payload, cloned_draft_path)
-        if repaired <= 0 and fixed <= 0:
-            continue
-        _write_json_file(target_path, payload)
-        diagnostics["sanitized_files"][target_path] = {
-            "repaired_paths": repaired,
-            "sanitized_covers": fixed,
-        }
-
-    return diagnostics
 
 
 def _is_locked_track(track: dict) -> bool:
@@ -2544,17 +2205,65 @@ def _load_main_timeline_id(project_json_path: str) -> str:
     return str((data or {}).get("main_timeline_id") or "").strip()
 
 
-def _resolve_gg_like_timeline_root(primary_path: str) -> str:
-    project_root = os.path.dirname(str(primary_path or ""))
-    if not project_root:
-        return ""
+def _reconcile_timeline_project_files(cloned_draft_path: str) -> dict:
+    diagnostics = {
+        "project_json_rewritten_from_bak": False,
+        "project_json_main_timeline_id": "",
+        "project_json_bak_main_timeline_id": "",
+        "timeline_layout_rewritten": False,
+    }
+    if not cloned_draft_path or not os.path.isdir(cloned_draft_path):
+        return diagnostics
+
+    project_json_path = os.path.join(cloned_draft_path, "Timelines", "project.json")
+    project_json_bak_path = os.path.join(cloned_draft_path, "Timelines", "project.json.bak")
+    if not (os.path.isfile(project_json_path) and os.path.isfile(project_json_bak_path)):
+        return diagnostics
 
     try:
-        runtime = _resolve_private_reader_runtime()
-        root_name = _compute_gg_timeline_root_dirname(runtime.get("k6"))
+        project = json.loads(Path(project_json_path).read_text(encoding="utf-8"))
+        project_bak = json.loads(Path(project_json_bak_path).read_text(encoding="utf-8"))
     except Exception:
-        root_name = "Timelines"
-    return os.path.join(project_root, root_name)
+        return diagnostics
+    if not (isinstance(project, dict) and isinstance(project_bak, dict)):
+        return diagnostics
+
+    main_timeline_id = str(project.get("main_timeline_id") or "").strip()
+    bak_main_timeline_id = str(project_bak.get("main_timeline_id") or "").strip()
+    diagnostics["project_json_main_timeline_id"] = main_timeline_id
+    diagnostics["project_json_bak_main_timeline_id"] = bak_main_timeline_id
+    if not bak_main_timeline_id or bak_main_timeline_id == main_timeline_id:
+        return diagnostics
+
+    bak_timeline_dir = os.path.join(cloned_draft_path, "Timelines", bak_main_timeline_id)
+    if not os.path.isdir(bak_timeline_dir):
+        return diagnostics
+
+    _write_json_file(project_json_path, project_bak)
+    diagnostics["project_json_rewritten_from_bak"] = True
+    diagnostics["project_json_main_timeline_id"] = bak_main_timeline_id
+    timeline_layout_path = os.path.join(cloned_draft_path, "timeline_layout.json")
+    if os.path.isfile(timeline_layout_path):
+        try:
+            timeline_layout = json.loads(Path(timeline_layout_path).read_text(encoding="utf-8"))
+        except Exception:
+            timeline_layout = None
+        if isinstance(timeline_layout, dict):
+            changed = False
+            dock_items = timeline_layout.get("dockItems") or []
+            if isinstance(dock_items, list):
+                for dock_item in dock_items:
+                    if not isinstance(dock_item, dict):
+                        continue
+                    timeline_ids = dock_item.get("timelineIds")
+                    if isinstance(timeline_ids, list) and timeline_ids:
+                        if any(str(item or "").strip() != bak_main_timeline_id for item in timeline_ids):
+                            dock_item["timelineIds"] = [bak_main_timeline_id]
+                            changed = True
+            if changed:
+                _write_json_file(timeline_layout_path, timeline_layout)
+                diagnostics["timeline_layout_rewritten"] = True
+    return diagnostics
 
 
 def _compute_totalmem_parity_digits() -> tuple[str, str]:
@@ -3357,6 +3066,18 @@ def _select_nested_visual_cover_source(current_payload: dict, cloned_draft_path:
         except Exception:
             preferred_timestamp = 0
 
+    for preview_path in (
+        current_payload.get("static_cover_image_path"),
+        retouch_cover.get("image_path") if isinstance(retouch_cover, dict) else "",
+    ):
+        source_path = _resolve_payload_media_path(
+            preview_path,
+            cloned_draft_path,
+            payload_root=payload_root,
+        )
+        if source_path and os.path.isfile(source_path):
+            return source_path, preferred_timestamp
+
     preferred_segment = None
     fallback_segment = None
     for segment in _iter_video_segments_in_order(current_payload):
@@ -3564,106 +3285,6 @@ def _build_nested_cover_relative_path(current_payload: dict) -> str:
     return f"materials/video/cover_{current_id}.png"
 
 
-def _iter_official_nested_cover_targets(current_payload: dict, nested_root: str) -> list[str]:
-    nested_root_norm = os.path.normcase(os.path.normpath(nested_root))
-    candidates: list[str] = []
-
-    def append_if_nested_file(path_value: object) -> None:
-        target_path = str(path_value or "").strip()
-        if not target_path or not os.path.isabs(target_path) or not os.path.isfile(target_path):
-            return
-        target_norm = os.path.normcase(os.path.normpath(target_path))
-        if target_norm != nested_root_norm and not target_norm.startswith(nested_root_norm + os.sep):
-            return
-        candidates.append(target_path)
-
-    append_if_nested_file(current_payload.get("static_cover_image_path"))
-
-    retouch_cover = current_payload.get("retouch_cover")
-    if isinstance(retouch_cover, dict):
-        append_if_nested_file(retouch_cover.get("image_path"))
-
-    mutable_materials = (current_payload.get("mutable_config") or {}).get("mutable_materials") or []
-    if isinstance(mutable_materials, list):
-        for item in mutable_materials:
-            if isinstance(item, dict):
-                append_if_nested_file(item.get("cover_path"))
-
-    for root_dir in (nested_root, os.path.join(nested_root, "video", "cover")):
-        if not os.path.isdir(root_dir):
-            continue
-        try:
-            for entry_name in os.listdir(root_dir):
-                entry_path = os.path.join(root_dir, entry_name)
-                if os.path.isfile(entry_path) and os.path.splitext(entry_name)[1].lower() in _IMAGE_EXTS:
-                    candidates.append(entry_path)
-        except Exception:
-            continue
-
-    return _merge_unique_paths(candidates)
-
-
-def _iter_official_nested_root_preview_targets(current_payload: dict, nested_root: str) -> list[str]:
-    nested_root_norm = os.path.normcase(os.path.normpath(nested_root))
-    candidates: list[str] = []
-
-    def append_if_nested_file(path_value: object) -> None:
-        target_path = str(path_value or "").strip()
-        if not target_path or not os.path.isabs(target_path) or not os.path.isfile(target_path):
-            return
-        target_norm = os.path.normcase(os.path.normpath(target_path))
-        if target_norm != nested_root_norm and not target_norm.startswith(nested_root_norm + os.sep):
-            return
-        candidates.append(target_path)
-
-    append_if_nested_file(current_payload.get("static_cover_image_path"))
-
-    retouch_cover = current_payload.get("retouch_cover")
-    if isinstance(retouch_cover, dict):
-        append_if_nested_file(retouch_cover.get("image_path"))
-
-    if os.path.isdir(nested_root):
-        try:
-            for entry_name in os.listdir(nested_root):
-                entry_path = os.path.join(nested_root, entry_name)
-                if os.path.isfile(entry_path) and os.path.splitext(entry_name)[1].lower() in _IMAGE_EXTS:
-                    candidates.append(entry_path)
-        except Exception:
-            pass
-
-    return _merge_unique_paths(candidates)
-
-
-def _iter_official_nested_material_cover_pairs(current_payload: dict, nested_root: str, cloned_draft_path: str):
-    nested_root_norm = os.path.normcase(os.path.normpath(nested_root))
-    mutable_materials = (current_payload.get("mutable_config") or {}).get("mutable_materials") or []
-    if not isinstance(mutable_materials, list):
-        return
-
-    payload_root = str(current_payload.get("path") or "").strip()
-    for item in mutable_materials:
-        if not isinstance(item, dict):
-            continue
-        material_id = str(item.get("id") or "").strip()
-        target_path = str(item.get("cover_path") or "").strip()
-        if not material_id or not target_path or not os.path.isabs(target_path) or not os.path.isfile(target_path):
-            continue
-        target_norm = os.path.normcase(os.path.normpath(target_path))
-        if target_norm != nested_root_norm and not target_norm.startswith(nested_root_norm + os.sep):
-            continue
-
-        material = _find_visual_material_by_id(current_payload, material_id)
-        if not isinstance(material, dict):
-            continue
-        source_path = _resolve_payload_media_path(
-            material.get("path") or material.get("file_path"),
-            cloned_draft_path,
-            payload_root=payload_root,
-        )
-        if source_path and os.path.isfile(source_path):
-            yield source_path, target_path
-
-
 def _refresh_nested_combination_visual_covers(payload: dict, cloned_draft_path: str) -> int:
     if not isinstance(payload, dict):
         return 0
@@ -3695,7 +3316,19 @@ def _refresh_nested_combination_visual_covers(payload: dict, cloned_draft_path: 
 def _refresh_draft_cover_from_visuals(payload: dict, cloned_draft_path: str) -> bool:
     if not isinstance(payload, dict):
         return False
+    target_path = os.path.join(cloned_draft_path, "draft_cover.jpg")
+    for current_payload in _iter_draft_payloads(payload):
+        if current_payload is payload:
+            continue
+        source_path, timestamp_us = _select_nested_visual_cover_source(current_payload, cloned_draft_path)
+        if not source_path:
+            continue
+        if _write_visual_cover_image(source_path, target_path, timestamp_us):
+            _sync_cover_targets(target_path, cloned_draft_path)
+            return True
+
     image_candidates: list[str] = []
+    image_like_video_candidates: list[str] = []
     video_candidates: list[str] = []
     for current_payload in _iter_draft_payloads(payload):
         materials = current_payload.get("materials") or {}
@@ -3717,12 +3350,17 @@ def _refresh_draft_cover_from_visuals(payload: dict, cloned_draft_path: str) -> 
             path_value = str(item.get("path") or item.get("file_path") or "").strip()
             if not path_value:
                 continue
+            material_kind = str(item.get("type") or "").strip().lower()
+            path_ext = os.path.splitext(path_value)[1].lower()
+            candidate_path = path_value if os.path.isabs(path_value) else os.path.join(cloned_draft_path, path_value.replace("/", os.sep))
+            if material_kind in {"photo", "image", "gif"} or path_ext in _IMAGE_EXTS:
+                image_like_video_candidates.append(candidate_path)
+                continue
             if os.path.isabs(path_value):
                 video_candidates.append(path_value)
             else:
                 video_candidates.append(os.path.join(cloned_draft_path, path_value.replace("/", os.sep)))
-    target_path = os.path.join(cloned_draft_path, "draft_cover.jpg")
-    for src in image_candidates:
+    for src in _merge_unique_paths(image_candidates, image_like_video_candidates):
         if not os.path.isfile(src):
             continue
         try:
@@ -3765,7 +3403,36 @@ def _refresh_draft_cover_from_visuals(payload: dict, cloned_draft_path: str) -> 
         if result.returncode == 0 and os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
             _sync_cover_targets(target_path, cloned_draft_path)
             return True
+    root_cover_path = os.path.join(cloned_draft_path, "cover.jpg")
+    if os.path.isfile(root_cover_path) and os.path.getsize(root_cover_path) > 0:
+        try:
+            shutil.copy2(root_cover_path, target_path)
+            _sync_cover_targets(target_path, cloned_draft_path)
+            return True
+        except Exception:
+            return False
     return False
+
+
+def _regenerate_combination_material_ids(payload: dict) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    materials = payload.get("materials") or {}
+    drafts = materials.get("drafts") if isinstance(materials, dict) else None
+    if not isinstance(drafts, list):
+        return 0
+    refreshed = 0
+    for item in drafts:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip().lower() != "combination":
+            continue
+        old_value = str(item.get("combination_id") or "").strip()
+        if not old_value:
+            continue
+        item["combination_id"] = str(uuid.uuid4()).upper()
+        refreshed += 1
+    return refreshed
 
 
 def replace_official_draft(
@@ -3775,7 +3442,6 @@ def replace_official_draft(
     material_replacements=None,
     output_root: Optional[str] = None,
 ):
-    fix_revision = "official-draft-fix-20260330-cacheclone2"
     material_replacements = _normalize_material_replacement_map(material_replacements)
     source_info_path, source_info_diag = _resolve_source_info_path_from_root_meta(template_path)
     source_info_path = os.path.normpath(str(source_info_path or "").strip()) if source_info_path else ""
@@ -3784,18 +3450,9 @@ def replace_official_draft(
     source_draft_root = os.path.normpath(os.path.dirname(source_primary_path) or normalized_template_path)
     source_payload, diagnostics = _load_active_payload_with_fallback(source_primary_path, source_draft_root)
 
-    cloned_draft_path = _clone_draft_tree(template_path, output_root, draft_name)
+    staging_draft_path, final_draft_path = _clone_draft_tree(template_path, output_root, draft_name)
+    cloned_draft_path = staging_draft_path
     _update_draft_meta_info(cloned_draft_path, draft_name)
-    cacheclone_mode = "cacheclone" in str(fix_revision or "").lower()
-    if cacheclone_mode:
-        summary_scaffold = {
-            "ok": True,
-            "scaffold_root": _get_draft_scaffold_path(),
-            "copied": [],
-            "skipped_for_cacheclone": True,
-        }
-    else:
-        summary_scaffold = _ensure_cloned_official_draft_scaffold(cloned_draft_path)
     source_read_path = str((diagnostics or {}).get("read_path") or "").strip() or source_primary_path
     working_path = _resolve_cloned_info_path(
         cloned_draft_path,
@@ -3804,141 +3461,95 @@ def replace_official_draft(
     )
     source_payload_snapshot = _deep_clone_json_like(source_payload)
     working_payload = source_payload
-    strategy_info = classify_draft_strategy(
-        source_payload,
-        _payload_has_official_nested_cache_semantics,
-    )
 
     _update_draft_meta_info_with_info_path(cloned_draft_path, draft_name, working_path)
     localized_material_replacements = _localize_material_replacements_for_draft(material_replacements, cloned_draft_path)
 
+    diagnostics = diagnostics or {}
     summary = {
         "draft_path": cloned_draft_path,
         "draft_content_path": working_path,
         "text_replaced": 0,
         "material_replaced": 0,
         "warnings": [],
-        "diagnostics": diagnostics or {},
+        "diagnostics": diagnostics,
     }
-    summary["diagnostics"]["fix_revision"] = fix_revision
-    summary["diagnostics"]["source_info_path"] = source_info_path
-    summary["diagnostics"]["source_primary_path"] = source_primary_path
-    summary["diagnostics"]["source_read_path"] = source_read_path
-    summary["diagnostics"]["source_info_resolution"] = source_info_diag
-    summary["diagnostics"]["write_info_path"] = working_path
-    summary["diagnostics"]["source_draft_root"] = source_draft_root
-    summary["diagnostics"]["draft_kind"] = strategy_info.get("draft_kind")
-    summary["diagnostics"]["replacement_strategy"] = strategy_info.get("replacement_strategy")
-    summary["diagnostics"]["scaffold_sync"] = summary_scaffold
+    diagnostics["source_info_path"] = source_info_path
+    diagnostics["source_primary_path"] = source_primary_path
+    diagnostics["source_read_path"] = source_read_path
+    diagnostics["source_info_resolution"] = source_info_diag
+    diagnostics["write_info_path"] = working_path
+    diagnostics["source_draft_root"] = source_draft_root
     shell_payload, shell_payload_path = _select_best_plain_shell_payload(cloned_draft_path)
-    summary["diagnostics"]["shell_payload_path"] = shell_payload_path
+    diagnostics["shell_payload_path"] = shell_payload_path
 
+    summary["text_replaced"] = _replace_texts(working_payload, texts_input)
     text_replacements = _build_text_replacement_map(texts_input)
-    shared_template_root_cache: dict[str, str] = {}
-    shared_artist_effect_cache: dict[str, str] = {}
-    payload_update_diag = _apply_minimal_payload_updates(
+    summary["material_replaced"] = replace_materials(
         working_payload,
+        localized_material_replacements,
         cloned_draft_path=cloned_draft_path,
-        source_draft_root=source_draft_root,
-        texts_input=texts_input,
-        localized_material_replacements=localized_material_replacements,
-        source_payload_snapshot=source_payload_snapshot,
-        text_replacements=text_replacements,
-        template_root_cache=shared_template_root_cache,
-        artist_effect_cache=shared_artist_effect_cache,
+        image_exts=_IMAGE_EXTS,
+        detect_media_kind=_detect_media_kind,
+        normalize_abs_path=_normalize_abs_path,
+        collect_referenced_material_ids=_collect_referenced_material_ids,
+        material_name_is_excluded=_material_name_is_excluded,
+        lookup_material_override=_lookup_material_override,
+        parse_replacement_media_info=_parse_replacement_media_info,
+        safe_int=_safe_int,
     )
-    summary["text_replaced"] = int(payload_update_diag.get("text_replaced") or 0)
-    summary["material_replaced"] = int(payload_update_diag.get("material_replaced") or 0)
-    summary["diagnostics"]["localized_material_replacements"] = len(localized_material_replacements or {})
-    summary["diagnostics"]["rebased_internal_paths"] = payload_update_diag.get("rebased_internal_paths") or 0
-    summary["diagnostics"]["hydrated_payload_materials"] = payload_update_diag.get("hydrated_payload_materials") or 0
-    summary["diagnostics"]["sanitized_missing_cover_paths"] = payload_update_diag.get("sanitized_missing_cover_paths") or 0
-    summary["diagnostics"]["cache_clone_semantics"] = payload_update_diag.get("cache_clone_semantics") or {}
-    summary["diagnostics"]["nested_visual_covers_refreshed"] = payload_update_diag.get("nested_visual_covers_refreshed") or 0
-    summary["diagnostics"]["cover_refreshed"] = bool(payload_update_diag.get("cover_refreshed"))
-
-    if isinstance(shell_payload, dict):
-        shell_payload_update_diag = _apply_minimal_payload_updates(
-            shell_payload,
-            cloned_draft_path=cloned_draft_path,
-            source_draft_root=source_draft_root,
-            texts_input=texts_input,
-            localized_material_replacements=localized_material_replacements,
-            source_payload_snapshot=source_payload_snapshot,
-            text_replacements=text_replacements,
-            template_root_cache=shared_template_root_cache,
-            artist_effect_cache=shared_artist_effect_cache,
+    diagnostics["localized_material_replacements"] = len(localized_material_replacements or {})
+    diagnostics["cache_clone_semantics"] = {}
+    if _payload_has_official_nested_cache_semantics(working_payload) and isinstance(source_payload_snapshot, dict):
+        diagnostics["cache_clone_semantics"] = _externalize_nested_official_cache_semantics(
+            working_payload,
+            source_payload_snapshot,
+            cloned_draft_path,
+            text_replacements,
         )
-        summary["diagnostics"]["shell_rebased_internal_paths"] = (
-            shell_payload_update_diag.get("rebased_internal_paths") or 0
+        diagnostics["rebased_internal_paths"] = 0
+    else:
+        diagnostics["rebased_internal_paths"] = _rebase_source_internal_paths(
+            working_payload,
+            source_draft_root,
+            cloned_draft_path,
         )
-        summary["diagnostics"]["shell_hydrated_payload_materials"] = (
-            shell_payload_update_diag.get("hydrated_payload_materials") or 0
-        )
-        summary["diagnostics"]["shell_sanitized_missing_cover_paths"] = (
-            shell_payload_update_diag.get("sanitized_missing_cover_paths") or 0
-        )
-        summary["diagnostics"]["shell_cache_clone_semantics"] = (
-            shell_payload_update_diag.get("cache_clone_semantics") or {}
-        )
-        summary["diagnostics"]["shell_nested_visual_covers_refreshed"] = (
-            shell_payload_update_diag.get("nested_visual_covers_refreshed") or 0
-        )
-        summary["diagnostics"]["shell_cover_refreshed"] = bool(
-            shell_payload_update_diag.get("cover_refreshed")
-        )
+    diagnostics["hydrated_payload_materials"] = 0
+    diagnostics["sanitized_missing_cover_paths"] = 0
+    diagnostics["nested_visual_covers_refreshed"] = 0
+    diagnostics["combination_ids_regenerated"] = _regenerate_combination_material_ids(working_payload)
+    diagnostics["cover_refreshed"] = _refresh_draft_cover_from_visuals(working_payload, cloned_draft_path)
 
     if not summary["text_replaced"] and texts_input:
         summary["warnings"].append("no text material matched")
     if not summary["material_replaced"] and localized_material_replacements:
         summary["warnings"].append("no media material matched")
 
-    read_mode = str((diagnostics or {}).get("read_mode") or "").strip()
     info_written_paths = _write_by_info_path_with_main_timeline_mirror(working_path, working_payload, cloned_draft_path)
-    draft_content_written_paths = _write_draft_content_targets(working_payload, cloned_draft_path)
-    gg_writer_writeback = _write_top_level_payload_with_private_gg_writer(cloned_draft_path, working_payload)
-    plain_written_paths, plain_rewrite_diag = _rewrite_plain_payload_targets_preserving_structure(
-        cloned_draft_path,
-        source_draft_root,
-        texts_input,
-        localized_material_replacements,
+    diagnostics["write_mode"] = (
+        "encrypted_source_rewritten_to_info_path_with_main_timeline_mirror"
+        if str(diagnostics.get("read_mode") or "").strip().startswith("encrypted")
+        else "info_path_with_main_timeline_mirror"
+    )
+    diagnostics["timeline_project_reconciliation"] = _reconcile_timeline_project_files(cloned_draft_path)
+    published_draft_path = _publish_generated_draft(cloned_draft_path, final_draft_path)
+    published_info_path = _map_path_between_roots(working_path, cloned_draft_path, published_draft_path)
+    published_written_paths = [
+        _map_path_between_roots(path_value, cloned_draft_path, published_draft_path)
+        for path_value in info_written_paths
+    ]
+    summary["draft_path"] = published_draft_path
+    summary["draft_content_path"] = published_info_path
+    summary["written_paths"] = _merge_unique_paths(published_written_paths)
+    finalized_meta = _finalize_generated_draft_meta_and_root_index(
+        published_draft_path,
+        draft_name,
+        published_info_path,
         working_payload,
-        source_payload_snapshot,
-        text_replacements,
-        shared_template_root_cache,
-        shared_artist_effect_cache,
     )
-    top_level_plain_paths = [] if cacheclone_mode else _ensure_top_level_plain_targets(
-        working_payload,
-        shell_payload,
-        cloned_draft_path,
+    diagnostics["final_draft_timeline_materials_size"] = int(
+        (finalized_meta or {}).get("draft_timeline_materials_size_") or 0
     )
-    written_paths = _merge_unique_paths(info_written_paths, draft_content_written_paths, plain_written_paths, top_level_plain_paths)
-    summary["diagnostics"]["plain_target_rewrite"] = plain_rewrite_diag
-    summary["diagnostics"]["gg_writer_writeback"] = gg_writer_writeback
-    summary["diagnostics"]["material_placeholder_cleanup"] = {
-        "skipped": True,
-        "reason": "preserve official placeholder filename semantics",
-        "renamed_files": 0,
-        "updated_files": 0,
-        "mapping_count": 0,
-    }
-    summary["diagnostics"]["external_cache_placeholder_cleanup"] = []
-    if cacheclone_mode:
-        summary["diagnostics"]["removed_cacheclone_top_level_templates"] = _remove_official_cacheclone_top_level_templates(
-            cloned_draft_path
-        )
-    summary["diagnostics"]["finalized_official_draft"] = _finalize_generated_official_draft(
-        cloned_draft_path,
-        cacheclone_mode=cacheclone_mode,
-    )
-    if gg_writer_writeback.get("ok"):
-        summary["diagnostics"]["write_mode"] = "top_level_rewritten_with_private_gg_writer_plus_info_path_mirror_plus_plain_targets"
-    elif read_mode.startswith("encrypted"):
-        summary["diagnostics"]["write_mode"] = "encrypted_source_rewritten_with_private_gg_writer_plus_info_path_mirror_plus_plain_targets"
-    else:
-        summary["diagnostics"]["write_mode"] = "info_path_with_main_timeline_mirror_plus_draft_content_plus_plain_targets"
-    summary["written_paths"] = list(written_paths)
-    summary["diagnostics"]["visual_caches_cleared"] = _clear_jianying_visual_caches()
+    diagnostics["frame_thumbnail_cache_cleared"] = _clear_jianying_frame_thumbnail_cache()
 
     return summary
