@@ -6,143 +6,376 @@
     <title>{{ site_settings.site_title or site_settings.site_name }}</title>
     <meta name="keywords" content="{{ site_settings.site_keywords }}">
     <meta name="description" content="{{ site_settings.site_description }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/landing.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/landing.css') }}?v=20260408-pure">
 </head>
 <body>
-    {% set official_site_url = site_settings.official_site_url or request.url_root.rstrip('/') %}
     {% set default_logo_url = url_for('static', filename='images/branding/app_icon.ico') %}
     {% set logo_url = site_settings.official_logo_url or default_logo_url %}
     {% set download_target = url_for('user.download_redirect') %}
     {% set has_download = site_settings.download_url %}
+    {% set login_target = url_for('auth.login') %}
+    {% set site_name = site_settings.site_name or '智映视界' %}
+    {% set preview_image = url_for('static', filename='images/landing/hero-dashboard.png') %}
+    {% set user_agreement = site_settings.agreements.user if site_settings.agreements and site_settings.agreements.user else {} %}
+    {% set privacy_agreement = site_settings.agreements.privacy if site_settings.agreements and site_settings.agreements.privacy else {} %}
+    {% set contact_entries = site_settings.contacts or [] %}
 
-    <div class="page-shell">
-        <header class="site-header">
-            <a class="brand" href="{{ official_site_url }}">
-                <span class="brand-mark brand-mark-image">
-                    <img src="{{ logo_url }}" alt="{{ site_settings.site_name }}">
+    <header class="site-header">
+        <div class="container nav-shell">
+            <a class="brand" href="/">
+                <span class="brand-logo">
+                    <img src="{{ logo_url }}" alt="{{ site_name }}">
                 </span>
-                <span class="brand-copy">
-                    <strong>{{ site_settings.site_name or site_settings.site_title }}</strong>
-                    <small>{{ site_settings.site_title or site_settings.site_description or '剪映草稿批量生产系统' }}</small>
-                </span>
+                <span class="brand-text">{{ site_name }}</span>
             </a>
+
             <nav class="site-nav">
-                <button type="button" class="nav-scroll" data-target="hero">首页</button>
-                <button type="button" class="nav-scroll" data-target="abilities">核心能力</button>
-                <button type="button" class="nav-scroll" data-target="scenes">适用场景</button>
+                <a href="#features">功能</a>
+                <a href="#value">优势</a>
+                <a href="#pricing">价格</a>
             </nav>
-            <a class="download-btn" href="{{ download_target }}" {% if has_download %}target="_blank" rel="noopener"{% endif %}>立即下载</a>
-        </header>
+        </div>
+    </header>
 
-        <main class="page-stack">
-            <section id="hero" class="hero-section">
-                <div class="hero-copy">
-                    <span class="hero-kicker">批量混剪 / AI漫剧 / 直接回写剪映</span>
-                    <h1>让剪映草稿<br>更快进入批量生产</h1>
-                    <p>选一个草稿，替换素材和文字，快速生成更多可直接打开的剪映草稿。把批量混剪、效果配置、AI漫剧和导出，尽量收在同一个工作台里。</p>
-                    <a class="download-btn hero-btn" href="{{ download_target }}" {% if has_download %}target="_blank" rel="noopener"{% endif %}>立即下载</a>
+    <main>
+        <section class="hero-section">
+            <div class="hero-glow hero-glow-top"></div>
+            <div class="hero-glow hero-glow-left"></div>
+            <div class="hero-glow hero-glow-right"></div>
+
+            <div class="container hero-shell">
+                <div class="hero-badge">全新 AI 漫剧工坊上线</div>
+                <h1 class="hero-title">
+                    3分钟可制作生成50+视频草稿
+                    <span>强大的本地引擎 即时识别 批量裂变</span>
+                </h1>
+                <p class="hero-copy">
+                    为矩阵批量生产量身打造 草稿拿来就能用 避免复杂工作流 内含14000+种特效 新人1分钟就可以上手
+                </p>
+
+                <div class="hero-stats">
+                    <div class="stat-card">
+                        <strong>10K+</strong>
+                        <span>活跃用户</span>
+                    </div>
+                    <div class="stat-card">
+                        <strong>500K+</strong>
+                        <span>视频生成</span>
+                    </div>
+                    <div class="stat-card">
+                        <strong>99.9%</strong>
+                        <span>稳定运行</span>
+                    </div>
                 </div>
-                <div class="hero-pills">
-                    <span>批量混剪</span>
-                    <span>AI漫剧</span>
-                    <span>效果配置</span>
-                    <span>命令中心</span>
-                </div>
-                <div class="hero-visual">
-                    <img src="{{ url_for('static', filename='images/landing/hero-dashboard.png') }}" alt="智映视界工作台总览">
-                </div>
-            </section>
 
-            <section id="abilities" class="abilities-section">
-                <div class="section-intro">
-                    <span class="section-kicker">核心能力</span>
-                    <h2>核心能力，继续留在同一套工作流里</h2>
-                    <p>重点不是重新发明剪辑流程，而是把你已经在做的草稿替换、混剪、漫剧生成和效果配置收得更顺。</p>
+                <div class="hero-preview">
+                    <img src="{{ preview_image }}" alt="{{ site_name }} 工作台截图">
+                </div>
+            </div>
+        </section>
+
+        <section id="features" class="section-block">
+            <div class="container">
+                <div class="section-heading">
+                    <h2>核心功能</h2>
+                    <p>围绕剪映草稿批量生产收口，不再是泛化的视频工具展示页。</p>
                 </div>
 
-                <div class="abilities-grid">
-                    <article class="ability-card">
-                        <div class="ability-copy">
-                            <span class="ability-badge">批量混剪</span>
-                            <h3>4种剪辑模式 1分钟生成100+视频</h3>
-                            <p>按组精准替换、混剪裂变、分区混剪、槽位拼接四种模式都保留。</p>
-                        </div>
-                        <div class="ability-visual">
-                            <img src="{{ url_for('static', filename='images/landing/hero-workbench.png') }}" alt="批量混剪界面">
-                        </div>
-                    </article>
-
-                    <article class="ability-card">
-                        <div class="ability-copy">
-                            <span class="ability-badge">AI漫剧</span>
-                            <h3>先生成草稿结构，再补素材和镜头</h3>
-                            <p>先搭草稿和场景目录，再继续做后面的精修和替换。</p>
-                        </div>
-                        <div class="ability-visual">
-                            <img src="{{ url_for('static', filename='images/landing/feature-manga.png') }}" alt="AI漫剧界面">
-                        </div>
-                    </article>
-
-                    <article class="ability-card">
-                        <div class="ability-copy">
-                            <span class="ability-badge">效果配置</span>
-                            <h3>内含14000+种丰富特效资源</h3>
-                            <p>先选风格，再补少量转场和效果，适合快速统一一批草稿风格。</p>
-                        </div>
-                        <div class="ability-visual">
-                            <img src="{{ url_for('static', filename='images/landing/feature-effects.png') }}" alt="效果配置界面">
+                <div class="feature-grid">
+                    <article class="feature-card">
+                        <div class="feature-icon">01</div>
+                        <h3>本地混剪引擎</h3>
+                        <p>绿色免安装，支持分区混剪、随机裂变，本地处理更安全高效。</p>
+                        <div class="feature-tags">
+                            <span>分区混剪</span>
+                            <span>随机裂变</span>
+                            <span>绿色免安装</span>
                         </div>
                     </article>
-
-                    <article class="ability-card">
-                        <div class="ability-copy">
-                            <span class="ability-badge">命令中心</span>
-                            <h3>高频动作集中到一个入口里</h3>
-                            <p>流程建议、命令提示和常用入口收在一起，新用户更容易上手。</p>
+                    <article class="feature-card">
+                        <div class="feature-icon">02</div>
+                        <h3>AI 漫剧工坊</h3>
+                        <p>导入 SRT 文件和生成漫画图，快速搭好剪映可继续编辑的草稿骨架。</p>
+                        <div class="feature-tags">
+                            <span>SRT 导入</span>
+                            <span>漫画图生成</span>
+                            <span>草稿骨架</span>
                         </div>
-                        <div class="ability-visual">
-                            <img src="{{ url_for('static', filename='images/landing/feature-assistant.png') }}" alt="命令中心界面">
+                    </article>
+                    <article class="feature-card">
+                        <div class="feature-icon">03</div>
+                        <h3>BYOK 模式</h3>
+                        <p>自备 AI 密钥，按需付费，完全掌控成本，灵活可扩展。</p>
+                        <div class="feature-tags">
+                            <span>自备密钥</span>
+                            <span>按需付费</span>
+                            <span>成本可控</span>
+                        </div>
+                    </article>
+                    <article class="feature-card">
+                        <div class="feature-icon">04</div>
+                        <h3>批量生产工作流</h3>
+                        <p>从素材目录、文字整理到官方草稿生成，适合持续复用的矩阵生产流程。</p>
+                        <div class="feature-tags">
+                            <span>批量生成</span>
+                            <span>目录回填</span>
+                            <span>矩阵工作流</span>
                         </div>
                     </article>
                 </div>
-            </section>
+            </div>
+        </section>
 
-            <section id="scenes" class="scene-section">
-                <div class="section-intro">
-                    <span class="section-kicker">适用场景</span>
-                    <h2>适合已经开始做内容，想把产能往上推的人</h2>
-                </div>
-                <div class="scene-grid">
-                    <article>带货混剪</article>
-                    <article>本地生活</article>
-                    <article>口播号</article>
-                    <article>素材号</article>
-                    <article>AI漫剧</article>
-                    <article>视频矩阵</article>
-                </div>
-            </section>
+        <section id="value" class="section-block section-dark">
+            <div class="container value-layout">
+                <div class="value-copy">
+                    <h2>为什么选择 {{ site_name }}？</h2>
+                    <p>不是再堆花哨入口，而是把真正会用到的生产链稳定下来。</p>
 
-            <section class="bottom-cta">
-                <div class="bottom-copy">
-                    <span class="section-kicker">开始使用</span>
-                    <h2>先试用核心功能 在决定让他要不要变成你的视频生产线</h2>
+                    <div class="value-list">
+                        <article>
+                            <div class="value-mark">1</div>
+                            <div>
+                                <strong>官方草稿主链稳定</strong>
+                                <p>批量多份可打开、缩略图正常、运行中可即时发现新稿。</p>
+                            </div>
+                        </article>
+                        <article>
+                            <div class="value-mark">2</div>
+                            <div>
+                                <strong>本地生产更可控</strong>
+                                <p>素材、草稿和目录管理都留在本地，更适合重复批量生产。</p>
+                            </div>
+                        </article>
+                        <article>
+                            <div class="value-mark">3</div>
+                            <div>
+                                <strong>能力边界更清楚</strong>
+                                <p>按组、裂变、分区、拼接等工作流已经按真实使用场景收口。</p>
+                            </div>
+                        </article>
+                    </div>
                 </div>
-                <a class="download-btn bottom-btn" href="{{ download_target }}" {% if has_download %}target="_blank" rel="noopener"{% endif %}>立即下载</a>
-            </section>
-        </main>
-    </div>
+
+                <div class="highlight-panel">
+                    <h3>更多强大功能</h3>
+                    <div class="highlight-grid">
+                        <span>官方草稿稳定生成</span>
+                        <span>分区文字整理</span>
+                        <span>目录默认回填</span>
+                        <span>缩略图恢复正常</span>
+                        <span>大小索引恢复正常</span>
+                        <span>在线授权与开关</span>
+                        <span>BYOK 模型接入</span>
+                        <span>批量工作台管理</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="pricing" class="section-block">
+            <div class="container">
+                <div class="section-heading">
+                    <h2>当前授权方案</h2>
+                    <p>直接查看每个授权方案的价格、时长、设备数量和转移次数。</p>
+                </div>
+
+                {% if membership_plans %}
+                    {% set ordered_plan_names = ['天卡', '周卡', '月卡', '季卡', '半年', '半年卡', '年卡', '企业'] %}
+                    {% set plan_state = namespace(ordered=[]) %}
+                    {% for plan_name in ordered_plan_names %}
+                        {% for plan in membership_plans %}
+                            {% if plan.name == plan_name %}
+                                {% set plan_state.ordered = plan_state.ordered + [plan] %}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                    {% for plan in membership_plans %}
+                        {% if plan not in plan_state.ordered %}
+                            {% set plan_state.ordered = plan_state.ordered + [plan] %}
+                        {% endif %}
+                    {% endfor %}
+                    <div class="pricing-table-shell">
+                        <table class="pricing-table">
+                            <thead>
+                                <tr>
+                                    <th>授权方案</th>
+                                    <th>价格</th>
+                                    <th>有效时长</th>
+                                    <th>设备上限</th>
+                                    <th>可转移次数</th>
+                                    <th>附赠次数</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for plan in plan_state.ordered %}
+                                {% set display_name = '半年卡' if plan.name in ['半年', '半年卡'] else plan.name %}
+                                <tr{% if display_name == '季卡' %} class="is-featured"{% endif %}>
+                                    <td>
+                                        <div class="pricing-table-plan">
+                                            <strong>{{ display_name }}</strong>
+                                            {% if display_name == '季卡' %}<span class="pricing-table-badge">当前主推</span>{% endif %}
+                                        </div>
+                                    </td>
+                                    <td>{% if plan.price and plan.price > 0 %}¥{{ '%.0f'|format(plan.price) }}{% else %}-{% endif %}</td>
+                                    <td>{{ plan.duration_days }} 天</td>
+                                    <td>{{ plan.device_limit }} 台</td>
+                                    <td>{{ plan.transfer_times }} 次</td>
+                                    <td>{{ plan.bonus_points }} 次</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="pricing-table-shell">
+                        <table class="pricing-table">
+                            <thead>
+                                <tr>
+                                    <th>授权方案</th>
+                                    <th>价格</th>
+                                    <th>有效时长</th>
+                                    <th>设备上限</th>
+                                    <th>可转移次数</th>
+                                    <th>附赠次数</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><strong>试用用户</strong></td>
+                                    <td>免费</td>
+                                    <td>-</td>
+                                    <td>-</td>
+                                    <td>-</td>
+                                    <td>-</td>
+                                </tr>
+                                <tr class="is-featured">
+                                    <td><div class="pricing-table-plan"><strong>季卡</strong><span class="pricing-table-badge">当前主推</span></div></td>
+                                    <td>按授权卡开通</td>
+                                    <td>-</td>
+                                    <td>-</td>
+                                    <td>-</td>
+                                    <td>-</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>团队定制</strong></td>
+                                    <td>私有化支持</td>
+                                    <td>-</td>
+                                    <td>-</td>
+                                    <td>-</td>
+                                    <td>-</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                {% endif %}
+            </div>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <div class="container footer-shell">
+            <div class="footer-hero">
+                <p>你的视频生产效率</p>
+                <strong>决定了你的收益回报</strong>
+            </div>
+
+            <div class="footer-bottom">
+                <span>© 2026 {{ site_name }}. 保留所有权利。</span>
+                <div class="footer-links">
+                    <button class="footer-link" type="button" data-modal-target="userAgreementModal">用户协议</button>
+                    <button class="footer-link" type="button" data-modal-target="privacyAgreementModal">隐私协议</button>
+                    <button class="footer-link" type="button" data-modal-target="contactModal">联系我们</button>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <div class="modal-backdrop" id="landingModalBackdrop" hidden></div>
+
+    <section class="landing-modal" id="userAgreementModal" hidden>
+        <div class="landing-modal-dialog">
+            <div class="landing-modal-head">
+                <h3>{{ user_agreement.title or '用户协议' }}</h3>
+                <button class="modal-close" type="button" data-modal-close>×</button>
+            </div>
+            <div class="landing-modal-body">{{ user_agreement.content or '暂无用户协议内容。' }}</div>
+        </div>
+    </section>
+
+    <section class="landing-modal" id="privacyAgreementModal" hidden>
+        <div class="landing-modal-dialog">
+            <div class="landing-modal-head">
+                <h3>{{ privacy_agreement.title or '隐私协议' }}</h3>
+                <button class="modal-close" type="button" data-modal-close>×</button>
+            </div>
+            <div class="landing-modal-body">{{ privacy_agreement.content or '暂无隐私协议内容。' }}</div>
+        </div>
+    </section>
+
+    <section class="landing-modal" id="contactModal" hidden>
+        <div class="landing-modal-dialog">
+            <div class="landing-modal-head">
+                <h3>联系我们</h3>
+                <button class="modal-close" type="button" data-modal-close>×</button>
+            </div>
+            <div class="landing-modal-body">
+                {% if contact_entries %}
+                    <div class="contact-lines">
+                        {% for item in contact_entries %}
+                        <div>{{ item }}</div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    暂无官方联系方式。
+                {% endif %}
+            </div>
+        </div>
+    </section>
+
     <script>
-        document.querySelectorAll('.nav-scroll').forEach((button) => {
-            button.addEventListener('click', () => {
-                const targetId = button.dataset.target || '';
-                const target = targetId ? document.getElementById(targetId) : null;
-                if (!target) return;
-                target.scrollIntoView({behavior: 'smooth', block: 'start'});
-                if (window.history && window.history.replaceState) {
-                    window.history.replaceState(null, '', window.location.pathname);
-                }
+        (function () {
+            const backdrop = document.getElementById('landingModalBackdrop');
+            const modals = Array.from(document.querySelectorAll('.landing-modal'));
+
+            function closeAll() {
+                modals.forEach((modal) => {
+                    modal.hidden = true;
+                });
+                if (backdrop) backdrop.hidden = true;
+                document.body.classList.remove('modal-open');
+            }
+
+            function openModal(id) {
+                const modal = document.getElementById(id);
+                if (!modal) return;
+                modals.forEach((item) => {
+                    item.hidden = item !== modal;
+                });
+                if (backdrop) backdrop.hidden = false;
+                modal.hidden = false;
+                document.body.classList.add('modal-open');
+            }
+
+            document.querySelectorAll('[data-modal-target]').forEach((button) => {
+                button.addEventListener('click', function () {
+                    openModal(this.getAttribute('data-modal-target'));
+                });
             });
-        });
+
+            document.querySelectorAll('[data-modal-close]').forEach((button) => {
+                button.addEventListener('click', closeAll);
+            });
+
+            if (backdrop) {
+                backdrop.addEventListener('click', closeAll);
+            }
+
+            document.addEventListener('keydown', function (event) {
+                if (event.key === 'Escape') closeAll();
+            });
+
+        })();
     </script>
 </body>
 </html>

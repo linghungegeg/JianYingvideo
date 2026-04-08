@@ -13,8 +13,9 @@ CORE_TARGETS = [
     "app/services/jianying/draft_replacement_strategy.py",
 ]
 PYARMOR_CANDIDATES = [
-    ROOT_DIR / "venv" / "Scripts" / "pyarmor.exe",
+    Path(sys.executable).resolve().parent / "pyarmor.exe",
     ROOT_DIR / "venv312" / "Scripts" / "pyarmor.exe",
+    ROOT_DIR / "venv" / "Scripts" / "pyarmor.exe",
 ]
 
 

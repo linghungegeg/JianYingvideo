@@ -58,17 +58,24 @@ def classify_ref(ref):
     return "other"
 
 
-def scan_generated_files(draft_root):
+def scan_generated_files(draft_root, preferred_paths=None):
     per_file = {}
     category_counter = Counter()
     total_missing = 0
     unreadable = []
+    preferred_set = {
+        str(Path(item).resolve())
+        for item in (preferred_paths or [])
+        if str(item or "").strip()
+    }
 
     for root, _, files in os.walk(draft_root):
         for filename in files:
             if filename.lower() not in JSON_TARGETS:
                 continue
             path = Path(root) / filename
+            if preferred_set and str(path.resolve()) not in preferred_set:
+                continue
             rel_path = str(path.relative_to(draft_root))
             try:
                 try:
@@ -126,11 +133,16 @@ def run_probe(template_path, output_root, keep_output):
     if draft_output.exists():
         shutil.rmtree(draft_output)
 
-    result = replace_official_draft(str(template_path), str(draft_output))
-    scan = scan_generated_files(draft_output)
+    result = replace_official_draft(
+        str(template_path),
+        draft_output.name,
+        output_root=str(output_root),
+    )
+    actual_output = Path(str((result or {}).get("draft_path") or draft_output)).resolve()
+    scan = scan_generated_files(actual_output, preferred_paths=(result or {}).get("written_paths") or [])
     probe = {
         "template_path": str(template_path),
-        "output_path": str(draft_output),
+        "output_path": str(actual_output),
         "service_result": result,
         "scan": scan,
         "draft_kind": ((result.get("diagnostics") or {}).get("draft_kind") if isinstance(result, dict) else ""),
@@ -141,7 +153,7 @@ def run_probe(template_path, output_root, keep_output):
     }
 
     if not keep_output:
-        shutil.rmtree(draft_output, ignore_errors=True)
+        shutil.rmtree(actual_output, ignore_errors=True)
     return probe
 
 

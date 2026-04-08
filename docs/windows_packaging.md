@@ -37,6 +37,13 @@ venv\Scripts\python.exe scripts\prepackage_check.py `
   --official-draft-template "E:\jycaogao\JianyingPro Drafts\4月3日 (1)"
 ```
 
+Or use the repository-managed blocker set:
+
+```powershell
+venv\Scripts\python.exe scripts\prepackage_check.py `
+  --use-default-official-drafts
+```
+
 5. Build the desktop onedir bundle:
 
 ```powershell
@@ -49,6 +56,17 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py `
   --official-draft-template "E:\jycaogao\JianyingPro Drafts\4月3日 (1)"
 ```
 
+Or build against the repository-managed blocker set:
+
+```powershell
+venv\Scripts\python.exe scripts\build_desktop_bundle.py `
+  --preset env.presets\desktop_full.env.example `
+  --name VideoFactory `
+  --icon C:\path\to\icon.ico `
+  --logo C:\path\to\logo.png `
+  --use-default-official-drafts
+```
+
 6. Output:
    - bundle root: `build/release/VideoFactory`
    - installer template: `build/installer/VideoFactory_setup.iss`
@@ -59,6 +77,7 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py `
 - `--logo` can use `.png`; it will be copied into `branding/` for installer assets or later publishing.
 - PyInstaller spec lives at `packaging/video_factory_desktop.spec`.
 - Inno Setup template lives at `packaging/video_factory_installer.iss`.
+- Official draft blocker templates live at `packaging/official_draft_release_templates.json`.
 - Final installer compilation is intentionally a separate step.
 
 ## What Gets Staged
@@ -90,3 +109,4 @@ If the desktop package still needs direct database credentials to run, that mean
 - Follow [`docs/release_playbook.md`](/E:/JianYingApi/VideoFactory/docs/release_playbook.md)
 - Treat official draft changes as high-risk and ship them separately
 - Keep at least two fixed official draft templates as release blockers
+- Prefer `stable/*` tags plus `hotfix/*` branches over full-repo rollback

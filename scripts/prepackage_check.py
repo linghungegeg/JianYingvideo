@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -21,11 +22,39 @@ import runtime_selfcheck
 
 
 TARGET_OFFICIAL_SITE_URL = "https://www.zysj.site"
+DEFAULT_OFFICIAL_DRAFT_TEMPLATE_FILE = ROOT_DIR / "packaging" / "official_draft_release_templates.json"
 PACKAGING_FILES = [
     ROOT_DIR / "packaging" / "video_factory_desktop.spec",
     ROOT_DIR / "packaging" / "video_factory_installer.iss",
     ROOT_DIR / "scripts" / "build_desktop_bundle.py",
 ]
+RELEASE_OUTPUT_ROOT = ROOT_DIR / "build" / "release"
+RELEASE_FORBIDDEN_NAME_PARTS = (
+    ".codex-tmp",
+    "backups",
+    "docs",
+    "reverse_capture",
+    "official_draft_regression",
+)
+RELEASE_FORBIDDEN_FILE_GLOBS = (
+    "tmp_*",
+    "@AutomationLog.txt",
+    "pyarmor.bug.log",
+)
+
+
+def load_official_draft_templates_from_file(path_text):
+    file_path = Path(path_text).resolve()
+    payload = json.loads(file_path.read_text(encoding="utf-8"))
+    templates = []
+    for item in payload.get("templates") or []:
+        if isinstance(item, dict):
+            template_path = str(item.get("path") or "").strip()
+        else:
+            template_path = str(item or "").strip()
+        if template_path:
+            templates.append(template_path)
+    return templates
 
 
 def record(name, ok, detail=""):
@@ -60,7 +89,9 @@ def check_http_entrypoints(app):
 
     root_resp = client.get("/", follow_redirects=False)
     root_location = root_resp.headers.get("Location", "")
-    root_ok = root_resp.status_code in (301, 302, 307, 308) and root_location.endswith("/user")
+    root_redirect_ok = root_resp.status_code in (301, 302, 307, 308) and root_location.endswith("/user")
+    root_page_ok = root_resp.status_code == 200
+    root_ok = root_redirect_ok or root_page_ok
     ok = record("route/root", root_ok, f"status={root_resp.status_code} location={root_location}") and True
 
     user_resp = client.get("/user")
@@ -110,6 +141,26 @@ def check_packaging_files():
     return ok
 
 
+def check_release_output_exclusions():
+    if not RELEASE_OUTPUT_ROOT.exists():
+        return record("release/output_exclusions", True, "build/release not found, skipped")
+    forbidden = []
+    for path in RELEASE_OUTPUT_ROOT.rglob("*"):
+        rel = str(path.relative_to(RELEASE_OUTPUT_ROOT)).replace("\\", "/")
+        lower_rel = rel.lower()
+        if any(part in lower_rel for part in RELEASE_FORBIDDEN_NAME_PARTS):
+            forbidden.append(rel)
+            continue
+        if path.is_file():
+            for pattern in RELEASE_FORBIDDEN_FILE_GLOBS:
+                if path.match(pattern) or Path(path.name).match(pattern):
+                    forbidden.append(rel)
+                    break
+    ok = not forbidden
+    detail = "clean" if ok else f"found={'; '.join(forbidden[:10])}"
+    return record("release/output_exclusions", ok, detail)
+
+
 def run_python_script(script_name, extra_args=None):
     script_path = SCRIPTS_DIR / script_name
     if not script_path.exists():
@@ -137,6 +188,17 @@ def main():
         default=[],
         help="absolute path to an official draft template for release regression; may be repeated",
     )
+    parser.add_argument(
+        "--official-draft-template-file",
+        action="append",
+        default=[],
+        help="JSON file containing official draft templates for release regression; may be repeated",
+    )
+    parser.add_argument(
+        "--use-default-official-drafts",
+        action="store_true",
+        help=f"load release-blocking official draft templates from {DEFAULT_OFFICIAL_DRAFT_TEMPLATE_FILE}",
+    )
     args = parser.parse_args()
 
     print("VideoFactory prepackage check")
@@ -153,6 +215,7 @@ def main():
         check_http_entrypoints(app),
         check_site_links(app),
         check_packaging_files(),
+        check_release_output_exclusions(),
     ]
     runtime_selfcheck.check_feature_switches(app)
 
@@ -160,9 +223,28 @@ def main():
     if not args.skip_final_regression:
         checks.append(run_python_script("remote_auth_mode_check.py" if remote_auth_mode else "final_regression.py"))
 
-    if args.official_draft_template:
+    official_draft_templates = list(args.official_draft_template)
+    template_files = [Path(item).resolve() for item in args.official_draft_template_file]
+    if args.use_default_official_drafts:
+        template_files.append(DEFAULT_OFFICIAL_DRAFT_TEMPLATE_FILE)
+    for template_file in template_files:
+        if not template_file.exists():
+            raise SystemExit(f"Official draft template file not found: {template_file}")
+        official_draft_templates.extend(load_official_draft_templates_from_file(template_file))
+
+    deduped_templates = []
+    seen_templates = set()
+    for item in official_draft_templates:
+        normalized = os.path.normcase(os.path.normpath(str(item)))
+        if normalized in seen_templates:
+            continue
+        seen_templates.add(normalized)
+        deduped_templates.append(str(item))
+    official_draft_templates = deduped_templates
+
+    if official_draft_templates:
         extra_args = []
-        for template_path in args.official_draft_template:
+        for template_path in official_draft_templates:
             extra_args.extend(["--template", template_path])
         checks.append(run_python_script("official_draft_regression.py", extra_args=extra_args))
 

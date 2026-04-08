@@ -2,10 +2,13 @@
         let currentDraftInfoPath = '';
         let materialsConfig = [];
         let materialSlotMeta = [];
-        let currentMaterialLayout = null;
+let currentMaterialLayout = null;
+let materialLayoutRefreshTimer = null;
+        let loadedDraftDataPath = '';
         let currentDraftVersion = 'all';
         let textsConfig = [];
         let currentMixStrategy = 'group';
+        let mixStrategyRuntimeState = {};
         let pollInterval = null;
         let resourceCache = [];
         let duoCache = [];
@@ -33,6 +36,8 @@
         let storyboardSourceTextCache = '';
         let storyboardRecentPage = 1;
         let storyboardRecentSelectedIds = new Set();
+        let discoveredDraftsVisible = [];
+        let discoveredDraftsAll = [];
         let resourceExchangeState = {
             page: 1,
             pages: 1,
@@ -40,6 +45,7 @@
             items: [],
             myPosts: []
         };
+        const MIX_STRATEGY_KEYS = ['group', 'mix', 'partition', 'sequence'];
         const EFFECT_TYPE_LABELS = {
             VIDEO_SCENE: '视频场景',
             ToneEffectType: '色调效果',
@@ -66,15 +72,14 @@
         };
 
         const ACCOUNT_TUTORIAL_ENTRIES = [
-            {title: '智能助手', keywords: '智能助手 命令中心 创建素材目录 分区 混剪 导出 草稿', body: '直接输入一句需求，助手会先告诉你准备执行什么，再决定是否继续。适合快速创建素材目录、跳转到指定混剪模式，或者导出当前草稿。'},
             {title: '批量混剪', keywords: '批量混剪 按组精准替换 混剪裂变替换 分区混剪裂变 槽位拼接混剪', body: '先选参考草稿，再按当前模式准备素材目录或文字内容。前三种模式会保持每次每槽位使用 1 个素材，槽位拼接混剪则会在单个槽位内连续拼接多段视频。'},
-            {title: 'AI 成片', keywords: 'AI 成片 即梦 火山 TTS AI 文案 AI账号管理', body: '先在“软件设置 -> AI账号管理”里维护好账号，再回到本页执行图生视频、语音合成或文案生成。页面里只保留真正会影响出片的参数。'},
+            {title: 'AI 成片', keywords: 'AI 成片 即梦 火山 TTS AI 文案 AI 灵感 AI账号管理', body: '图生视频和语音合成继续使用已配置账号；AI 文案和 AI 灵感会优先使用你在 AI 账号管理里已启用的可用模型。'},
             {title: 'AI 漫剧', keywords: 'AI 漫剧 草稿 分镜 脚本 场景目录', body: 'AI 漫剧会直接生成剪映草稿、场景素材目录和分镜说明。你可以先拿到完整草稿结构，再按自己的节奏补图、补视频和细化镜头。'},
-            {title: '漫剧助手', keywords: '漫剧助手 SRT 分镜 生图 文案转SRT', body: '这条链路只做“文案整理成 SRT 分镜”和“按句生图”，不会改官方草稿。建议先在这里把对白、人物和画面提示词整理顺，再去做正式草稿。'},
-            {title: '批量效果', keywords: '批量效果 Duo 资源 贴纸 转场', body: '选好草稿后，可以直接搜索你想要的效果或素材，再一键加入当前草稿。日常先用分类、关键词和常用预设就够了，不需要一开始就碰高级参数。'},
+            {title: '漫剧助手', keywords: '漫剧助手 SRT 分镜 生图 文案转SRT', body: '生成剪影可以用导入的SRT文件和生成漫画图。建议先在这里把对白、人物和画面提示词整理顺，再去做正式草稿。'},
+            {title: '批量效果', keywords: '批量效果 Duo 资源 贴纸 转场', body: '选好草稿后，可以直接搜索想要的效果或资源，再一键加入当前草稿。优先用分类、关键词和常用预设即可，不需要先碰参数。'},
             {title: '批量分割', keywords: '批量分割 文件分割 草稿处理 批量查看', body: '既可以对文件按时长、镜头或字幕做分割，也可以批量查看草稿结构，提前排查内容问题，再决定是否导出或继续加工。'},
             {title: '片段微调', keywords: '片段微调 节奏变速 画面校正 摇晃关键帧', body: '适合在出片前做最后一轮细节调整，例如节奏变速、画面校正、镜像、摇晃关键帧和局部修饰。'},
-            {title: '批量导出', keywords: '批量导出 导出设置 多草稿 片段导出', body: '把当前草稿或多份草稿加入队列后，可以统一导出；也支持单独导出主要视频片段，方便复用和复检。'},
+            {title: '片段导出', keywords: '片段导出 批量分割 草稿处理 主视频导出', body: '片段导出已经并到“批量分割 -> 草稿处理”里，选好草稿后可直接导出当前主视频片段。'},
             {title: '账户中心', keywords: '账户中心 账户信息 VIP说明 邀请中心 授权激活 使用教程', body: '这里集中查看会员状态、剩余次数、签到奖励、邀请关系、授权激活和全站使用教程，生成前也会同步刷新当前余额。'},
             {title: '资源互换', keywords: '资源互换 资源大厅 互换发布 审核 免费', body: '资源互换是免费功能，不扣次数。你可以先在资源大厅找合作和置换信息，再到互换发布里提交自己的项目，并随时查看审核状态和发布时间。'},
             {title: '软件设置', keywords: '软件设置 工作台设置 路径与目录 AI账号管理', body: '工作台偏好、默认目录和 AI 账号都统一放在这里维护。日常使用时先把常用路径和账号配好，后续每个功能页都会直接复用。'}
@@ -97,6 +102,9 @@
             sessionShownKey: ''
         };
         let licenseCardTypesRequestSeq = 0;
+        let siteSettingsLoadPromise = null;
+        let siteSettingsLoaded = false;
+        let settingsWorkspaceBindingsInitialized = false;
 
         function inferMaterialTypeFromLabel(label = '') {
             const raw = String(label || '').trim().toLowerCase();
@@ -196,17 +204,30 @@
             return siteSettingsCache;
         }
 
-        async function loadSiteSettings() {
+        async function loadSiteSettings(options = {}) {
+            const shouldRefresh = !!options.refresh;
             applySiteSettings(siteSettingsCache);
-            try {
-                const response = await fetch('/api/site-settings');
-                if (!response.ok) throw new Error(`site settings ${response.status}`);
-                const data = await response.json();
-                applySiteSettings(data);
-            } catch (error) {
-                console.warn('loadSiteSettings failed', error);
+            if (!shouldRefresh && siteSettingsLoaded) {
+                return siteSettingsCache;
             }
-            return siteSettingsCache;
+            if (siteSettingsLoadPromise) {
+                return siteSettingsLoadPromise;
+            }
+            siteSettingsLoadPromise = (async () => {
+                try {
+                    const response = await fetch('/api/site-settings');
+                    if (!response.ok) throw new Error(`site settings ${response.status}`);
+                    const data = await response.json();
+                    applySiteSettings(data);
+                } catch (error) {
+                    console.warn('loadSiteSettings failed', error);
+                } finally {
+                    siteSettingsLoaded = true;
+                    siteSettingsLoadPromise = null;
+                }
+                return siteSettingsCache;
+            })();
+            return siteSettingsLoadPromise;
         }
 
         function inferDraftVersion(value = '') {
@@ -238,6 +259,43 @@
             if (!raw) return '';
             const parts = raw.split(/[\\/]+/);
             return parts[parts.length - 1] || raw;
+        }
+
+        function truncateTextForDisplay(value = '', maxLength = 48) {
+            const text = String(value || '').replace(/\s+/g, ' ').trim();
+            const max = Math.max(8, Number(maxLength || 48));
+            if (!text) return '';
+            if (text.length <= max) return text;
+            return `${text.slice(0, max - 1)}…`;
+        }
+
+        function inferSelectionItemType(item = {}) {
+            const explicitType = String(item?.type || item?.material_type || '').trim().toLowerCase();
+            if (explicitType === 'image' || explicitType === 'video' || explicitType === 'audio') return explicitType;
+            const rawPath = String(item?.file_name || item?.path || '').trim().toLowerCase();
+            if (!rawPath) return '';
+            if (/\.(png|jpg|jpeg|webp|bmp|gif)$/i.test(rawPath)) return 'image';
+            if (/\.(mp4|mov|m4v|avi|mkv|wmv)$/i.test(rawPath)) return 'video';
+            if (/\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(rawPath)) return 'audio';
+            return '';
+        }
+
+        function formatSelectionTypeSummary(items = []) {
+            const counts = {image: 0, video: 0, audio: 0, other: 0};
+            (Array.isArray(items) ? items : []).forEach((item) => {
+                const type = inferSelectionItemType(item);
+                if (type === 'image' || type === 'video' || type === 'audio') {
+                    counts[type] += 1;
+                } else {
+                    counts.other += 1;
+                }
+            });
+            const parts = [];
+            if (counts.image) parts.push(`图片 ${counts.image}`);
+            if (counts.video) parts.push(`视频 ${counts.video}`);
+            if (counts.audio) parts.push(`音频 ${counts.audio}`);
+            if (counts.other) parts.push(`其它 ${counts.other}`);
+            return parts.join('、');
         }
 
         function getMixGenerationResultElement() {
@@ -275,23 +333,15 @@
                 const selectedCount = Number(detail.selected_count || 0);
                 const missingCount = Number(detail.missing_count || 0);
                 const selectedItems = Array.isArray(detail.selected_items) ? detail.selected_items : [];
-                const truncatedCount = Number(detail.truncated_count || 0);
                 if (!selectedCount || !selectedItems.length) {
                     return '<span class="mix-result-muted">本份未替换素材</span>';
                 }
-                const chips = selectedItems.map((item) => {
-                    const fileName = escapeHtml(String(item.file_name || item.path || item.slot_name || '素材'));
-                    const slotName = escapeHtml(String(item.slot_name || '槽位'));
-                    return `<span class="mix-result-chip" title="${slotName}">${fileName}</span>`;
-                }).join('');
-                const extra = truncatedCount > 0 ? `<span class="mix-result-chip mix-result-chip-muted">+${truncatedCount}</span>` : '';
-                const strategy = escapeHtml(String(detail.replace_strategy || 'group'));
-                const mode = escapeHtml(String(detail.replace_mode || 'order'));
-                const missingText = missingCount > 0 ? ` · 缺 ${missingCount}/${expectedCount}` : '';
+                const typeSummary = formatSelectionTypeSummary(selectedItems);
+                const missingText = missingCount > 0 ? `，缺 ${missingCount}/${expectedCount || selectedCount + missingCount}` : '';
                 return `
                     <div class="mix-result-selection">
-                        <div class="mix-result-selection-meta">已选 ${selectedCount}/${expectedCount || selectedCount} 项${missingText} · ${strategy} / ${mode}</div>
-                        <div class="mix-result-chip-row">${chips}${extra}</div>
+                        <div class="mix-result-selection-meta">已替换 ${selectedCount} 项${missingText}</div>
+                        <div class="mix-result-selection-meta">${escapeHtml(typeSummary || '素材替换已完成')}</div>
                     </div>
                 `;
             }
@@ -299,7 +349,7 @@
             sections.push(`
                 <section class="mix-result-group">
                     <h4 class="mix-result-title">本批结果：成功 ${successCount} 份${failedCount ? `，失败 ${failedCount} 份` : ''}</h4>
-                    <p class="mix-result-meta">${draftsFolder ? `输出目录：${escapeHtml(draftsFolder)}` : '系统按当前草稿目录生成新的草稿副本。'}</p>
+                    <p class="mix-result-meta">${draftsFolder ? `输出目录：${escapeHtml(draftsFolder)}` : '草稿已生成，可直接在剪映里查看。'}</p>
                     ${generatedPaths.length
                         ? `<div class="resource-table-shell mix-result-table">
                             <div class="resource-table-head mix-result-table-head">
@@ -494,11 +544,22 @@
             `;
         }
 
+        function getVisibleEditableTextItems(texts = []) {
+            return (Array.isArray(texts) ? texts : [])
+                .map((item, index) => ({
+                    item,
+                    sourceIndex: Number(item?.index ?? index),
+                    defaultValue: normalizeDraftText(item?.default ?? item ?? '')
+                }))
+                .filter((entry) => entry.defaultValue);
+        }
+
         function renderCompactTexts(texts = [], limit = 6) {
-            const hint = buildDraftSectionHint(texts.length, limit, '段文字');
-            const toggle = buildDraftCompactToggle(texts.length, limit);
-            const cards = texts.map((item, index) => {
-                const defaultValue = normalizeDraftText(item?.default ?? item ?? '');
+            const visibleItems = getVisibleEditableTextItems(texts);
+            const hint = buildDraftSectionHint(visibleItems.length, limit, '段文字');
+            const toggle = buildDraftCompactToggle(visibleItems.length, limit);
+            const cards = visibleItems.map((entry, index) => {
+                const defaultValue = entry.defaultValue;
                 const hiddenClass = index >= limit ? ' is-extra' : '';
                 return `
                     <div class="text-strip-item${hiddenClass}">
@@ -535,18 +596,52 @@
         function normalizeDraftText(value) {
             const raw = String(value ?? '').trim();
             if (!raw) return '';
-            if (raw.startsWith('{') && raw.includes('"text"')) {
+            if (raw.startsWith('{') || raw.startsWith('[')) {
                 try {
                     const parsed = JSON.parse(raw);
-                    if (parsed && typeof parsed.text === 'string') {
-                        return parsed.text;
-                    }
-                } catch (error) {}
+                    const extracted = extractDraftDisplayText(parsed);
+                    if (extracted) return extracted;
+                    return '';
+                } catch (error) {
+                    return '';
+                }
             }
             return raw;
         }
 
-        function renderPartitionTextInputs(partitions = [], textCount = 0) {
+        function extractDraftDisplayText(value) {
+            if (typeof value === 'string') {
+                const clean = value.trim();
+                return clean && !/^[\[{]/.test(clean) ? clean : '';
+            }
+            if (!value || typeof value !== 'object') return '';
+            const preferredKeys = ['text', 'content', 'value', 'label', 'name'];
+            for (const key of preferredKeys) {
+                const candidate = extractDraftDisplayText(value[key]);
+                if (candidate) return candidate;
+            }
+            if (Array.isArray(value)) {
+                for (const item of value) {
+                    const candidate = extractDraftDisplayText(item);
+                    if (candidate) return candidate;
+                }
+                return '';
+            }
+            for (const key of Object.keys(value)) {
+                const candidate = extractDraftDisplayText(value[key]);
+                if (candidate) return candidate;
+            }
+            return '';
+        }
+
+        function getVisiblePartitionTextItems(partitions = [], texts = []) {
+            const partitionCount = Array.isArray(partitions) ? partitions.length : 0;
+            const textItems = getVisibleEditableTextItems(texts);
+            if (!partitionCount) return textItems;
+            return textItems.slice(0, partitionCount);
+        }
+
+        function renderPartitionTextInputs(partitions = [], texts = []) {
             const normalized = [];
             const used = new Set();
             partitions.forEach((item, index) => {
@@ -556,10 +651,16 @@
                 used.add(key);
                 normalized.push(label);
             });
-            const cards = normalized.map((name, index) => `
+            const textItems = getVisiblePartitionTextItems(normalized, texts);
+            const textCount = textItems.length;
+            const visiblePartitions = Number.isFinite(Number(textCount)) && Number(textCount) > 0
+                ? normalized.slice(0, Number(textCount))
+                : normalized;
+            const cards = visiblePartitions.map((name, index) => `
                 <div class="partition-text-card">
-                    <label for="partition_text_${index}">${escapeHtml(name)}</label>
-                    <textarea id="partition_text_${index}" rows="4" placeholder="每行一段文字，提交时会按分区顺序依次写入前 ${textCount} 个文字槽"></textarea>
+                    <label for="partition_text_${index}" title="${escapeHtml(name)}">第 ${index + 1} 段文字</label>
+                    <div class="hint">当前默认内容：${escapeHtml(truncateTextForDisplay(textItems[index]?.defaultValue || '未读取到默认文案', 48))}</div>
+                    <textarea id="partition_text_${index}" rows="4" placeholder="每行一段文字，提交时会按分区顺序依次写回第 ${index + 1} 个文字槽"></textarea>
                 </div>
             `).join('');
             return `
@@ -638,6 +739,147 @@
             return sanitized.value;
         }
 
+        function cloneMixMaterialLayout(layout = null) {
+            if (!layout || typeof layout !== 'object') return null;
+            try {
+                return hydrateMaterialLayout(JSON.parse(JSON.stringify(layout)));
+            } catch (error) {
+                return null;
+            }
+        }
+
+        function getMixStrategyStoredStateMap() {
+            const settings = getWorkspaceSettings();
+            const raw = settings.mix_strategy_states;
+            return raw && typeof raw === 'object' ? raw : {};
+        }
+
+        function getMixStrategyStoredState(strategy = getSelectedReplaceStrategy()) {
+            const key = MIX_STRATEGY_KEYS.includes(strategy) ? strategy : 'group';
+            return getMixStrategyStoredStateMap()[key] || {};
+        }
+
+        function setMixStrategyStoredState(strategy, patch = {}) {
+            const key = MIX_STRATEGY_KEYS.includes(strategy) ? strategy : 'group';
+            const nextMap = Object.assign({}, getMixStrategyStoredStateMap(), {
+                [key]: Object.assign({}, getMixStrategyStoredState(key), patch || {})
+            });
+            return setWorkspaceSettings({mix_strategy_states: nextMap});
+        }
+
+        function getDefaultMaterialLayoutStatus() {
+            return '先选一个总目录，再一键生成当前草稿需要的槽位目录。';
+        }
+
+        function saveCurrentMixStrategyState() {
+            const panel = document.getElementById('panel-materials');
+            const shell = getCurrentDraftShell(panel);
+            if (!shell) return;
+            const strategy = getSelectedReplaceStrategy();
+            const draftPath = getDraftElement('path', shell)?.value?.trim() || '';
+            const draftVersion = getDraftElement('version', shell)?.value || getDraftShellState(shell).version || currentDraftVersion || 'all';
+            const materialsRoot = document.getElementById('folder_path')?.value?.trim() || '';
+            mixStrategyRuntimeState[strategy] = {
+                materialLayout: cloneMixMaterialLayout(currentMaterialLayout),
+                materialLayoutStatus: document.getElementById('materialLayoutStatus')?.textContent || ''
+            };
+            setMixStrategyStoredState(strategy, {
+                draft_path: draftPath,
+                draft_version: draftVersion,
+                materials_root: materialsRoot
+            });
+            if (draftPath) {
+                setWorkspaceSettings({
+                    last_draft_path: draftPath,
+                    last_draft_version: draftVersion
+                });
+            }
+        }
+
+        async function restoreMixStrategyState(strategy = getSelectedReplaceStrategy()) {
+            const key = MIX_STRATEGY_KEYS.includes(strategy) ? strategy : 'group';
+            const panel = document.getElementById('panel-materials');
+            const shell = getCurrentDraftShell(panel);
+            if (!shell) return;
+            const stored = getMixStrategyStoredState(key);
+            const runtime = mixStrategyRuntimeState[key] || {};
+            const draftVersion = stored.draft_version || currentDraftVersion || 'all';
+            setDraftShellState(shell, {
+                path: stored.draft_path || '',
+                infoPath: stored.draft_path || '',
+                version: draftVersion,
+                status: ''
+            });
+            syncActiveDraftGlobals(shell);
+            syncDraftShellValues();
+
+            const folderInput = document.getElementById('folder_path');
+            if (folderInput) {
+                folderInput.value = stored.materials_root || '';
+            }
+            currentMaterialLayout = cloneMixMaterialLayout(runtime.materialLayout);
+            const layoutList = document.getElementById('materialLayoutList');
+            if (currentMaterialLayout) {
+                renderMaterialLayoutList(currentMaterialLayout);
+            } else if (layoutList) {
+                layoutList.innerHTML = '';
+            }
+            const statusEl = document.getElementById('materialLayoutStatus');
+            if (statusEl) {
+                statusEl.textContent = runtime.materialLayoutStatus || getDefaultMaterialLayoutStatus();
+            }
+
+            if (stored.draft_path) {
+                if (loadedDraftDataPath !== stored.draft_path) {
+                    await loadDraftInfo();
+                } else {
+                    updateWorkspaceDraftBadge();
+                    updatePrimaryActionState();
+                    updateMixModeUI();
+                    syncMixStepVisibility();
+                    syncPartitionTextStrategy();
+                }
+                discoverDrafts(shell, false).catch(() => {});
+                return;
+            }
+
+            loadedDraftDataPath = '';
+            materialsConfig = [];
+            materialSlotMeta = [];
+            textsConfig = [];
+            draftTrackMeta = [];
+            if (document.getElementById('materials_list')) {
+                document.getElementById('materials_list').innerHTML = '';
+            }
+            const dom = getDraftDom(panel);
+            if (dom.materialsArea) dom.materialsArea.style.display = 'none';
+            if (dom.textsArea) {
+                dom.textsArea.innerHTML = '';
+                dom.textsArea.style.display = 'none';
+            }
+            if (dom.partitionTextsArea) {
+                dom.partitionTextsArea.innerHTML = '';
+                dom.partitionTextsArea.style.display = 'none';
+            }
+            if (dom.folderSection) dom.folderSection.style.display = 'none';
+            if (dom.optionsSection) {
+                dom.optionsSection.style.display = 'none';
+                dom.optionsSection.open = false;
+            }
+            if (dom.effectsSection) {
+                dom.effectsSection.dataset.ready = 'false';
+            }
+            if (dom.draftStatus) dom.draftStatus.textContent = '请先从下方选择草稿。';
+            syncDraftShellValues();
+            syncEffectsSectionVisibility();
+            updateWorkspaceDraftBadge();
+            updatePrimaryActionState();
+            updateMixModeUI();
+            syncMixStepVisibility();
+            syncPartitionTextStrategy();
+            discoverDrafts(shell, false).catch(() => {});
+        }
+
         function sanitizeWorkspaceSettings(raw = {}) {
             const source = raw && typeof raw === 'object' ? raw : {};
             const next = Object.assign({}, source);
@@ -690,7 +932,8 @@
             });
             const materialInput = document.getElementById('folder_path');
             if (materialInput && !materialInput.value) {
-                materialInput.value = localSettings.last_materials_root || materialDefault;
+                const strategyState = getMixStrategyStoredState(getSelectedReplaceStrategy());
+                materialInput.value = strategyState.materials_root || localSettings.last_materials_root || materialDefault;
             }
             const audioInput = document.getElementById('audio_folder_path');
             if (audioInput && !audioInput.value) {
@@ -742,23 +985,40 @@
         }
 
         function getMaterialTypeLabel(materialType = '') {
-            if (materialType === 'image') return '图片';
-            if (materialType === 'video') return '视频';
-            if (materialType === 'audio') return '音频';
-            return '不限类型';
+            const normalized = String(materialType || '').trim().toLowerCase();
+            if (!normalized || normalized === 'all') return '不限类型';
+            const parts = normalized.split(/[,+]/).map((item) => item.trim()).filter(Boolean);
+            const uniqueParts = Array.from(new Set(parts));
+            const labels = uniqueParts.map((part) => {
+                if (part === 'image') return '图片';
+                if (part === 'video') return '视频';
+                if (part === 'audio') return '音频';
+                return '';
+            }).filter(Boolean);
+            return labels.length ? labels.join('/') : '不限类型';
         }
 
         function inferLayoutFolderMaterialType(folder, index, layout = {}) {
             const strategy = layout.strategy || getSelectedReplaceStrategy();
+            const selectedTypes = getSelectedReplaceTypes();
+            const visualTypes = selectedTypes.filter((item) => item === 'image' || item === 'video');
             if (strategy === 'mix') {
-                const selectedTypes = getSelectedReplaceTypes();
-                return selectedTypes.length === 1 ? selectedTypes[0] : '';
+                return selectedTypes.length === 1 ? selectedTypes[0] : selectedTypes.join(',');
+            }
+            if (strategy === 'sequence') {
+                return 'video';
+            }
+            if (selectedTypes.length === 1) {
+                return selectedTypes[0];
+            }
+            if (visualTypes.length > 1 && !selectedTypes.includes('audio')) {
+                return visualTypes.join(',');
             }
             const inferred = inferMaterialTypeFromLabel(folder?.label || '');
             if (inferred) return inferred;
             const meta = Array.isArray(materialSlotMeta) ? materialSlotMeta[index] : null;
             const metaType = meta && typeof meta === 'object' ? String(meta.type || '').trim().toLowerCase() : '';
-            return ['image', 'video', 'audio'].includes(metaType) ? metaType : '';
+            return ['image', 'video', 'audio'].includes(metaType) ? metaType : selectedTypes.join(',');
         }
 
         function hydrateMaterialLayout(layout = {}) {
@@ -774,6 +1034,10 @@
         }
 
 function clearMaterialLayoutList() {
+    mixStrategyRuntimeState[getSelectedReplaceStrategy()] = {
+        materialLayout: null,
+        materialLayoutStatus: document.getElementById('materialLayoutStatus')?.textContent || ''
+    };
     currentMaterialLayout = null;
     const box = document.getElementById('materialLayoutList');
     if (box) box.innerHTML = '';
@@ -839,9 +1103,11 @@ function clearMaterialLayoutList() {
                 folder.file_count = Number(data.file_count || folder.file_count || 0);
                 renderMaterialLayoutList(layout);
                 if (statusEl) statusEl.textContent = `${folder.label || '目录'} 已放入 ${data.copied || 0} 个素材。`;
+                saveCurrentMixStrategyState();
                 notify(`已放入 ${data.copied || 0} 个素材。`, 'success');
             } catch (error) {
                 if (statusEl) statusEl.textContent = `放素材失败：${error.message || error}`;
+                saveCurrentMixStrategyState();
                 notify(error.message || '放素材失败', 'warn');
             }
         }
@@ -1115,7 +1381,7 @@ function clearMaterialLayoutList() {
         }
 
         function getDuoCategoryLabel(category = '') {
-            return DUO_CATEGORY_LABELS[category] || category || 'Duo 素材';
+            return DUO_CATEGORY_LABELS[category] || category || '资源分类';
         }
 
         async function loadRuntimeFeatures() {
@@ -1191,6 +1457,8 @@ function clearMaterialLayoutList() {
             const inviteReferrer = rules.invite_referrer_reward ?? 0;
             const inviteeReward = rules.invite_invitee_reward ?? 0;
             const mangaCost = rules.manga_generate_cost ?? 0;
+            const aiMakeCost = rules.ai_make_generate_cost ?? 0;
+            const storyboardCost = rules.storyboard_generate_cost ?? 0;
             const defaultQuotaEl = document.getElementById('accountDefaultQuota');
             const checkinRewardEl = document.getElementById('accountCheckinReward');
             const inviteRuleEl = document.getElementById('accountInviteRule');
@@ -1206,7 +1474,9 @@ function clearMaterialLayoutList() {
                     `新用户首次注册可获得 ${defaultQuota} 次体验次数`,
                     `每日签到可领取 ${checkinReward} 次`,
                     `邀请奖励会在好友首次开通会员后生效，邀请人加赠 ${inviteReferrer}% ，好友加赠 ${inviteeReward}%`,
-                    `AI 漫剧每次生成消耗 ${mangaCost} 次`
+                    `AI 漫剧每次生成消耗 ${mangaCost} 次`,
+                    `AI 成片每次成功任务消耗 ${aiMakeCost} 次`,
+                    `漫剧助手生图每次成功消耗 ${storyboardCost} 次`
                 ].join('\n');
             }
             if (usagePolicyEl) {
@@ -1220,31 +1490,31 @@ function clearMaterialLayoutList() {
                 const lines = [
                     '扣次数功能：',
                     ...(countItems.length
-                        ? countItems.map((item) => `- ${item.label}：${item.cost_display}${item.online_required ? '，需联网校验' : ''}`)
+                        ? countItems.map((item) => `- ${sanitizeDisplayText(item.label, '扣次功能')}：${sanitizeDisplayText(item.cost_display, '按配置扣除')}${item.online_required ? '，需联网校验' : ''}`)
                         : ['- 暂无']),
                     '',
                     '加次数来源：',
                     ...(gainItems.length
-                        ? gainItems.map((item) => `- ${item.label}：${item.description}`)
+                        ? gainItems.map((item) => `- ${sanitizeDisplayText(item.label, '加次来源')}：${sanitizeDisplayText(item.description, '按系统规则发放')}`)
                         : ['- 暂无']),
                     '',
                     'VIP 时长变化：',
                     ...(vipGainItems.length
-                        ? vipGainItems.map((item) => `- ${item.label}：${item.description}`)
+                        ? vipGainItems.map((item) => `- ${sanitizeDisplayText(item.label, 'VIP 规则')}：${sanitizeDisplayText(item.description, '按系统规则处理')}`)
                         : ['- 暂无']),
                     '',
                     '免费功能：',
                     ...(freeItems.length
-                        ? freeItems.map((item) => `- ${item.label}：${item.description}`)
+                        ? freeItems.map((item) => `- ${sanitizeDisplayText(item.label, '免费功能')}：${sanitizeDisplayText(item.description, '当前不扣次数')}`)
                         : ['- 暂无']),
                     '',
                     `联网校验状态：${onlineStatus.ok === false ? '当前不可用' : '正常'}`
                 ];
                 if (onlineItems.length) {
-                    lines.push(`联网后才能执行：${onlineItems.map((item) => item.label).join('、')}`);
+                    lines.push(`联网后才能执行：${onlineItems.map((item) => sanitizeDisplayText(item.label, '联网功能')).join('、')}`);
                 }
                 if (offlinePolicy.message) {
-                    lines.push(offlinePolicy.message);
+                    lines.push(sanitizeDisplayText(offlinePolicy.message, '离线时按当前系统规则处理。'));
                 }
                 usagePolicyEl.textContent = lines.join('\n');
             }
@@ -1282,7 +1552,7 @@ function clearMaterialLayoutList() {
                         </div>
                         ${items.map((item) => `
                             <div class="license-card-type-item">
-                                <strong>${escapeHtml(item.card_type || '-')}</strong>
+                                <strong>${escapeHtml(sanitizeDisplayText(item.card_type, '会员卡'))}</strong>
                                 <span>${escapeHtml(`${item.duration_days || 0} 天`)}</span>
                                 <span>${escapeHtml(`${item.device_limit || 1} 台`)}</span>
                                 <span>${escapeHtml(`${item.transfer_times || 0} 次`)}</span>
@@ -1357,7 +1627,7 @@ function clearMaterialLayoutList() {
             if (!runtimeFeatures.duo) {
                 if (duoNotice) {
                     duoNotice.style.display = 'block';
-                    duoNotice.textContent = 'Duo 素材中心暂未开放，开放后可在这里搜索素材、预览结果并直接加入当前草稿。';
+                    duoNotice.textContent = '资源中心暂未开放，开放后可在这里搜索资源、预览结果并直接加入当前草稿。';
                 }
                 if (duoSection) duoSection.style.display = 'none';
                 if (duoSidebarLink) duoSidebarLink.classList.add('is-disabled');
@@ -1553,6 +1823,7 @@ function removeMaterialLayoutFolder(index) {
         clearMaterialLayoutList();
     }
     updatePrimaryActionState();
+    saveCurrentMixStrategyState();
     notify('已移除该目录卡片。', 'success');
 }
 
@@ -1633,9 +1904,9 @@ function removeMaterialLayoutFolder(index) {
         function getMixModeCopy(strategy = getSelectedReplaceStrategy()) {
             const copyMap = {
                 group: {
-                    panelTitle: '按组精准替换',
-                    panelSub: '参考草稿确定槽位后，每个槽位按独立素材目录严格对应替换，每次生成每槽只取一个素材。',
-                    primaryTitle: '按组精准替换',
+                    panelTitle: '批量替换生成 · 固定对应',
+                    panelSub: '适合想严格控制每个槽位替换什么素材的场景。每个槽位按独立目录固定对应，每次生成每槽只取一个素材。',
+                    primaryTitle: '批量替换生成 · 固定对应',
                     primaryDesc: '先选参考草稿，再按槽位准备素材目录，最后批量生成。',
                     materialsTitle: '第 2 步：确认草稿槽位顺序',
                     materialsDesc: '已识别槽位，后续目录需要一一对应',
@@ -1644,9 +1915,9 @@ function removeMaterialLayoutFolder(index) {
                     advancedTitle: '第 4 步：生成与替换设置',
                 },
                 mix: {
-                    panelTitle: '混剪裂变替换',
-                    panelSub: '所有片段共用一个素材池，系统会按规则随机组合生成多条成片，但每次生成每槽只取一个素材。',
-                    primaryTitle: '混剪裂变替换',
+                    panelTitle: '批量替换生成 · 全局裂变',
+                    panelSub: '适合想快速做多份随机组合的场景。所有槽位共用一个素材池，系统会按规则自动裂变生成。',
+                    primaryTitle: '批量替换生成 · 全局裂变',
                     primaryDesc: '先选参考草稿，再选择统一素材池目录，最后批量裂变生成。',
                     materialsTitle: '第 2 步：确认草稿可替换槽位',
                     materialsDesc: '已识别槽位，系统会从同一素材池随机组合',
@@ -1655,9 +1926,9 @@ function removeMaterialLayoutFolder(index) {
                     advancedTitle: '第 4 步：裂变与高级设置',
                 },
                 partition: {
-                    panelTitle: '分区混剪裂变',
-                    panelSub: '按片头、主体、片尾这类分区精准匹配素材，同时保持原始顺序，每次生成每分区只取一个素材。',
-                    primaryTitle: '分区混剪裂变',
+                    panelTitle: '批量替换生成 · 分区裂变',
+                    panelSub: '适合片头、主体、片尾这类结构固定的模板。你只需要按分区准备素材和文字，系统会按分区批量生成。',
+                    primaryTitle: '批量替换生成 · 分区裂变',
                     primaryDesc: '先选参考草稿，再按分区准备目录，最后批量生成。',
                     materialsTitle: '第 2 步：确认分区槽位',
                     materialsDesc: '已识别分区槽位，目录名称需与分区保持一致',
@@ -1667,7 +1938,7 @@ function removeMaterialLayoutFolder(index) {
                 },
                 sequence: {
                     panelTitle: '槽位拼接混剪',
-                    panelSub: '每个槽位仍按独立目录准备，但生成时会先在该槽位内连续取多段视频拼接，再写回草稿。',
+                    panelSub: '这是一条独立模式。每个槽位先连续取多段视频拼接成一个素材，再统一写回草稿。',
                     primaryTitle: '槽位拼接混剪',
                     primaryDesc: '先选参考草稿，再按槽位准备视频目录，设置单槽拼接段数后开始生成。',
                     materialsTitle: '第 2 步：确认草稿视频槽位',
@@ -1682,8 +1953,19 @@ function removeMaterialLayoutFolder(index) {
 
         function setMixStrategy(strategy = 'group') {
             const next = ['group', 'mix', 'partition', 'sequence'].includes(strategy) ? strategy : 'group';
+            if (currentMixStrategy === next) {
+                restoreMixStrategyState(next).catch((error) => {
+                    console.warn('restoreMixStrategyState failed', error);
+                    updateMixModeUI();
+                });
+                return;
+            }
+            saveCurrentMixStrategyState();
             currentMixStrategy = next;
-            updateMixModeUI();
+            restoreMixStrategyState(next).catch((error) => {
+                console.warn('restoreMixStrategyState failed', error);
+                updateMixModeUI();
+            });
         }
 
         function syncMixStepVisibility() {
@@ -1716,13 +1998,19 @@ function removeMaterialLayoutFolder(index) {
                 modeStatusTitle.textContent = `${currentCopy.primaryTitle}的实际替换规则`;
             }
             if (modeStatusTag) {
-                modeStatusTag.textContent = strategy === 'sequence' ? '每个槽位会先拼接多段视频' : '每次每槽位只取 1 个素材';
+                modeStatusTag.textContent = strategy === 'sequence' ? '每个槽位会先拼接多段视频' : '前三种都属于批量替换生成';
             }
             if (modeStatusDetail) {
                 const folderTip = isMixMaterialsRootRequired(strategy)
                     ? `当前模式仍需要准备${labels[strategy] || '素材目录'}。`
                     : '当前只替换文字时，不必再选素材目录。';
-                modeStatusDetail.textContent = `${getMixConsumptionHint(strategy).detail} ${folderTip}`;
+                const modeTipMap = {
+                    group: '适合严格控制每个槽位对应关系，结果最可控。',
+                    mix: '适合统一素材池批量裂变，结果更随机。',
+                    partition: '适合按片头、主体、片尾这类结构化分区批量生成。',
+                    sequence: '适合一个槽位要连续吃多段视频的模板。'
+                };
+                modeStatusDetail.textContent = `${modeTipMap[strategy] || getMixConsumptionHint(strategy).detail} ${folderTip}`;
             }
         }
 
@@ -1941,7 +2229,6 @@ function removeMaterialLayoutFolder(index) {
                 loadLicenseCardTypes();
                 loadMangaTemplates().catch(() => {});
                 loadMangaHistory().catch(() => {});
-                loadSiteSettings().catch(() => {});
                 loadPointsOverview();
                 fillResourceMembership();
                 loadResourceExchangeMyPosts();
@@ -2233,8 +2520,12 @@ function removeMaterialLayoutFolder(index) {
             }
         }
 
-        async function requestBrowseFolder() {
-            const response = await fetch('/api/browse-folder', {method: 'POST'});
+        async function requestBrowseFolder(initialDir = '') {
+            const response = await fetch('/api/browse-folder', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({initial_dir: String(initialDir || '').trim()})
+            });
             const data = await parseJsonResponse(response, '目录选择失败');
             if (!response.ok || data.ok === false) {
                 throw new Error(data.error || '目录选择失败');
@@ -2252,16 +2543,24 @@ function removeMaterialLayoutFolder(index) {
         }
 
         async function requestBrowseFiles(materialType = 'all') {
-            const response = await fetch('/api/browse-files', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({material_type: materialType || 'all'})
-            });
-            const data = await parseJsonResponse(response, '文件选择失败');
-            if (!response.ok || data.ok === false) {
-                throw new Error(data.error || '文件选择失败');
+            try {
+                const response = await authFetch('/api/browse-files', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({material_type: materialType || 'all'})
+                });
+                const data = await parseJsonResponse(response, '文件选择失败');
+                if (!response.ok || data.ok === false) {
+                    throw new Error(data.error || '文件选择失败');
+                }
+                return Array.isArray(data.files) ? data.files : [];
+            } catch (error) {
+                const message = String(error?.message || error || '').trim();
+                if (/failed to fetch/i.test(message)) {
+                    throw new Error('文件选择器未正常响应，请关闭当前窗口后重试源码桌面版。');
+                }
+                throw error;
             }
-            return Array.isArray(data.files) ? data.files : [];
         }
 
         const effectsState = {
@@ -2401,8 +2700,8 @@ async function discoverDrafts(targetShell = null, renderInModal = isDraftPickerO
                 if (!filteredDrafts.length) {
                     summary.textContent = '暂未发现可用草稿。';
                     list.innerHTML = '<div class="tool-result">暂未发现可用草稿。</div>';
-                    window.__vfDiscoveredDrafts = [];
-                    window.__vfDiscoveredDraftsAll = [];
+                    discoveredDraftsVisible = [];
+                    discoveredDraftsAll = [];
                     return;
                 }
                 const visibleDrafts = renderInModal ? filteredDrafts : filteredDrafts.slice(0, 3);
@@ -2418,8 +2717,8 @@ async function discoverDrafts(targetShell = null, renderInModal = isDraftPickerO
                 if (!renderInModal && filteredDrafts.length > visibleDrafts.length) {
                     list.innerHTML += `<div class="draft-more-note">其余 ${filteredDrafts.length - visibleDrafts.length} 个草稿已收起，可在弹窗查看完整列表。</div>`;
                 }
-                window.__vfDiscoveredDrafts = visibleDrafts;
-                window.__vfDiscoveredDraftsAll = filteredDrafts;
+                discoveredDraftsVisible = visibleDrafts;
+                discoveredDraftsAll = filteredDrafts;
                 list.querySelectorAll('.draft-item').forEach((node) => {
                     const draftIndex = parseInt(node.getAttribute('data-draft-index') || '-1', 10);
                     if (Number.isNaN(draftIndex) || draftIndex < 0) return;
@@ -2439,7 +2738,7 @@ async function discoverDrafts(targetShell = null, renderInModal = isDraftPickerO
         }
 
 async function useDraftFromDiscovery(idx) {
-    const drafts = window.__vfDiscoveredDrafts || [];
+    const drafts = Array.isArray(discoveredDraftsVisible) ? discoveredDraftsVisible : [];
     const item = drafts[idx];
     if (!item) return;
     const shell = getCurrentDraftShell(activeDraftShell || getActiveWorkspacePanel());
@@ -2456,6 +2755,7 @@ async function useDraftFromDiscovery(idx) {
     clearMaterialLayoutList();
     syncDraftShellValues();
     await loadDraftInfo();
+    saveCurrentMixStrategyState();
     closeDraftPicker();
 }
 
@@ -2496,7 +2796,6 @@ async function useDraftFromDiscovery(idx) {
             const style = document.getElementById('ai_style')?.value || '产品种草';
             const duration = document.getElementById('ai_duration')?.value || '30';
             const points = document.getElementById('ai_points')?.value?.trim() || '';
-            const keyId = parseInt(document.getElementById('ai_key_id')?.value || '0', 10);
             if (!getToken()) {
                 setToolResult('ai_result', '请先登录后再使用 AI 生成功能。');
                 return;
@@ -2505,19 +2804,13 @@ async function useDraftFromDiscovery(idx) {
                 setToolResult('ai_result', '请先填写主题。');
                 return;
             }
-            if (!keyId) {
-                buildAiDraft();
-                setToolResult('ai_result', `${document.getElementById('ai_result')?.textContent || ''}\n\n未选择可用账号，已先用本地内容建议兜底。`);
-                return;
-            }
-            setToolResult('ai_result', '正在生成内容，请稍候...');
+            setToolResult('ai_result', '正在调用值班AI模型为您服务');
             try {
                 const prompt = `请为以下短视频生成创作脚本。\n主题：${topic}\n风格：${style}\n时长：${duration} 秒\n卖点：${points || '未提供'}\n输出：标题、3-6个镜头、字幕文案、收尾动作。`;
                 const res = await authFetch('/api/ai/generate', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        key_id: keyId,
                         task_type: 'text',
                         prompt,
                         max_tokens: 800
@@ -2528,10 +2821,14 @@ async function useDraftFromDiscovery(idx) {
                     throw new Error(data.error || data.message || 'AI 生成失败');
                 }
                 const output = data.text || data.content || data.result || JSON.stringify(data, null, 2);
-                setToolResult('ai_result', typeof output === 'string' ? output : JSON.stringify(output, null, 2));
+                const items = parseStoryboardItemsFromText(typeof output === 'string' ? output : JSON.stringify(output, null, 2));
+                if (items.length) {
+                    setToolResult('ai_result', buildStoryboardSrtText(items, Math.max(2, Number(duration) / 5 || 3)));
+                } else {
+                    setToolResult('ai_result', extractPlainTextFromAiPayload(typeof output === 'string' ? output : JSON.stringify(output, null, 2)));
+                }
             } catch (e) {
-                buildAiDraft();
-                setToolResult('ai_result', `${document.getElementById('ai_result')?.textContent || ''}\n\nAI 生成没有完成，已先切回本地建议：${e.message || e}`);
+                setToolResult('ai_result', `AI 灵感生成失败：${e.message || e}`);
             }
         }
 
@@ -2748,7 +3045,7 @@ async function useDraftFromDiscovery(idx) {
         }
 
         function addDiscoveredDraftsToExportQueue() {
-            const drafts = Array.isArray(window.__vfDiscoveredDraftsAll) ? window.__vfDiscoveredDraftsAll : [];
+            const drafts = Array.isArray(discoveredDraftsAll) ? discoveredDraftsAll : [];
             if (!drafts.length) {
                 setToolResult('export_result', '还没有最近发现的草稿，请先打开草稿选择器刷新。');
                 return;
@@ -2817,7 +3114,7 @@ async function useDraftFromDiscovery(idx) {
         }
 
         function addDiscoveredDraftsToSplitQueue() {
-            const drafts = Array.isArray(window.__vfDiscoveredDraftsAll) ? window.__vfDiscoveredDraftsAll : [];
+            const drafts = Array.isArray(discoveredDraftsAll) ? discoveredDraftsAll : [];
             if (!drafts.length) {
                 setToolResult('split_multi_result', '还没有最近发现的草稿，请先打开草稿选择器刷新。');
                 return;
@@ -3068,6 +3365,7 @@ function resetDraftInfo(message = '') {
     const activeShell = getCurrentDraftShell(getActiveWorkspacePanel());
     clearDraftShellSelection(activeShell, message || '');
     syncActiveDraftGlobals(activeShell);
+    loadedDraftDataPath = '';
     materialsConfig = [];
     materialSlotMeta = [];
     textsConfig = [];
@@ -3134,14 +3432,17 @@ async function loadDraftInfo() {
                     status: ''
                 });
                 syncActiveDraftGlobals(activeShell);
+                loadedDraftDataPath = draftPath;
                 materialsConfig = data.materials || [];
                 materialSlotMeta = Array.isArray(data.material_items) ? data.material_items : [];
                 textsConfig = data.texts || [];
                 draftTrackMeta = data.tracks || [];
                 updateDuoTrackOptions(data.tracks || [], data.segment_counts || {});
                 setWorkspaceSettings({
+                    last_draft_path: draftPath,
                     last_draft_version: currentDraftVersion
                 });
+                saveCurrentMixStrategyState();
 
                 if (materialsConfig.length > 0) {
                     if (dom.materialsList) {
@@ -3157,7 +3458,7 @@ async function loadDraftInfo() {
                         dom.textsArea.innerHTML = renderCompactTexts(textsConfig);
                     }
                     if (dom.partitionTextsArea) {
-                        dom.partitionTextsArea.innerHTML = renderPartitionTextInputs(materialsConfig, textsConfig.length);
+                        dom.partitionTextsArea.innerHTML = renderPartitionTextInputs(materialsConfig, textsConfig);
                     }
                 } else {
                     if (dom.textsArea) dom.textsArea.style.display = 'none';
@@ -3186,7 +3487,7 @@ async function loadDraftInfo() {
 
                 if (dom.draftStatus) {
                     const matCount = materialsConfig.length;
-                    const textCount = textsConfig.length;
+                    const textCount = getVisibleEditableTextItems(textsConfig).length;
                     dom.draftStatus.textContent = `当前草稿：${matCount} 个素材槽 / ${textCount} 段文字`;
                 }
                 setDraftShellState(activeShell, { status: dom.draftStatus?.textContent || '' });
@@ -3203,45 +3504,67 @@ async function loadDraftInfo() {
         }
 
         async function selectFolder() {
-            const folder = await requestBrowseFolder();
+            const currentPath = document.getElementById('folder_path')?.value?.trim()
+                || loadWorkspaceSettings()?.last_materials_root
+                || '';
+            const folder = await requestBrowseFolder(currentPath);
             document.getElementById('folder_path').value = folder || '';
             if (folder) {
                 pushRecentMaterialFolder(folder);
                 setWorkspaceSettings({last_materials_root: folder});
             }
+            saveCurrentMixStrategyState();
             updatePrimaryActionState();
         }
 
 function buildAssistantContext() {
     const shell = getCurrentDraftShell(getActiveWorkspacePanel());
     const shellState = getDraftShellState(shell);
+    const replaceMaterials = !!document.getElementById('replace_materials')?.checked;
+    const replaceAudios = !!document.getElementById('replace_audios')?.checked;
     return {
         draft_path: getDraftElement('path', shell)?.value?.trim() || shellState.path || '',
         materials_root: document.getElementById('folder_path')?.value?.trim() || '',
         strategy: getSelectedReplaceStrategy(),
+        replace_materials: replaceMaterials,
+        replace_audios: replaceAudios,
+        replace_type: getSelectedReplaceTypes(),
         slots: getActiveMaterialSlots(),
         text_count: textsConfig.length
             };
         }
 
         async function createMaterialLayout() {
+            return createMaterialLayoutWithOptions();
+        }
+
+        async function createMaterialLayoutWithOptions(options = {}) {
+            const silent = !!options.silent;
             if (!getToken()) {
-                notify('请先登录后再创建素材目录。', 'warn');
+                if (!silent) notify('请先登录后再创建素材目录。', 'warn');
                 return;
             }
             const statusEl = document.getElementById('materialLayoutStatus');
             const context = buildAssistantContext();
             if (!context.draft_path) {
                 if (statusEl) statusEl.textContent = '请先选择草稿。';
-                notify('请先选择草稿。', 'warn');
+                if (!silent) notify('请先选择草稿。', 'warn');
                 return;
             }
             if (!context.materials_root) {
                 if (statusEl) statusEl.textContent = '请先选择素材根目录。';
-                notify('请先选择素材根目录。', 'warn');
+                if (!silent) notify('请先选择素材根目录。', 'warn');
                 return;
             }
-            if (statusEl) statusEl.textContent = '正在创建素材目录...';
+            const existingLayout = currentMaterialLayout;
+            if (
+                existingLayout?.root &&
+                existingLayout.root === context.materials_root &&
+                (existingLayout.draft_path || '') === context.draft_path
+            ) {
+                context.materials_root = existingLayout.base_root || existingLayout.root;
+            }
+            if (statusEl) statusEl.textContent = silent ? '正在同步素材目录...' : '正在创建素材目录...';
             try {
                 const res = await authFetch('/api/materials/create-layout', {
                     method: 'POST',
@@ -3259,22 +3582,48 @@ function buildAssistantContext() {
             }
             currentMaterialLayout = hydrateMaterialLayout({
                 ...layout,
+                base_root: layout.base_root || context.materials_root,
                 draft_path: context.draft_path
             });
             renderMaterialLayoutList(currentMaterialLayout);
                 if (statusEl) statusEl.textContent = '';
+                saveCurrentMixStrategyState();
                 updatePrimaryActionState();
-                notify('素材目录已按草稿创建。', 'success');
+                if (!silent) notify('素材目录已按草稿创建。', 'success');
             } catch (e) {
                 clearMaterialLayoutList();
                 if (statusEl) statusEl.textContent = `创建失败：${e.message || e}`;
-                notify(e.message || '创建素材目录失败', 'warn');
+                saveCurrentMixStrategyState();
+                if (!silent) notify(e.message || '创建素材目录失败', 'warn');
             }
+        }
+
+        function maybeRefreshMaterialLayoutOnReplaceTypeChange() {
+            if (materialLayoutRefreshTimer) {
+                clearTimeout(materialLayoutRefreshTimer);
+                materialLayoutRefreshTimer = null;
+            }
+            const layout = currentMaterialLayout;
+            const folderPath = document.getElementById('folder_path')?.value?.trim() || '';
+            const draftPath = getDraftElement('path', getCurrentDraftShell(getActiveWorkspacePanel()))?.value?.trim() || '';
+            if (!layout?.folders?.length || !folderPath || !draftPath) {
+                return;
+            }
+            if ((layout.draft_path || '') !== draftPath) {
+                return;
+            }
+            if ((layout.root || '') !== folderPath) {
+                return;
+            }
+            materialLayoutRefreshTimer = setTimeout(() => {
+                createMaterialLayoutWithOptions({silent: true});
+                materialLayoutRefreshTimer = null;
+            }, 250);
         }
 
         async function selectAudioFolder() {
             const input = document.getElementById('audio_folder_path');
-            const folder = await requestBrowseFolder();
+            const folder = await requestBrowseFolder(input?.value?.trim() || loadWorkspaceSettings()?.last_audio_root || '');
             if (input) input.value = folder || '';
             if (folder) {
                 setWorkspaceSettings({last_audio_root: folder});
@@ -3283,7 +3632,7 @@ function buildAssistantContext() {
 
         async function selectDraftFolder() {
             const input = getDraftElement('path');
-            const folder = await requestBrowseFolder();
+            const folder = await requestBrowseFolder(input?.value?.trim() || loadWorkspaceSettings()?.drafts_folder || '');
             if (input) input.value = folder || '';
             if (folder) {
                 await loadDraftInfo();
@@ -3575,22 +3924,37 @@ async function submitBatch() {
 
             const textsInput = [];
             if (replaceTexts) {
+                const visibleTextItems = getVisibleEditableTextItems(textsConfig);
                 const globalTexts = [];
-                for (let i = 0; i < textsConfig.length; i++) {
+                for (let i = 0; i < visibleTextItems.length; i++) {
                     const input = document.getElementById(`text_${i}`);
                     globalTexts.push(input ? input.value : '');
                 }
-                let finalTexts = globalTexts.slice();
                 if (replaceStrategy === 'partition' && partitionTextMode === 'partition') {
-                    const partitionValues = Array.from(document.querySelectorAll('[id^="partition_text_"]'))
-                        .flatMap((node) => (node.value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
-                    partitionValues.slice(0, textsConfig.length).forEach((value, index) => {
-                        finalTexts[index] = value;
+                    const partitionTextItems = getVisiblePartitionTextItems(materialsConfig, textsConfig);
+                    for (let i = 0; i < partitionTextItems.length; i++) {
+                        const input = document.getElementById(`partition_text_${i}`);
+                        const partitionLines = input
+                            ? (input.value || '')
+                                .split(/\r?\n/)
+                                .map((line) => line.trim())
+                                .filter(Boolean)
+                            : [];
+                        textsInput.push({
+                            index: partitionTextItems[i]?.sourceIndex ?? i,
+                            contents: partitionLines.length ? partitionLines : [globalTexts[i] || ''],
+                            rule: 'order'
+                        });
+                    }
+                } else {
+                    globalTexts.forEach((value, index) => {
+                        textsInput.push({
+                            index: visibleTextItems[index]?.sourceIndex ?? index,
+                            contents: [value],
+                            rule: 'order'
+                        });
                     });
                 }
-                finalTexts.forEach((value, index) => {
-                    textsInput.push({index, contents: [value], rule: 'order'});
-                });
             }
 
             const payload = {
@@ -4383,19 +4747,11 @@ async function submitBatch() {
             }
         }
 
-        async function selectSplitOutputFolder() {
-            await selectSplitOutput();
-        }
-
         async function selectSplitSubtitle() {
             const filePath = await requestBrowseFile();
             if (filePath) {
                 document.getElementById('split_subtitle_path').value = filePath;
             }
-        }
-
-        async function selectSplitSubtitleFile() {
-            await selectSplitSubtitle();
         }
 
         async function selectSettingsDraftRoot() {
@@ -4602,6 +4958,11 @@ async function renameUserMaterialProject() {
             } catch (e) {
                 setInlineMessage(saveMsg, `设置加载失败：${e.message || e}`, 'error');
             }
+
+            if (settingsWorkspaceBindingsInitialized) {
+                return;
+            }
+            settingsWorkspaceBindingsInitialized = true;
 
             document.getElementById('saveSettingsBtn')?.addEventListener('click', async () => {
                 try {
@@ -5064,6 +5425,7 @@ async function renameUserMaterialProject() {
                     pushRecentMaterialFolder(value);
                     setWorkspaceSettings({last_materials_root: value});
                 }
+                saveCurrentMixStrategyState();
             });
             getAllDraftShells().forEach((shell) => {
                 const selectedBar = shell.querySelector('.draft-selected-bar');
@@ -5105,6 +5467,12 @@ async function renameUserMaterialProject() {
             if (settings.last_draft_version) {
                 currentDraftVersion = settings.last_draft_version;
             }
+            const initialMixState = getMixStrategyStoredState(currentMixStrategy);
+            if (initialMixState.draft_path) {
+                currentDraftPath = initialMixState.draft_path;
+            } else if (settings.last_draft_path) {
+                currentDraftPath = settings.last_draft_path;
+            }
             getAllDraftShells().forEach((shell, index) => {
                 shell.dataset.draftShellId = shell.dataset.draftShellId || `draft-shell-${index + 1}`;
                 shell.dataset.draftPath = '';
@@ -5122,7 +5490,10 @@ async function renameUserMaterialProject() {
             document.getElementById('replace_texts')?.addEventListener('change', syncMixReplaceControls);
             document.getElementById('replace_audios')?.addEventListener('change', syncMixReplaceControls);
             document.querySelectorAll('input[name="replace_type"]').forEach((input) => {
-                input.addEventListener('change', syncMixReplaceControls);
+                input.addEventListener('change', () => {
+                    syncMixReplaceControls();
+                    maybeRefreshMaterialLayoutOnReplaceTypeChange();
+                });
             });
             document.getElementById('partition_text_mode')?.addEventListener('change', syncPartitionTextStrategy);
             updateMixModeUI();
@@ -5186,15 +5557,6 @@ async function renameUserMaterialProject() {
                     'clip-shake': {kind: 'subtab', containerId: 'clipToolsGrid', target: 'clip-shake'}
                 }
             },
-            export: {
-                panelId: 'panel-export',
-                defaultItem: 'export-settings',
-                items: {
-                    'export-settings': {kind: 'subtab', containerId: 'panel-export', target: 'export-settings'},
-                    'export-batch': {kind: 'subtab', containerId: 'panel-export', target: 'export-batch'},
-                    'export-segments': {kind: 'subtab', containerId: 'panel-export', target: 'export-segments'}
-                }
-            },
             settings: {
                 panelId: 'panel-settings',
                 defaultItem: 'settings-basic-section',
@@ -5203,13 +5565,6 @@ async function renameUserMaterialProject() {
                     'settings-path-section': {kind: 'section', sectionId: 'settings-path-section'},
                     'settings-service-section': {kind: 'section', sectionId: 'settings-service-section'},
                     'settings-ai-section': {kind: 'section', sectionId: 'settings-ai-section'}
-                }
-            },
-            assistant: {
-                panelId: 'panel-assistant',
-                defaultItem: 'assistant-main',
-                items: {
-                    'assistant-main': {kind: 'panel', panelId: 'panel-assistant'}
                 }
             },
             account: {
@@ -5234,7 +5589,7 @@ async function renameUserMaterialProject() {
             }
         };
 
-        let activeWorkspaceNav = {group: 'assistant', item: 'assistant-main'};
+        let activeWorkspaceNav = {group: 'mix', item: 'group'};
 
         function getWorkspaceNavGroup(groupKey) {
             return groupKey ? WORKSPACE_NAV_CONFIG[groupKey] || null : null;
@@ -5277,6 +5632,10 @@ async function renameUserMaterialProject() {
             if (!entry) return;
             const targetPanel = document.getElementById(entry.panelId);
             if (!targetPanel) return;
+            const previousPanel = getActiveWorkspacePanel();
+            if (previousPanel?.id === 'panel-materials' && targetPanel.id !== 'panel-materials') {
+                saveCurrentMixStrategyState();
+            }
 
             activeWorkspaceNav = {group: entry.groupKey, item: entry.itemKey};
             document.querySelectorAll('.workspace-panel').forEach((panel) => {
@@ -5319,15 +5678,19 @@ async function renameUserMaterialProject() {
         function applyAiWorkspaceSection(itemKey) {
             const aiMakePanel = document.getElementById('panel-ai-make');
             const aiInspirationCard = document.getElementById('aiInspirationCard');
+            const aiCopyCard = document.getElementById('aiCopyCard');
             if (aiMakePanel) {
                 aiMakePanel.querySelectorAll('.tool-card').forEach((node) => {
                     if (!(node instanceof HTMLElement)) return;
-                    if (node.id === 'aiInspirationCard') return;
+                    if (node.id === 'aiInspirationCard' || node.id === 'aiCopyCard') return;
                     node.style.display = itemKey === 'make' ? '' : 'none';
                 });
             }
             if (aiInspirationCard) {
                 aiInspirationCard.style.display = itemKey === 'inspiration' ? '' : 'none';
+            }
+            if (aiCopyCard) {
+                aiCopyCard.style.display = itemKey === 'inspiration' ? '' : 'none';
             }
         }
 
@@ -5386,12 +5749,17 @@ async function renameUserMaterialProject() {
             aiCard.id = 'aiInspirationCard';
             aiCard.removeAttribute('data-subtab-group');
             aiCard.classList.add('ai-inspiration-card');
-            aiCard.style.display = '';
+            aiCard.style.display = 'none';
             aiCard.classList.remove('active', 'subtab-panel');
             aiCard.removeAttribute('data-subtab');
             aiCard.removeAttribute('data-subtab-display');
             aiPanel.appendChild(anchor);
             aiPanel.appendChild(aiCard);
+            const aiCopyCard = document.getElementById('aiCopyCard');
+            if (aiCopyCard) {
+                aiCopyCard.style.display = 'none';
+                aiPanel.appendChild(aiCopyCard);
+            }
         }
 
         function simplifyExportPanel() {
@@ -5399,6 +5767,12 @@ async function renameUserMaterialProject() {
                 const group = document.getElementById(id)?.closest('.form-group');
                 if (group) group.remove();
             });
+            const panel = document.querySelector('.sidebar-group[data-group="export"]');
+            if (panel) panel.remove();
+            const exportSettingsCard = document.querySelector('#panel-export [data-subtab-group="export-settings"]');
+            if (exportSettingsCard) exportSettingsCard.remove();
+            const exportPanel = document.getElementById('panel-export');
+            if (exportPanel) exportPanel.remove();
         }
 
         function prepareWorkspaceLayout() {
@@ -5444,9 +5818,9 @@ async function renameUserMaterialProject() {
 
         async function browseWorkspaceFolder(inputId) {
             try {
-                const folder = await requestBrowseFolder();
-                if (!folder) return;
                 const input = document.getElementById(inputId);
+                const folder = await requestBrowseFolder(input?.value?.trim() || '');
+                if (!folder) return;
                 if (input) input.value = folder;
             } catch (e) {}
         }
@@ -5585,9 +5959,6 @@ async function renameUserMaterialProject() {
             if (panelId === 'panel-account' && sectionId === 'account-vip-section' && getToken()) {
                 loadLicenseCardTypes();
             }
-            if (panelId === 'panel-account' && sectionId === 'account-contact-section') {
-                loadSiteSettings().catch(() => {});
-            }
         }
 
         function showWorkspacePanel(panelId, focusId = '', options = {}) {
@@ -5639,7 +6010,7 @@ async function renameUserMaterialProject() {
             activateHardSection('panel-account', 'account-vip-section');
             activateHardSection('panel-resource-exchange', 'resource-square-section');
             activateHardSection('panel-settings', 'settings-basic-section');
-            applyWorkspaceNavigation('assistant', 'assistant-main', {openActiveGroup: true, scroll: false});
+            applyWorkspaceNavigation('mix', 'group', {openActiveGroup: true, scroll: false});
         }
 
         function initSplitWorkspace() {
@@ -5650,8 +6021,6 @@ async function renameUserMaterialProject() {
             updateSplitModeUI();
             document.getElementById('split_mode')?.addEventListener('change', syncSplitMode);
             document.getElementById('split_mode')?.addEventListener('input', syncSplitMode);
-            document.addEventListener('change', syncSplitMode);
-            document.addEventListener('input', syncSplitMode);
         }
 
         function initEffectWorkspace() {
@@ -5680,23 +6049,6 @@ async function renameUserMaterialProject() {
                 });
                 applyDuoPreset(document.getElementById('duo_param_preset')?.value || '');
             }
-        }
-
-        function initAssistantWorkspace() {
-            document.getElementById('assistantPreviewBtn')?.addEventListener('click', previewAssistantCommand);
-            document.getElementById('assistantExecuteBtn')?.addEventListener('click', executeAssistantCommand);
-            document.getElementById('assistantRefreshLogsBtn')?.addEventListener('click', loadAssistantLogs);
-            document.querySelectorAll('[data-assistant-command]').forEach((node) => {
-                node.addEventListener('click', () => {
-                    const input = document.getElementById('assistantCommandInput');
-                    const command = node.getAttribute('data-assistant-command') || '';
-                    if (input && command) {
-                        input.value = command;
-                        input.focus();
-                    }
-                });
-            });
-            loadAssistantLogs();
         }
 
         function buildTutorialSearchQuery() {
@@ -5898,7 +6250,6 @@ async function renameUserMaterialProject() {
 
             initDraftWorkspace();
             initEffectWorkspace();
-            initAssistantWorkspace();
             initResourceExchangeWorkspace();
             initAccountTutorial();
             initSplitWorkspace();
@@ -5930,11 +6281,6 @@ async function renameUserMaterialProject() {
                 {id: 'clip-transform', label: '画面校正', indexes: [1]},
                 {id: 'clip-shake', label: '摇晃关键帧', indexes: [2]}
             ], {rootId: 'clipToolsGrid', hideNav: true});
-            initSecondaryTabs('panel-export', [
-                {id: 'export-segments', label: '片段导出', indexes: [0, 1]},
-                {id: 'export-batch', label: '批量导出', indexes: [2]},
-                {id: 'export-settings', label: '导出设置', indexes: [3]}
-            ], {hideNav: true});
             initSettingsWorkspace();
             await Promise.all([loadAiProviders(), loadAiKeys()]);
             initAiWorkspace();
@@ -6307,7 +6653,7 @@ function injectAiSettingsEnhancements() {
     presetCard.innerHTML = `<div class="tool-head"><div><h3>推荐接入</h3><p>点一下就把下方服务切到对应分类，并带入常用默认值。</p></div></div><div class="ai-provider-presets"><button class="ai-provider-preset" type="button" data-ai-preset="siliconflow"><strong>SiliconFlow</strong><span>脚本与生图统一使用</span></button><button class="ai-provider-preset" type="button" data-ai-preset="volc"><strong>火山 TTS</strong><span>配音模型</span></button></div>`;
     const promptCard = document.createElement('div');
     promptCard.className = 'tool-card';
-    promptCard.innerHTML = `<div class="tool-head"><div><h3>提示词默认配置</h3><p>系统会优先使用这里的默认模板，再叠加分镜结构和用户补充内容。</p></div></div><div class="settings-vertical"><div class="form-group"><label>脚本提示词默认模板</label><textarea id="settingsScriptPromptTemplate" rows="5" placeholder="例如：先整理人物、场景、动作、镜头与字幕。"></textarea></div><div class="form-group"><label>生图提示词默认模板</label><textarea id="settingsImagePromptTemplate" rows="5" placeholder="例如：突出人物一致性、场景风格、镜头语言和画面细节。"></textarea></div></div><div class="inline-actions"><button id="saveAiPromptSettingsBtn" class="primary-btn" type="button">保存提示词配置</button><div id="aiPromptSettingsSaveMsg" class="hint"></div></div>`;
+    promptCard.innerHTML = `<div class="tool-head"><div><h3>提示词默认配置</h3><p>系统会优先使用这里的默认模板，再叠加分镜结构和用户补充内容。</p></div></div><div class="settings-vertical"><div class="form-group"><label>脚本提示词默认模板</label><textarea id="settingsScriptPromptTemplate" rows="5" placeholder="例如：整理人物、场景、动作、镜头、情绪和剧情衔接，兼顾建立镜头与对话镜头。"></textarea></div><div class="form-group"><label>生图提示词默认模板</label><textarea id="settingsImagePromptTemplate" rows="5" placeholder="例如：兼顾人物一致性、场景氛围、动作瞬间、关键道具和镜头语言，不只偏人物特写。"></textarea></div></div><div class="inline-actions"><button id="saveAiPromptSettingsBtn" class="primary-btn" type="button">保存提示词配置</button><div id="aiPromptSettingsSaveMsg" class="hint"></div></div>`;
     stack.insertBefore(promptCard, providerCard);
     stack.insertBefore(presetCard, providerCard);
 }
@@ -6365,8 +6711,8 @@ function splitCoreAndExtraProviders(items = []) {
 
 function getAiProviderGroupMeta(groupKey) {
     const map = {
-        image: { title: '生图模型', badge: '生图', hint: '当前主链路优先使用 SiliconFlow 处理生图。' },
-        script: { title: '脚本模型', badge: '脚本', hint: '当前主链路优先使用 SiliconFlow 的文本模型整理文案和提示词。' },
+        image: { title: '生图模型', badge: '生图', hint: '当前主链路会优先使用你已启用的生图服务。' },
+        script: { title: '脚本模型', badge: '脚本', hint: '当前主链路会优先使用你已启用的脚本模型整理文案和提示词。' },
         audio: { title: '配音模型', badge: '配音', hint: '适合火山 TTS、语音合成和配音账号。' }
     };
     return map[groupKey] || map.script;
@@ -6671,6 +7017,7 @@ async function pollAiTask(taskId, statusId, resultId = '') {
                 if (resultEl) resultEl.value = task.result_text || task.result || '';
                 await refreshAiMaterials();
                 await loadMangaHistory();
+                await loadUserInfo();
                 return;
             }
             if (task.status === 'failed') {
@@ -6682,6 +7029,86 @@ async function pollAiTask(taskId, statusId, resultId = '') {
             if (statusEl) statusEl.textContent = e.message || '查询失败';
         }
     }, 2000);
+}
+
+function tryParseJsonText(rawText) {
+    const text = String(rawText || '').trim();
+    if (!text) return null;
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        const match = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+        if (!match) return null;
+        try {
+            return JSON.parse(match[1]);
+        } catch (nestedError) {
+            return null;
+        }
+    }
+}
+
+function extractPlainTextFromAiPayload(rawText) {
+    const text = String(rawText || '')
+        .replace(/^```(?:json|text)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+    if (!text) return '';
+    const parsed = tryParseJsonText(text);
+    if (!parsed) return text;
+    if (typeof parsed === 'string') return parsed.trim();
+    if (Array.isArray(parsed)) {
+        return parsed
+            .map((item) => extractPlainTextFromAiPayload(typeof item === 'string' ? item : JSON.stringify(item)))
+            .filter(Boolean)
+            .join('\n');
+    }
+    if (Array.isArray(parsed.shots) && parsed.shots.length) {
+        const dialogueLines = parsed.shots
+            .map((shot) => String(shot?.dialogue || shot?.text || '').trim())
+            .filter(Boolean);
+        if (dialogueLines.length) return dialogueLines.join('\n');
+        const sceneLines = parsed.shots
+            .map((shot) => String(shot?.scene || shot?.summary || '').trim())
+            .filter(Boolean);
+        if (sceneLines.length) return sceneLines.join('\n');
+        return '';
+    }
+    for (const field of ['text', 'content', 'result', 'message', 'answer', 'output']) {
+        const value = parsed[field];
+        if (typeof value === 'string' && value.trim()) {
+            return extractPlainTextFromAiPayload(value.trim());
+        }
+    }
+    return text;
+}
+
+function buildAiCopyPrompt(userPrompt, targetLength) {
+    const length = Math.max(20, parseInt(targetLength || '50', 10) || 50);
+    const safePrompt = String(userPrompt || '').trim();
+    return [
+        '请写一段中文纯文本口播文案。',
+        `目标字数：${length} 字左右，允许误差不超过 ${Math.max(6, Math.round(length * 0.1))} 字。`,
+        '输出要求：',
+        '1. 只输出最终文案正文。',
+        '2. 不要 JSON，不要 Markdown，不要代码块，不要标题，不要分点。',
+        '3. 不要解释，不要补充说明，不要返回镜头结构。',
+        '4. 语言自然，适合直接复制使用。',
+        '',
+        '文案需求：',
+        safePrompt
+    ].join('\n');
+}
+
+function looksLikeMojibake(value) {
+    const text = String(value || '');
+    if (!text) return false;
+    return /[锘鏅鏈绠鍚璁姝瑙褰鍔鐧诲綍娉ㄥ唽鎺堟潈婵€瑙勫垯淇濆瓨鍔犺浇瀹夊叏姒傝杩愮淮鏆傛棤绯荤粺鍙戝竷]/.test(text);
+}
+
+function sanitizeDisplayText(value, fallback = '') {
+    const text = String(value ?? '').trim();
+    if (!text) return fallback;
+    return looksLikeMojibake(text) ? (fallback || '') : text;
 }
 
 async function startAiVideo() {
@@ -6729,29 +7156,39 @@ async function startAiAudio() {
 }
 
 async function startAiText() {
-    const payload = {
-        key_id: parseInt(document.getElementById('ai_openai_key')?.value || '0', 10),
-        prompt: `${document.getElementById('ai_text_prompt')?.value?.trim() || ''}\n\n字数:${document.getElementById('ai_text_length')?.value || '50'}`
-    };
-    if (!payload.key_id || !payload.prompt.trim()) {
-        document.getElementById('ai_text_status').textContent = '请先到“软件设置 → AI账号管理”准备默认可用账号，再填写文案需求。';
+    const userPrompt = document.getElementById('ai_text_prompt')?.value?.trim() || '';
+    const targetLength = document.getElementById('ai_text_length')?.value || '50';
+    if (!userPrompt.trim()) {
+        document.getElementById('ai_text_status').textContent = '请先填写文案需求。';
         return;
     }
-    document.getElementById('ai_text_status').textContent = '正在提交，请稍候...';
+    const payload = {
+        prompt: buildAiCopyPrompt(userPrompt, targetLength)
+    };
+    document.getElementById('ai_text_status').textContent = '正在调用值班AI模型为您服务';
     const res = await authFetch('/api/ai/generate/text', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data = await res.json();
     if (!res.ok || data.ok === false) {
         document.getElementById('ai_text_status').textContent = data.error || '提交失败';
         return;
     }
-    pollAiTask(data.task_id, 'ai_text_status', 'ai_text_result');
-}
-
-function fillTextPanelFromAi() {
-    const text = document.getElementById('ai_text_result')?.value?.trim();
-    if (!text) return;
-    const firstInput = document.querySelector('#texts_area textarea[id^="text_"], #texts_area input[type="text"]');
-    if (firstInput) firstInput.value = text;
+    try {
+        const task = await pollAiTaskUntilDone(data.task_id, 'ai_text_status');
+        const resultEl = document.getElementById('ai_text_result');
+        const rawResult = typeof task.result_text === 'string'
+            ? task.result_text
+            : (typeof task.result === 'string' ? task.result : JSON.stringify(task.result || '', null, 2));
+        const plainText = extractPlainTextFromAiPayload(rawResult)
+            .replace(/^\s*```(?:json|text)?/i, '')
+            .replace(/```\s*$/i, '')
+            .trim();
+        if (resultEl) resultEl.value = plainText;
+        await refreshAiMaterials();
+        await loadMangaHistory();
+        await loadUserInfo();
+    } catch (error) {
+        document.getElementById('ai_text_status').textContent = error.message || '生成失败';
+    }
 }
 
 const STORYBOARD_SHOT_TYPE_LABELS = {
@@ -6759,6 +7196,22 @@ const STORYBOARD_SHOT_TYPE_LABELS = {
     character: '人物镜头',
     dialogue: '对白镜头',
     action: '动作镜头'
+};
+const STORYBOARD_GENRE_LABELS = {
+    fantasy: '玄幻国漫',
+    urban: '都市短剧',
+    costume: '古风',
+    campus: '校园',
+    scifi: '科幻',
+    suspense: '悬疑'
+};
+const STORYBOARD_STYLE_LABELS = {
+    modern_manhua: '现代国漫',
+    xianxia_manhua: '仙侠国漫',
+    ancient_manhua: '古风国漫',
+    ink_wash: '水墨国风',
+    cinematic_illustration: '电影质感插画',
+    dark_realism: '暗黑写实'
 };
 
 function normalizeStoryboardCharacters(value) {
@@ -6772,6 +7225,16 @@ function normalizeStoryboardCharacters(value) {
 
 function cleanupStoryboardText(value) {
     return String(value || '').replace(/\r/g, '').replace(/\u3000/g, ' ').trim();
+}
+
+function getStoryboardGenre() {
+    const raw = String(document.getElementById('storyboard_genre')?.value || 'fantasy').trim().toLowerCase();
+    return STORYBOARD_GENRE_LABELS[raw] ? raw : 'fantasy';
+}
+
+function getStoryboardStyle() {
+    const raw = String(document.getElementById('storyboard_style')?.value || 'modern_manhua').trim().toLowerCase();
+    return STORYBOARD_STYLE_LABELS[raw] ? raw : 'modern_manhua';
 }
 
 function detectStoryboardShotType(value, fallbackText = '') {
@@ -6791,6 +7254,9 @@ function normalizeStoryboardItem(item, index) {
     const emotion = cleanupStoryboardText(item?.emotion || '');
     const speaker = cleanupStoryboardText(item?.speaker || '');
     const characters = normalizeStoryboardCharacters(item?.characters || speaker);
+    const visualFocus = cleanupStoryboardText(item?.visual_focus || item?.focus || '');
+    const styleHint = cleanupStoryboardText(item?.style_hint || item?.style || '');
+    const consistencyAnchor = cleanupStoryboardText(item?.consistency_anchor || item?.character_anchor || '');
     const shotType = detectStoryboardShotType(item?.shot_type || item?.type || '', `${scene} ${dialogue} ${visualAction} ${camera}`);
     const imagePromptText = cleanupStoryboardText(item?.image_prompt_text || [
         characters.length ? `人物：${characters.join('、')}` : '',
@@ -6799,6 +7265,8 @@ function normalizeStoryboardItem(item, index) {
         visualAction ? `动作：${visualAction}` : '',
         emotion ? `情绪：${emotion}` : '',
         camera ? `镜头：${camera}` : '',
+        visualFocus ? `主体焦点：${visualFocus}` : '',
+        styleHint ? `风格：${styleHint}` : '',
         dialogue ? '保留说话状态和对白氛围，不要做成纯风景。' : ''
     ].filter(Boolean).join('，'));
     return {
@@ -6812,6 +7280,9 @@ function normalizeStoryboardItem(item, index) {
         speaker,
         characters,
         shot_type: shotType,
+        visual_focus: visualFocus,
+        style_hint: styleHint,
+        consistency_anchor: consistencyAnchor,
         image_prompt_text: imagePromptText
     };
 }
@@ -6840,21 +7311,80 @@ function collectStoryboardRecurringCharacters(limit = 4) {
         .map(([name]) => name);
 }
 
+function getStoryboardNeighborContext(index) {
+    const items = Array.isArray(storyboardItemsCache) ? storyboardItemsCache : [];
+    const currentIndex = items.findIndex((entry) => Number(entry?.index || 0) === Number(index || 0));
+    if (currentIndex < 0) return '';
+    const previous = currentIndex > 0 ? normalizeStoryboardItem(items[currentIndex - 1], currentIndex) : null;
+    const next = currentIndex < items.length - 1 ? normalizeStoryboardItem(items[currentIndex + 1], currentIndex + 2) : null;
+    const parts = [];
+    if (previous) {
+        parts.push(`上一镜头：${cleanupStoryboardText(previous.scene || previous.dialogue || previous.visual_action || '')}`);
+    }
+    if (next) {
+        parts.push(`下一镜头：${cleanupStoryboardText(next.scene || next.dialogue || next.visual_action || '')}`);
+    }
+    return parts.filter(Boolean).join('；');
+}
+
 function buildEnhancedStoryboardImagePrompt(item, index = 0) {
     const normalized = normalizeStoryboardItem(item || {}, index || 1);
+    const genre = getStoryboardGenre();
+    const genreLabel = STORYBOARD_GENRE_LABELS[genre] || STORYBOARD_GENRE_LABELS.fantasy;
+    const style = getStoryboardStyle();
+    const styleLabel = STORYBOARD_STYLE_LABELS[style] || STORYBOARD_STYLE_LABELS.modern_manhua;
     const globalContext = buildStoryboardGlobalContext();
     const recurringCharacters = collectStoryboardRecurringCharacters();
-    const characters = normalized.characters.length ? normalized.characters : recurringCharacters;
+    const isSceneShot = normalized.shot_type === 'scene';
+    const shouldPreferCharacters = !isSceneShot || normalized.characters.length > 0 || !!normalized.speaker;
+    const characters = shouldPreferCharacters
+        ? (normalized.characters.length ? normalized.characters : recurringCharacters)
+        : [];
+    const consistencyAnchor = !isSceneShot && normalized.consistency_anchor && /人物|角色|服饰|发型|面容|表情|年龄|体态|气质/.test(normalized.consistency_anchor)
+        ? normalized.consistency_anchor
+        : '';
+    const imagePromptDetail = isSceneShot
+        ? cleanupStoryboardText((normalized.image_prompt_text || '').replace(/远处隐约可见[^。；\n]*人物[^。；\n]*/g, '').replace(/远处隐约可见[^。；\n]*身影[^。；\n]*/g, '').trim())
+        : normalized.image_prompt_text;
+    const neighborContext = getStoryboardNeighborContext(normalized.index || index);
+    const sceneVisualMap = {
+        fantasy: '优先出现扭曲云层、黑色裂隙、悬浮碎石、破碎山体、能量风暴、暗色空间和危险压迫感，不要蓝天白云、草地花海、松树山路、峡谷栈道和传统仙山云海。',
+        urban: '优先出现街道、楼宇、办公室、住宅、电梯、商场、夜色灯光等真实都市空间，不要奇幻大场面。',
+        costume: '优先出现楼阁、庭院、山水、雾气、屏风、灯笼、古建筑细节，不要现代设施。',
+        campus: '优先出现教室、走廊、操场、食堂、宿舍、课桌等校园空间，不要史诗级空景。',
+        scifi: '优先出现实验室、舰桥、未来都市、机械结构、能量装置、冷色灯光和秩序化科技空间。',
+        suspense: '优先出现走廊、门窗、雨夜、废弃空间、局部光源、阴影和不确定危险，不要治愈风景。'
+    };
+    const shotFocusMap = {
+        scene: '画面重心放在世界观建立、环境氛围和空间关系，主体必须是场景，不要强行塞入角色。',
+        character: '以人物特写或半身为主，突出脸部、服饰和表情一致性。',
+        dialogue: '突出说话中的人物状态、嘴型趋势和对话张力，但画面不要出现字幕。',
+        action: '强调动作瞬间和姿态方向，画面要有动态感和明确主体。'
+    };
     const promptLines = [
-        characters.length ? `人物主体：${characters.join('、')}，保持同一角色形象稳定、脸部和发型连续一致。` : '人物主体：如果有人物出镜，保持角色脸部、发型、服饰和体态稳定一致。',
+        '请按中文短剧/国漫分镜插画的要求生图，只输出单镜头画面，不要出现文字、字幕、水印、logo。',
+        `题材类型：${genreLabel}。画面风格和场景元素必须服务于这一题材，不要滑向无关题材。`,
+        `画面风格：${styleLabel}。保持统一风格，不要让风格描述抢过镜头叙事。`,
+        isSceneShot
+            ? '人物主体：这是场景建立镜头，不是人物特写，不是角色海报，不是半身像。人物如需出现，也只能作为远景中的极小剪影，不能成为主体。'
+            : (characters.length ? `人物主体：${characters.join('、')}。保持同一角色的脸部、发型、服饰、年龄感和体态连续一致。` : '人物主体：如果这一镜确实有人物出镜，再保持角色脸部、发型、服饰和体态稳定一致。'),
+        consistencyAnchor ? `人物一致性锚点：${consistencyAnchor}。` : '',
         normalized.setting ? `场景环境：${normalized.setting}。` : '',
         normalized.scene ? `画面主体：${normalized.scene}。` : '',
+        normalized.visual_focus ? `视觉焦点：${normalized.visual_focus}。` : '',
         normalized.visual_action ? `动作设计：${normalized.visual_action}。` : '',
-        normalized.camera ? `镜头语言：${normalized.camera}，强调短剧分镜感、主体明确、构图干净。` : '镜头语言：短剧分镜感，主体明确，构图干净，避免纯风景空镜。',
+        normalized.camera ? `镜头语言：${normalized.camera}。` : '镜头语言：短剧分镜感，主体明确，构图干净，避免纯风景空镜。',
+        shotFocusMap[normalized.shot_type] || '',
+        isSceneShot ? '硬性要求：广角大全景，环境主导，世界观建立镜头。禁止人物特写、半身像、美女立绘、单人站立海报、角色封面。' : '',
+        isSceneShot ? '人物限制：如果人物出现，只能作为远景极小黑色剪影，面积不超过画面3%，不能看清脸，不能占据视觉中心。' : '',
+        isSceneShot ? `场景翻译：${sceneVisualMap[genre] || sceneVisualMap.fantasy}` : '',
         normalized.emotion ? `情绪氛围：${normalized.emotion}。` : '',
+        normalized.style_hint ? `风格提示：${normalized.style_hint}。` : '',
         normalized.dialogue ? `对白氛围：保留“${normalized.dialogue}”对应的说话状态、情绪张力和表演感，但画面不要出现字幕文字。` : '',
         globalContext ? `剧情背景：${globalContext}。当前镜头必须与这段剧情保持连续，不要跳到无关画面。` : '',
-        '画面要求：中文短剧/国漫分镜风格，单镜头叙事，主体突出，层次清晰，光影自然，禁止英文、字幕、水印、logo、说明文字，避免多人拥挤和杂乱背景。'
+        neighborContext ? `镜头衔接：${neighborContext}。当前画面要能与前后镜头自然拼接。` : '',
+        imagePromptDetail ? `补充细节：${imagePromptDetail}。` : '',
+        '画面要求：主体突出，层次清晰，光影自然，表情和动作明确，避免多人拥挤、畸形手、崩坏五官、杂乱背景和无关元素。'
     ].filter(Boolean);
     return promptLines.join('\n');
 }
@@ -6985,7 +7515,7 @@ function updateStoryboardWorkbenchState() {
 
     if (promptHintEl) {
         if (hasPrompt) {
-            promptHintEl.textContent = '当前提示词已就绪，建议先确认人物、场景和动作，再开始生图。';
+            promptHintEl.textContent = '';
         } else if (itemCount > 0) {
             promptHintEl.textContent = '先从下方镜头卡片点“用于生图”，再做少量补充，比手写一整段更稳。';
         } else {
@@ -6996,14 +7526,24 @@ function updateStoryboardWorkbenchState() {
 
 function buildStoryboardPrompt(sourceText, durationSeconds) {
     const scriptTemplate = cleanupStoryboardText(document.getElementById('settingsScriptPromptTemplate')?.value || '');
+    const genre = getStoryboardGenre();
+    const genreLabel = STORYBOARD_GENRE_LABELS[genre] || STORYBOARD_GENRE_LABELS.fantasy;
+    const style = getStoryboardStyle();
+    const styleLabel = STORYBOARD_STYLE_LABELS[style] || STORYBOARD_STYLE_LABELS.modern_manhua;
     return [
         scriptTemplate,
         '请把下面文案整理成适合短视频漫剧的结构化分镜。',
+        `题材类型固定为：${genreLabel}。请按这个题材去组织镜头、场景、人物、动作和氛围。`,
+        `整体视觉风格固定为：${styleLabel}。style_hint 只描述当前镜头的气质变化，不要偏离这个总风格。`,
         '只返回 JSON，不要解释，不要 Markdown 代码块。',
-        '返回格式：{"items":[{"index":1,"scene":"","dialogue":"","visual_action":"","setting":"","camera":"","emotion":"","speaker":"","characters":[],"shot_type":"scene"}]}',
+        '返回格式：{"items":[{"index":1,"scene":"","dialogue":"","visual_action":"","setting":"","camera":"","emotion":"","speaker":"","characters":[],"shot_type":"scene","visual_focus":"","style_hint":"","consistency_anchor":"","image_prompt_text":""}]}',
         'shot_type 只能是：scene、character、dialogue、action。',
+        'visual_focus 用来描述这张图最应该被看见的主体焦点。',
+        'style_hint 用来描述这条镜头的风格和氛围，但不要写成模型参数。',
+        'consistency_anchor 用来概括人物固定特征，方便后续镜头保持一致。',
+        'image_prompt_text 直接写成适合生图的中文画面描述，尽量完整，不要出现字幕、台词原文、logo、水印。',
         `默认每条字幕时长大约 ${Number(durationSeconds || 3)} 秒，但你不需要输出时间轴。`,
-        '要求：对白镜头要尽量保留说话人；有人物时把人物名放进 characters；画面描述只写能看见的内容。',
+        '要求：对白镜头要尽量保留说话人；有人物时把人物名放进 characters；画面描述只写能看见的内容；同一人物在多条镜头里要保持外观连续。',
         '',
         sourceText
     ].join('\n');
@@ -7023,15 +7563,29 @@ function setStoryboardImagePrompt(value, item = null) {
     updateStoryboardWorkbenchState();
 }
 
+function buildStoryboardImageSupplement(item, index = 0) {
+    const normalized = normalizeStoryboardItem(item || {}, index || 1);
+    const isSceneShot = normalized.shot_type === 'scene';
+    const detail = isSceneShot
+        ? cleanupStoryboardText((normalized.image_prompt_text || '').replace(/远处隐约可见[^。；\n]*人物[^。；\n]*/g, '').replace(/远处隐约可见[^。；\n]*身影[^。；\n]*/g, '').trim())
+        : cleanupStoryboardText(normalized.image_prompt_text || '');
+    const fallback = cleanupStoryboardText([
+        normalized.scene || '',
+        normalized.visual_action || '',
+        normalized.visual_focus ? `重点：${normalized.visual_focus}` : ''
+    ].filter(Boolean).join('，'));
+    return detail || fallback;
+}
+
 function useStoryboardSentenceForImage(index) {
     const target = Number(index || 0);
     const item = storyboardItemsCache.find((entry) => Number(entry.index || 0) === target);
     if (!item) return;
-    const enhancedPrompt = buildEnhancedStoryboardImagePrompt(item, target);
-    setStoryboardImagePrompt(enhancedPrompt || item.image_prompt_text || item.scene || item.dialogue || '', item);
+    const supplement = buildStoryboardImageSupplement(item, target);
+    setStoryboardImagePrompt(supplement || item.image_prompt_text || item.scene || item.dialogue || '', item);
     const statusEl = document.getElementById('ai_storyboard_image_status');
     const promptInput = document.getElementById('ai_storyboard_image_prompt');
-    if (statusEl) statusEl.textContent = `已带入镜头 ${target} 的强化生图提示词。请先看上方提示词，再决定是否直接生图。`;
+    if (statusEl) statusEl.textContent = `已带入镜头 ${target} 的补充描述。题材、风格和镜头规则将由系统按结构化字段自动生成。`;
     if (promptInput) {
         promptInput.focus();
         promptInput.scrollIntoView({behavior: 'smooth', block: 'center'});
@@ -7041,9 +7595,8 @@ function useStoryboardSentenceForImage(index) {
 }
 
 function buildStoryboardImagePrompt(rawPrompt) {
-    const imageTemplate = cleanupStoryboardText(document.getElementById('settingsImagePromptTemplate')?.value || '');
     const prompt = cleanupStoryboardText(rawPrompt || '');
-    return [imageTemplate, prompt].filter(Boolean).join('\n\n');
+    return prompt;
 }
 
 function buildStoryboardScriptForManga() {
@@ -7077,7 +7630,7 @@ function openStoryboardNextStep(target) {
         return;
     }
     if (target === 'mix') {
-        applyWorkspaceNavigation('mix', 'mix-mode-group', {openActiveGroup: true});
+        applyWorkspaceNavigation('mix', 'group', {openActiveGroup: true});
         notify('已切到批量混剪，把当前生成图片放进对应槽位目录即可继续。', 'success');
     }
 }
@@ -7177,8 +7730,13 @@ async function startAiStoryboardImage() {
     const promptInput = document.getElementById('ai_storyboard_image_prompt');
     const size = document.getElementById('storyboard_image_size')?.value || '1080x1920';
     const status = document.getElementById('ai_storyboard_image_status');
-    const result = document.getElementById('ai_storyboard_image_result');
     const prompt = cleanupStoryboardText(promptInput?.value || '');
+    let storyboardItem = null;
+    try {
+        storyboardItem = promptInput?.dataset?.storyboardItem ? JSON.parse(promptInput.dataset.storyboardItem) : null;
+    } catch (e) {
+        storyboardItem = null;
+    }
     if (!prompt) {
         if (status) status.textContent = '请先准备提示词。';
         return;
@@ -7191,42 +7749,54 @@ async function startAiStoryboardImage() {
         previousLatestId = 0;
     }
     if (status) status.textContent = '正在生图，请稍候...';
-    if (result) result.textContent = '正在生成图片...';
     const res = await authFetch('/api/ai/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             task_type: 'image',
             prompt: buildStoryboardImagePrompt(prompt),
-            size
+            size,
+            extra_body: {
+                prompt_mode: storyboardItem ? 'structured_storyboard' : 'free_prompt',
+                prompt_supplement: prompt,
+                shot_type: storyboardItem?.shot_type || 'character',
+                genre: getStoryboardGenre(),
+                style_key: getStoryboardStyle(),
+                style_label: STORYBOARD_STYLE_LABELS[getStoryboardStyle()] || STORYBOARD_STYLE_LABELS.modern_manhua,
+                scene_character_policy: (storyboardItem?.shot_type || 'character') === 'scene' ? 'forbid' : 'follow_prompt',
+                speaker: storyboardItem?.speaker || '',
+                characters: Array.isArray(storyboardItem?.characters) ? storyboardItem.characters : [],
+                scene: storyboardItem?.scene || '',
+                dialogue: storyboardItem?.dialogue || '',
+                visual_action: storyboardItem?.visual_action || '',
+                setting: storyboardItem?.setting || '',
+                camera: storyboardItem?.camera || '',
+                emotion: storyboardItem?.emotion || '',
+                visual_focus: storyboardItem?.visual_focus || '',
+                style_hint: storyboardItem?.style_hint || '',
+                consistency_anchor: storyboardItem?.consistency_anchor || '',
+                image_prompt_text: storyboardItem?.image_prompt_text || '',
+                global_context: storyboardItem ? buildStoryboardGlobalContext() : '',
+                neighbor_context: storyboardItem ? getStoryboardNeighborContext(storyboardItem?.index || 0) : '',
+            }
         })
     });
     const data = await res.json();
     if (!res.ok || data.ok === false) {
         if (status) status.textContent = data.error || '生图失败';
-        if (result) result.textContent = data.error || '生图失败';
         return;
     }
     try {
         const imageItems = await fetchLatestUserMaterial('image');
         const latest = imageItems.find((item) => Number(item.id || 0) !== previousLatestId) || imageItems[0] || null;
-        if (latest && latest.id) {
-            const previewUrl = buildAuthedMaterialFileUrl(latest.id);
-            result.innerHTML = `
-                <div style="margin-bottom:12px;"><img src="${previewUrl}" alt="storyboard image" style="max-width:100%; border-radius:16px;"></div>
-                <div class="storyboard-sentence-text">已生成图片素材 #${latest.id}</div>
-                <div class="storyboard-sentence-actions"><a class="effect-add" href="${previewUrl}" target="_blank" rel="noopener">打开预览</a><a class="effect-add" href="${previewUrl}" download>下载图片</a></div>
-            `;
-        } else {
-            result.textContent = data.path || '图片已生成，请到最近 AI 素材查看。';
-        }
-        if (status) status.textContent = '图片生成完成。';
+        if (status) status.textContent = latest && latest.id
+            ? `图片已生成，已加入最近 AI 图片（#${latest.id}）。`
+            : '图片已生成，请到最近 AI 图片查看。';
         storyboardRecentPage = 1;
         await refreshAiMaterials();
         updateStoryboardWorkbenchState();
     } catch (e) {
         if (status) status.textContent = '图片已生成，但预览读取失败。';
-        result.textContent = data.path || e.message || '图片已生成，请到最近 AI 素材查看。';
         updateStoryboardWorkbenchState();
     }
 }
@@ -7258,23 +7828,24 @@ function renderStoryboardRecentImages() {
     if (prevBtn) prevBtn.disabled = storyboardRecentPage <= 1;
     if (nextBtn) nextBtn.disabled = storyboardRecentPage >= totalPages;
 
-    storyboardBox.innerHTML = pageItems.length ? pageItems.map((item) => {
+    storyboardBox.innerHTML = pageItems.length ? pageItems.map((item, idx) => {
         const materialId = Number(item.id || 0);
         const previewUrl = buildAuthedMaterialFileUrl(materialId);
         const checked = storyboardRecentSelectedIds.has(materialId) ? 'checked' : '';
+        const orderLabel = `第 ${start + idx + 1} 张`;
         return `<article class="storyboard-recent-card">
             <div class="storyboard-recent-preview">
-                <img src="${previewUrl}" alt="AI 图片 #${materialId || '-'}">
+                <label class="storyboard-recent-check" aria-label="选择${orderLabel}">
+                    <input type="checkbox" value="${materialId}" onchange="toggleStoryboardRecentSelection(${materialId}, this.checked)" ${checked}>
+                    <span class="storyboard-recent-check-indicator"></span>
+                </label>
+                <img src="${previewUrl}" alt="${orderLabel}">
             </div>
             <div class="storyboard-recent-body">
-                <div class="storyboard-recent-meta">
-                    <strong>图片 #${materialId || '-'}</strong>
-                    <span class="key-badge">${escapeHtml(item.source || 'AI')}</span>
-                    <label class="storyboard-recent-check"><input type="checkbox" value="${materialId}" onchange="toggleStoryboardRecentSelection(${materialId}, this.checked)" ${checked}> 选中</label>
-                </div>
-                <div class="key-actions">
-                    <a class="effect-add" href="${previewUrl}" target="_blank" rel="noopener">预览</a>
-                    <a class="effect-add" href="${previewUrl}" download>下载</a>
+                <strong class="storyboard-recent-title">${orderLabel}</strong>
+                <div class="storyboard-recent-actions">
+                    <button class="effect-add" type="button" onclick="openStoryboardRecentPreview(${materialId})">预览</button>
+                    <button class="effect-add" type="button" onclick="downloadStoryboardRecentSingle(${materialId})">下载</button>
                 </div>
             </div>
         </article>`;
@@ -7325,19 +7896,88 @@ function downloadStoryboardRecentSelected() {
         notify('请先勾选本页要下载的图片。', 'warning');
         return;
     }
-    ids.forEach((id, index) => {
-        const url = buildAuthedMaterialFileUrl(id);
-        window.setTimeout(() => {
-            const link = document.createElement('a');
-            link.href = url;
-            link.setAttribute('download', '');
-            link.rel = 'noopener';
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-        }, index * 120);
-    });
-    notify(`已开始下载 ${ids.length} 张图片。`, 'success');
+    (async () => {
+        for (let index = 0; index < ids.length; index += 1) {
+            const id = ids[index];
+            try {
+                await downloadStoryboardRecentSingle(id, {silent: index !== ids.length - 1});
+            } catch (error) {
+                notify(error.message || '下载失败', 'error');
+                break;
+            }
+        }
+    })();
+    notify(`已开始处理 ${ids.length} 张图片的下载。`, 'success');
+}
+
+async function fetchStoryboardRecentMaterial(materialId) {
+    const id = Number(materialId || 0);
+    if (!id) throw new Error('图片编号无效');
+    const res = await authFetch(`/api/user/materials/file/${id}`);
+    if (!res.ok) {
+        let message = '读取图片失败';
+        try {
+            const data = await res.json();
+            message = data.error || message;
+        } catch (e) {}
+        throw new Error(message);
+    }
+    const blob = await res.blob();
+    const contentDisposition = res.headers.get('content-disposition') || '';
+    const match = contentDisposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+    const filename = match ? decodeURIComponent(match[1].replace(/"/g, '')) : `storyboard-${id}.png`;
+    return {blob, filename};
+}
+
+async function openStoryboardRecentPreview(materialId) {
+    const previewModal = document.getElementById('storyboardPreviewModal');
+    const previewImage = document.getElementById('storyboardPreviewImage');
+    if (!previewModal || !previewImage) return;
+    try {
+        const {blob} = await fetchStoryboardRecentMaterial(materialId);
+        const objectUrl = URL.createObjectURL(blob);
+        closeStoryboardPreview();
+        previewImage.src = objectUrl;
+        previewImage.dataset.objectUrl = objectUrl;
+        previewModal.classList.add('open');
+        previewModal.style.display = 'flex';
+        previewModal.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('storyboard-preview-open');
+    } catch (error) {
+        throw error;
+    }
+}
+
+function closeStoryboardPreview() {
+    const previewModal = document.getElementById('storyboardPreviewModal');
+    const previewImage = document.getElementById('storyboardPreviewImage');
+    if (previewImage?.dataset?.objectUrl) {
+        URL.revokeObjectURL(previewImage.dataset.objectUrl);
+        previewImage.dataset.objectUrl = '';
+    }
+    if (previewImage) previewImage.src = '';
+    if (previewModal) {
+        previewModal.classList.remove('open');
+        previewModal.style.display = 'none';
+        previewModal.setAttribute('aria-hidden', 'true');
+    }
+    document.body.classList.remove('storyboard-preview-open');
+}
+
+async function downloadStoryboardRecentSingle(materialId, options = {}) {
+    const {blob, filename} = await fetchStoryboardRecentMaterial(materialId);
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+    if (!options.silent) {
+        notify('图片已开始下载。', 'success');
+    }
 }
 
 async function refreshAiMaterials() {
@@ -7688,30 +8328,6 @@ async function redownloadFromHistory(id) {
     }
     renderMangaDraftResult(data);
     setMangaStatus(data.message || '已重新生成');
-}
-
-async function openOpenclawLogModal() {
-    const modal = document.getElementById('openclawLogModal');
-    if (!modal) return;
-    modal.classList.add('open');
-    modal.setAttribute('aria-hidden', 'false');
-    const res = await authFetch('/api/openclaw/logs?limit=200');
-    const data = await res.json();
-    if (document.getElementById('openclaw_log_path')) document.getElementById('openclaw_log_path').textContent = data.path || '';
-    if (document.getElementById('openclaw_log_content')) document.getElementById('openclaw_log_content').textContent = data.content || '';
-}
-
-function closeOpenclawLogModal() {
-    const modal = document.getElementById('openclawLogModal');
-    if (!modal) return;
-    modal.classList.remove('open');
-    modal.setAttribute('aria-hidden', 'true');
-}
-
-async function copyOpenclawLogPath() {
-    const text = document.getElementById('openclaw_log_path')?.textContent || '';
-    if (!text) return;
-    await navigator.clipboard.writeText(text);
 }
 
 function initAiWorkspace() {

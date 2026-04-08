@@ -895,6 +895,38 @@ def _build_text_replacement_map(texts_input):
     return replacements
 
 
+def _resolve_batch_texts_input(texts_input, batch_index):
+    if not isinstance(texts_input, list):
+        return texts_input
+
+    resolved = []
+    for item in texts_input:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index")
+        contents = item.get("contents") or []
+        if not isinstance(idx, int):
+            continue
+        if not isinstance(contents, list):
+            contents = [contents]
+        normalized = []
+        for content in contents:
+            if content is None:
+                continue
+            normalized.append(str(content))
+        if not normalized:
+            normalized = [""]
+        selected_index = min(max(int(batch_index or 0), 0), len(normalized) - 1)
+        resolved.append(
+            {
+                "index": idx,
+                "contents": [normalized[selected_index]],
+                "rule": item.get("rule") or "order",
+            }
+        )
+    return resolved
+
+
 def _collect_user_material_overrides(
     material_names,
     materials_root,
@@ -904,12 +936,14 @@ def _collect_user_material_overrides(
     sequence_clip_count,
     batch_index,
     sequence_cache_root,
+    selection_offset=0,
 ):
     user_files = {}
     folder_cache = {}
     pool_files = []
     group_folders = []
     partition_map = {}
+    effective_batch_index = max(0, int(selection_offset or 0)) + max(0, int(batch_index or 0))
 
     if replace_strategy == 'mix':
         pool_files = _list_media_files(materials_root, replace_type)
@@ -927,7 +961,7 @@ def _collect_user_material_overrides(
     for idx, fname in enumerate(material_names or []):
         user_file = None
         if replace_strategy == 'mix':
-            user_file = _pick_from_list(pool_files, replace_mode, batch_index + idx)
+            user_file = _pick_from_list(pool_files, replace_mode, effective_batch_index + idx)
         elif replace_strategy == 'sequence':
             if not group_folders:
                 group_folders = _list_subfolders(materials_root)
@@ -937,7 +971,7 @@ def _collect_user_material_overrides(
                 if files is None:
                     files = _list_media_files(folder, 'video')
                     folder_cache[folder] = files
-                sequence_files = _pick_sequence_files(files, replace_mode, batch_index, sequence_clip_count)
+                sequence_files = _pick_sequence_files(files, replace_mode, effective_batch_index, sequence_clip_count)
                 if sequence_files:
                     composed_target = _build_sequence_output_path(
                         sequence_cache_root,
@@ -957,12 +991,12 @@ def _collect_user_material_overrides(
                 if files is None:
                     files = _list_media_files(folder, replace_type)
                     folder_cache[folder] = files
-                user_file = _pick_from_list(files, replace_mode, batch_index)
+                user_file = _pick_from_list(files, replace_mode, effective_batch_index)
         else:
             if not group_folders:
                 if not pool_files:
                     pool_files = _list_media_files(materials_root, replace_type)
-                user_file = _pick_from_list(pool_files, replace_mode, batch_index + idx)
+                user_file = _pick_from_list(pool_files, replace_mode, effective_batch_index + idx)
             elif len(group_folders) > 0:
                 if idx < len(group_folders):
                     folder = group_folders[idx]
@@ -970,7 +1004,7 @@ def _collect_user_material_overrides(
                     if files is None:
                         files = _list_media_files(folder, replace_type)
                         folder_cache[folder] = files
-                    user_file = _pick_from_list(files, replace_mode, batch_index)
+                    user_file = _pick_from_list(files, replace_mode, effective_batch_index)
 
         if user_file:
             user_files[fname.lower()] = user_file
@@ -1274,6 +1308,7 @@ def _build_managed_run_token(task_id: str = "") -> str:
 
 def _build_managed_draft_name(
     template_path: str,
+    drafts_root: str = "",
     task_id: str = "",
     batch_index: int = 0,
     generator: str = "official",
@@ -1281,9 +1316,14 @@ def _build_managed_draft_name(
 ) -> str:
     template_basename = os.path.basename(str(template_path or "").rstrip("\\/")) or "draft"
     template_part = _safe_managed_draft_name_part(template_basename, "draft")
-    run_part = str(run_token or "").strip() or _build_managed_run_token(task_id)
-    generator_part = "mcp" if str(generator or "").strip().lower() == "mcp" else "official"
-    return f"vf_{generator_part}_{template_part}_{run_part}_{batch_index + 1:03d}"
+    drafts_root = str(drafts_root or "").strip()
+    serial = max(1, int(batch_index or 0) + 1)
+
+    while True:
+        candidate = f"{template_part}_zysj_{serial:03d}"
+        if not drafts_root or not os.path.exists(os.path.join(drafts_root, candidate)):
+            return candidate
+        serial += 1
 
 
 def _build_generated_draft_marker(
@@ -1333,6 +1373,35 @@ def _load_generated_draft_marker(draft_path: str) -> dict | None:
         return payload if isinstance(payload, dict) else None
     except Exception:
         return None
+
+
+def _count_existing_managed_drafts(
+    drafts_folder: str,
+    template_path: str,
+    generator: str = "official",
+) -> int:
+    root = str(drafts_folder or "").strip()
+    if not root or not os.path.isdir(root):
+        return 0
+
+    target_template_key = _normalize_managed_template_key(template_path)
+    target_generator = str(generator or "official").strip().lower() or "official"
+    count = 0
+    for name in os.listdir(root):
+        draft_path = os.path.join(root, name)
+        if not os.path.isdir(draft_path):
+            continue
+        marker = _load_generated_draft_marker(draft_path)
+        if not isinstance(marker, dict):
+            continue
+        if str(marker.get("managed_by") or "").strip().lower() != "videofactory":
+            continue
+        if str(marker.get("generator") or "").strip().lower() != target_generator:
+            continue
+        if str(marker.get("template_key") or "").strip().lower() != target_template_key.lower():
+            continue
+        count += 1
+    return count
 
 
 def _cleanup_managed_drafts(
@@ -1475,6 +1544,16 @@ def _generate_video_task_via_mcp(
     cleaned_paths = []
     warnings = []
     run_token = _build_managed_run_token(task_id)
+    material_selection_offset = _count_existing_managed_drafts(
+        drafts_folder=drafts_folder,
+        template_path=template_path,
+        generator="official",
+    )
+    material_selection_offset = _count_existing_managed_drafts(
+        drafts_folder=drafts_folder,
+        template_path=template_path,
+        generator="mcp",
+    )
 
     material_replacements_by_key = {}
     if replace_materials and material_names:
@@ -1498,6 +1577,7 @@ def _generate_video_task_via_mcp(
     for i in range(batch_count):
         draft_name = _build_managed_draft_name(
             template_path=template_path,
+            drafts_root=drafts_folder,
             task_id=task_id,
             batch_index=i,
             generator="mcp",
@@ -1517,12 +1597,14 @@ def _generate_video_task_via_mcp(
                 sequence_clip_count=sequence_clip_count,
                 batch_index=i,
                 sequence_cache_root=os.path.join(sequence_cache_root, draft_name) if sequence_cache_root else drafts_folder,
+                selection_offset=material_selection_offset,
             )
             material_replacements_by_key = dict(user_files)
             material_summary = _build_material_override_summary(material_names, user_files)
 
         try:
             svc = JianYingService(output_path=drafts_folder)
+            batch_texts_input = _resolve_batch_texts_input(texts_input, i) if replace_texts else None
             summary = _apply_mcp_effects(
                 template_path,
                 effects_config or {},
@@ -1531,7 +1613,7 @@ def _generate_video_task_via_mcp(
                 export_format=export_format,
                 export_resolution=export_resolution,
                 export_fps=export_fps,
-                texts_input=texts_input if replace_texts else None,
+                texts_input=batch_texts_input,
                 material_replacements=material_replacements_by_key if replace_materials else None,
                 output_path=drafts_folder,
                 force_export=True,
@@ -1692,6 +1774,11 @@ def _generate_video_task_via_official_draft(
     cleaned_paths = []
     warnings = []
     run_token = _build_managed_run_token(task_id)
+    material_selection_offset = _count_existing_managed_drafts(
+        drafts_folder=drafts_folder,
+        template_path=template_path,
+        generator="official",
+    )
 
     pool_warning = _build_material_pool_warning(
         materials_root=materials_root,
@@ -1708,6 +1795,7 @@ def _generate_video_task_via_official_draft(
     for i in range(batch_count):
         draft_name = _build_managed_draft_name(
             template_path=template_path,
+            drafts_root=drafts_folder,
             task_id=task_id,
             batch_index=i,
             generator="official",
@@ -1716,10 +1804,9 @@ def _generate_video_task_via_official_draft(
         update_task_meta({'progress': f'official draft rebuilding ({i+1}/{batch_count})...'}, task_id=task_id)
 
         material_replacements = {}
-        raw_material_replacements = {}
         material_summary = {"expected_count": 0, "selected_count": 0, "missing_count": 0, "selected_items": [], "truncated_count": 0}
         if replace_materials and material_names:
-            raw_material_replacements = _collect_user_material_overrides(
+            selected_material_overrides = _collect_user_material_overrides(
                 material_names=material_names,
                 materials_root=materials_root,
                 replace_type=replace_type,
@@ -1728,22 +1815,24 @@ def _generate_video_task_via_official_draft(
                 sequence_clip_count=sequence_clip_count,
                 batch_index=i,
                 sequence_cache_root=os.path.join(drafts_folder, ".vf_sequence_cache", draft_name),
+                selection_offset=material_selection_offset,
             )
-            material_summary = _build_material_override_summary(material_names, raw_material_replacements)
-            material_replacements = dict(raw_material_replacements)
+            material_summary = _build_material_override_summary(material_names, selected_material_overrides)
+            material_replacements = dict(selected_material_overrides)
             if material_map and material_replacements:
                 expanded_replacements = dict(material_replacements)
-                for material_name, override_path in raw_material_replacements.items():
+                for material_name, override_path in selected_material_overrides.items():
                     material_id = material_map.get(material_name) or material_map.get(str(material_name or "").strip())
                     if material_id and override_path:
                         expanded_replacements[str(material_id).strip().lower()] = override_path
                 material_replacements = expanded_replacements
 
         try:
+            batch_texts_input = _resolve_batch_texts_input(texts_input, i) if replace_texts else None
             summary = replace_official_draft(
                 template_path=template_path,
                 draft_name=draft_name,
-                texts_input=texts_input if replace_texts else None,
+                texts_input=batch_texts_input,
                 material_replacements=material_replacements if replace_materials else None,
                 output_root=drafts_folder,
             )
@@ -1762,19 +1851,20 @@ def _generate_video_task_via_official_draft(
                 "status": "ok",
             })
             try:
-                _write_generated_draft_marker(
-                    summary["draft_path"],
-                    _build_generated_draft_marker(
-                        draft_name=draft_name,
-                        draft_path=summary["draft_path"],
-                        template_path=template_path,
-                        task_id=task_id,
-                        generator="official",
-                        batch_index=i,
-                        batch_count=batch_count,
-                        run_token=run_token,
-                    ),
+                summary_diagnostics = ((summary or {}).get("diagnostics") or {})
+                marker_payload = _build_generated_draft_marker(
+                    draft_name=draft_name,
+                    draft_path=summary["draft_path"],
+                    template_path=template_path,
+                    task_id=task_id,
+                    generator="official",
+                    batch_index=i,
+                    batch_count=batch_count,
+                    run_token=run_token,
                 )
+                marker_payload["write_mode"] = summary_diagnostics.get("write_mode")
+                marker_payload["timeline_project_reconciliation"] = summary_diagnostics.get("timeline_project_reconciliation")
+                _write_generated_draft_marker(summary["draft_path"], marker_payload)
             except Exception as exc:
                 logging.warning("managed draft marker write failed for %s: %s", summary["draft_path"], exc)
             for warning in summary.get("warnings") or []:
@@ -2991,7 +3081,8 @@ def generate_ai_task(task_id: str, user_id: int, key_id: int, task_type: str, pa
         from app.models.user import User
         from app.models.user_api_key import UserApiKey
         from app.services.ai_service import generate_with_key
-        from app.views.api import _resolve_ai_runtime_key
+        from app.views.api import _resolve_ai_runtime_key, _apply_quota_charge, _quota_has_unlimited_access
+        from app.services.user_quota_service import get_or_create_quota
 
         task = AITask.query.get(task_id)
         if not task:
@@ -3023,5 +3114,11 @@ def generate_ai_task(task_id: str, user_id: int, key_id: int, task_type: str, pa
             task.result_path = result.get("path")
             if task_type == "text":
                 task.result_text = result.get("text") or ""
+            quota_cost = int(payload.get("quota_cost") or 0)
+            quota_reason = str(payload.get("quota_reason") or "").strip()
+            if quota_cost > 0 and quota_reason:
+                quota = get_or_create_quota(user_id)
+                if not _quota_has_unlimited_access(quota):
+                    _apply_quota_charge(quota, user_id, quota_cost, quota_reason, project_id=task_id)
         db.session.add(task)
         db.session.commit()

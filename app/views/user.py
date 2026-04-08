@@ -1,12 +1,14 @@
 from functools import wraps
 from urllib.parse import urlparse
 
-from flask import Blueprint, jsonify, make_response, redirect, render_template, session
+from flask import Blueprint, jsonify, make_response, redirect, render_template, send_from_directory, session
 
 from app.extensions import db
+from app.models.cdk_template import CdkTemplate
 from app.models.template import Template
 from app.utils.helpers import (
     get_drafts_folder,
+    get_desktop_branding_root,
     get_material_folder,
     get_site_settings,
     read_generate_logs,
@@ -14,6 +16,26 @@ from app.utils.helpers import (
 
 
 user_bp = Blueprint("user", __name__)
+
+
+def _landing_membership_plans():
+    items = []
+    try:
+        for item in CdkTemplate.query.order_by(CdkTemplate.updated_at.desc(), CdkTemplate.id.desc()).all():
+            items.append(
+                {
+                    "name": (item.name or "").strip(),
+                    "duration_days": int(item.duration_days or 0),
+                    "bonus_points": int(item.bonus_points or 0),
+                    "price": float(item.price or 0),
+                    "device_limit": int(item.device_limit or 1),
+                    "transfer_times": int(item.transfer_times or 0),
+                    "redeem_days": int(item.redeem_days or 0),
+                }
+            )
+    except Exception:
+        return []
+    return [item for item in items if item.get("name")]
 
 
 def login_required(func):
@@ -29,7 +51,11 @@ def login_required(func):
 @user_bp.route("/")
 def dashboard():
     response = make_response(
-        render_template("user/landing.html", site_settings=get_site_settings())
+        render_template(
+            "user/landing.html",
+            site_settings=get_site_settings(),
+            membership_plans=_landing_membership_plans(),
+        )
     )
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
@@ -57,6 +83,12 @@ def download_redirect():
             if not parsed.scheme and not url.startswith("/"):
                 url = f"https://{url.lstrip('/')}"
     return redirect(url or "/user")
+
+
+@user_bp.route("/desktop-branding/<path:filename>")
+def desktop_branding_asset(filename):
+    branding_root = get_desktop_branding_root()
+    return send_from_directory(str(branding_root), filename)
 
 
 @user_bp.route("/user/home")

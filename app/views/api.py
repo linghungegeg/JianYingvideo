@@ -12,6 +12,7 @@ import platform
 import socket
 import sys
 import subprocess
+from copy import deepcopy
 from collections import defaultdict
 from typing import List, Optional, Union
 from types import SimpleNamespace
@@ -115,14 +116,14 @@ draft_logger.setLevel(logging.INFO)
 _AI_PROVIDER_DEFAULTS = {
     "siliconflow": {
         "provider_name": "SiliconFlow",
-        "description": "AI 生图与分镜图生成",
+        "description": "AI 鐢熷浘涓庡垎闀滃浘鐢熸垚",
         "docs_url": "https://docs.siliconflow.cn/cn/userguide/capabilities/images",
         "signup_url": "https://cloud.siliconflow.cn",
         "base_url": "https://api.siliconflow.cn/v1",
     },
     "chatanywhere": {
         "provider_name": "ChatAnywhere",
-        "description": "AI 漫剧脚本与分镜文案",
+        "description": "AI script and storyboard copy generation",
         "docs_url": "https://chatanywhere.apifox.cn/doc-5547696",
         "signup_url": "https://api.chatanywhere.tech/#/shop",
         "base_url": "https://api.chatanywhere.tech/v1",
@@ -141,25 +142,240 @@ _AI_STORYBOARD_DEFAULT_MODELS = [
     "Qwen/Qwen3.5-4B",
     "PaddlePaddle/PaddleOCR-VL-1.5",
 ]
-_AI_IMAGE_POSITIVE_PREFIX = (
-    "masterpiece, best quality, ultra detailed, 8k, anime style, cinematic anime storyboard frame, "
-    "clean line art, soft lighting, dramatic framing, story-driven composition, vertical composition, "
-    "mobile-screen friendly composition, beautiful face, stable facial features, consistent character design"
+DEFAULT_SCRIPT_PROMPT_TEMPLATE = (
+    "Please rewrite the script into a structured Chinese short-drama storyboard description. "
+    "Prioritize characters, scene, action, camera language, emotion, and plot continuity. "
+    "Clearly distinguish establishing shots, dialogue shots, and action shots. Avoid overusing portrait close-ups."
 )
-_AI_IMAGE_SCENE_SUFFIX = (
-    "single character focus, suitable for short drama storyboard, clean readable framing for video editing, "
-    "simple uncluttered background, no extra people, clear face, clear hands, portrait-ready framing"
+DEFAULT_IMAGE_PROMPT_TEMPLATE = (
+    "Please organize an image-generation prompt for Chinese short-drama storyboard illustration. "
+    "Keep character consistency, scene atmosphere, action beats, key props, and clear shot language."
 )
+_AI_IMAGE_PROMPT_DEFAULTS = {
+    "scene": {
+        "positive_prefix": (
+            "Chinese storyboard establishing shot, environment-first composition, wide cinematic framing, "
+            "broad spatial scale, readable depth layers, strong worldbuilding, restrained character emphasis, "
+            "narrative environment design, clear atmospheric structure, shot-driven composition"
+        ),
+        "suffix": (
+            "focus on environment, spatial relationship and story atmosphere, establishing shot friendly, "
+            "allow no character in frame, avoid portrait framing, avoid single-face closeup, keep composition readable"
+        ),
+    },
+    "character": {
+        "positive_prefix": (
+            "masterpiece, best quality, ultra detailed, 8k, anime style, cinematic anime storyboard frame, "
+            "clean line art, soft lighting, dramatic framing, story-driven composition, vertical composition, "
+            "stable facial features, consistent character design, expressive character acting"
+        ),
+        "suffix": (
+            "character-focused framing, suitable for short drama storyboard, keep facial structure stable, "
+            "clear face, clear hands, avoid extra people, keep costume and hairstyle continuity"
+        ),
+    },
+    "dialogue": {
+        "positive_prefix": (
+            "masterpiece, best quality, ultra detailed, anime cinematic storyboard frame, dialogue scene composition, "
+            "clear acting beats, expressive faces, believable character interaction, clean line art"
+        ),
+        "suffix": (
+            "focus on speaking state, eye line and relationship between characters, readable medium shot or close shot, "
+            "avoid overcrowded composition, keep dialogue mood clear"
+        ),
+    },
+    "action": {
+        "positive_prefix": (
+            "masterpiece, best quality, ultra detailed, anime cinematic storyboard frame, dynamic action composition, "
+            "motion clarity, dramatic perspective, clear silhouette, impactful gesture, kinetic lighting"
+        ),
+        "suffix": (
+            "focus on the decisive action moment, strong movement readability, keep subject clear, "
+            "avoid static portrait framing, avoid unrelated background clutter"
+        ),
+    },
+}
+_AI_IMAGE_SHOT_NEGATIVE_DEFAULTS = {
+    "scene": (
+        "portrait, close-up portrait, single character focus, beautiful face, idol pose, selfie, "
+        "blue sky, white clouds, meadow, flower field, healing scenery, pastoral landscape, sunshine travel poster, "
+        "misty mountains, pine trees, canyon path, wooden stair, ancient bridge, lone wanderer, hero poster, scenic overlook, water surface reflection"
+    ),
+    "character": (
+        "landscape only, empty environment shot, tiny face, distant figure, overwide establishing shot, faceless crowd"
+    ),
+    "dialogue": (
+        "empty shot, no speaking state, no interaction, distant tiny figures, scenery only, faceless side profile"
+    ),
+    "action": (
+        "static portrait, no motion, scenery only, weak action, stiff pose, unclear silhouette"
+    ),
+}
+_AI_IMAGE_MODEL_LIST_DEFAULTS = {
+    "scene": ["Kwai-Kolors/Kolors"],
+    "character": ["Kwai-Kolors/Kolors"],
+    "dialogue": ["Kwai-Kolors/Kolors"],
+    "action": ["Kwai-Kolors/Kolors"],
+}
+_AI_IMAGE_SCENE_PARAM_DEFAULTS = {
+    "num_inference_steps": 40,
+    "guidance_scale": 5.0,
+    "seed": "123456",
+}
+_AI_STORYBOARD_GENRE_DEFAULTS = {
+    "fantasy": {
+        "label": "玄幻",
+        "positive_prefix": (
+            "Chinese fantasy donghua storyboard illustration, ancient mysterious realm, oppressive cosmic scale, "
+            "void storm, fractured cliffs, floating debris, dark energy, dangerous atmosphere"
+        ),
+        "scene_suffix": (
+            "focus on chaotic heaven and earth, twisted storm clouds, black rifts, floating shattered rocks, "
+            "violent astral wind, broken terrain, oppressive void, dangerous worldbuilding, no pastoral sunlight scene"
+        ),
+        "character_suffix": (
+            "character costume, silhouette and props should feel Chinese fantasy or xianxia, "
+            "stay coherent with the dangerous mystical world"
+        ),
+        "dialogue_suffix": (
+            "keep the fantasy realm atmosphere, ancient costume cues and dangerous environment in dialogue shots, "
+            "avoid modern daily-life feeling"
+        ),
+        "action_suffix": (
+            "emphasize energy burst, storm pressure, impact, spatial tearing, violent motion and clear action beat"
+        ),
+        "negative_prompt": (
+            "modern city, campus slice of life, blue sky, white clouds, green meadow, flower field, healing scenery, "
+            "travel poster, idol portrait, bright pastoral landscape"
+        ),
+    },
+    "urban": {
+        "label": "都市",
+        "positive_prefix": (
+            "modern Chinese short-drama storyboard illustration, realistic city life, modern clothing, "
+            "credible indoor and outdoor space, clear emotional storytelling"
+        ),
+        "scene_suffix": (
+            "focus on streets, apartments, offices, malls, elevators, night city and realistic urban layout, "
+            "avoid fantasy worldbuilding"
+        ),
+        "character_suffix": "keep contemporary fashion, realistic styling and grounded modern acting",
+        "dialogue_suffix": "highlight relationship distance, eye lines and lived-in urban background in dialogue shots",
+        "action_suffix": "emphasize realistic conflict, running, chasing and urban movement path",
+        "negative_prompt": "xianxia, ancient costume, void rift, magic aura, floating mountains, fantasy effects",
+    },
+    "costume": {
+        "label": "古装",
+        "positive_prefix": (
+            "Chinese costume drama storyboard illustration, eastern architecture, ancient props, restrained mood, "
+            "elegant but story-driven composition"
+        ),
+        "scene_suffix": (
+            "focus on pavilions, courtyards, mountains, mist, lanterns, folding screens and ancient architecture, "
+            "avoid modern facilities"
+        ),
+        "character_suffix": "keep costume, hair ornaments and posture consistent with Chinese period drama",
+        "dialogue_suffix": "dialogue shots should preserve ritual distance, courtly tension and ancient setting cues",
+        "action_suffix": "emphasize robe motion, weapon movement and elegant ancient-action rhythm",
+        "negative_prompt": "modern city, school uniform, cyberpunk, sci-fi city, sneakers, modern street scene",
+    },
+    "campus": {
+        "label": "校园",
+        "positive_prefix": (
+            "school youth short-drama storyboard illustration, young students, campus environment, "
+            "daily-life narrative, clean and readable framing"
+        ),
+        "scene_suffix": (
+            "focus on classroom, corridor, sports field, cafeteria, dormitory, desks and campus atmosphere, "
+            "avoid epic fantasy scenery"
+        ),
+        "character_suffix": "characters should feel youthful with natural styling and school-life body language",
+        "dialogue_suffix": "highlight classmate relationship, school distance and everyday interaction",
+        "action_suffix": "emphasize running, arguing, class movement and sports-like campus action",
+        "negative_prompt": "xianxia, ancient costume, starscape, void, heavy dark horror, mature glamour realism",
+    },
+    "scifi": {
+        "label": "科幻",
+        "positive_prefix": (
+            "science fiction storyboard illustration, future architecture, technology devices, mechanical structures, "
+            "cold light, clean spatial order, cinematic sci-fi composition"
+        ),
+        "scene_suffix": (
+            "focus on bridge, laboratory, future city, industrial structure, energy device, holographic light and ordered sci-fi space"
+        ),
+        "character_suffix": "character costume and props should feel futuristic and coherent with the tech environment",
+        "dialogue_suffix": "preserve tech environment details and future devices in dialogue shots, avoid turning into generic room scene",
+        "action_suffix": "emphasize chase, mech conflict, energy impact and future weapon motion",
+        "negative_prompt": "ancient costume, xianxia, meadow, rural landscape, campus daily life, cozy healing illustration",
+    },
+    "suspense": {
+        "label": "悬疑",
+        "positive_prefix": (
+            "suspense storyboard illustration, oppressive lighting, unknown danger, unstable space, cold palette, "
+            "clue-oriented composition"
+        ),
+        "scene_suffix": "focus on corridor, doorway, rain, abandoned room, narrow light source, shadows and uncertain danger",
+        "character_suffix": "character expression should feel restrained but tense, with guarded posture and suspicious eye lines",
+        "dialogue_suffix": "highlight psychological tension, distance and hidden information in dialogue shots",
+        "action_suffix": "emphasize sudden movement, chase, escape, turn-back and shock beat",
+        "negative_prompt": "healing scenery, meadow flowers, idol glamour portrait, cute style, cheerful campus, travel poster",
+    },
+}
+
+
+def _looks_like_broken_prompt_text(value) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    questionish = sum(1 for ch in text if ch in {"?", "锛", "锟"})
+    return questionish >= max(8, len(text) // 3)
+
+
+def _clean_prompt_template_value(value, default: str) -> str:
+    text = str(value or "").strip()
+    if _looks_like_broken_prompt_text(text):
+        return default
+    return text
+
+
+def _looks_like_broken_short_label(value) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    if all(ch in {"?", "锛", "锟"} for ch in text):
+        return True
+    questionish = sum(1 for ch in text if ch in {"?", "锛", "锟"})
+    return questionish >= max(2, len(text) // 2)
+
+
+def _normalize_storyboard_template_labels(templates: dict, defaults: dict) -> dict:
+    merged = deepcopy(defaults)
+    if not isinstance(templates, dict):
+        return merged
+    for key, item in templates.items():
+        if not isinstance(item, dict):
+            continue
+        base = deepcopy(merged.get(key) or {})
+        base.update(item)
+        default_label = str((defaults.get(key) or {}).get("label") or "").strip()
+        if _looks_like_broken_short_label(base.get("label")) and default_label:
+            base["label"] = default_label
+        merged[key] = base
+    return merged
+
+
 _AI_IMAGE_NEGATIVE_PROMPT = (
     "lowres, bad anatomy, bad hands, text, caption, speech bubble, error, missing fingers, extra digit, "
     "fused fingers, watermark, logo, blurry, deformed, distorted, ugly, multiple people, crowded scene"
 )
 _AI_STORYBOARD_SYSTEM_PROMPT = (
-    "你是专业的中文短剧分镜助手。"
-    "只允许输出中文内容，禁止输出英文解释、思考过程、Markdown、代码块、<think> 标签或任何额外说明。"
-    "你必须只返回结构化 JSON，格式为 "
-    "{\"items\":[{\"index\":1,\"scene\":\"\",\"dialogue\":\"\",\"visual_action\":\"\",\"setting\":\"\",\"camera\":\"\",\"emotion\":\"\",\"speaker\":\"\",\"characters\":[],\"shot_type\":\"scene\"}]}"
+    "You are a professional Chinese short-drama storyboard assistant. "
+    "Output Chinese content only. Do not output English explanation, reasoning process, Markdown, code fences, or think tags. "
+    "You must return structured JSON only, using the format "
+    "{\"items\":[{\"index\":1,\"scene\":\"\",\"dialogue\":\"\",\"visual_action\":\"\",\"setting\":\"\",\"camera\":\"\",\"emotion\":\"\",\"speaker\":\"\",\"characters\":[],\"shot_type\":\"scene\",\"visual_focus\":\"\",\"style_hint\":\"\",\"consistency_anchor\":\"\",\"image_prompt_text\":\"\"}]}"
 )
+_DEFAULT_SCRIPT_PROMPT_TEMPLATE = DEFAULT_SCRIPT_PROMPT_TEMPLATE
+_DEFAULT_IMAGE_PROMPT_TEMPLATE = DEFAULT_IMAGE_PROMPT_TEMPLATE
 
 _DRAFT_CONTENT_ENCODINGS = (
     "utf-8",
@@ -185,30 +401,32 @@ _FEATURE_FLAG_META = {
     "duo": {
         "config_key": "DUO_FEATURES_ENABLED",
         "flag": "DUO_FEATURES_ENABLED",
-        "label": "Duo 资源",
+        "label": "Duo 璧勬簮",
     },
     "openclaw": {
         "config_key": "OPENCLAW_FEATURES_ENABLED",
         "flag": "OPENCLAW_FEATURES_ENABLED",
-        "label": "AI 漫剧服务",
+        "label": "AI 婕墽鏈嶅姟",
     },
     "manga": {
         "config_key": "MANGA_FEATURES_ENABLED",
         "flag": "MANGA_FEATURES_ENABLED",
-        "label": "AI 漫剧",
+        "label": "AI 婕墽",
     },
 }
 
 _QUOTA_REASON_LABELS = {
     "register_trial": "新用户试用",
     "daily_checkin": "每日签到",
-    "manga_generate": "AI 漫剧消耗",
+    "manga_generate": "AI漫剧消耗",
+    "ai_make_generate": "AI智做消耗",
+    "storyboard_generate": "漫剧助手生图消耗",
     "generate_batch": "批量生成消耗",
     "export_drafts": "批量导出消耗",
-    "license_activate": "激活授权",
-    "refund": "失败返还",
-    "invite_referrer_reward": "邀请激活奖励",
-    "invite_invitee_reward": "受邀激活加赠",
+    "license_activate": "授权激活",
+    "refund": "澶辫触杩旇繕",
+    "invite_referrer_reward": "邀请人奖励",
+    "invite_invitee_reward": "被邀请人奖励",
 }
 _RESOURCE_EXCHANGE_PROJECT_LIMIT = 15
 _RESOURCE_EXCHANGE_INTRO_LIMIT = 30
@@ -280,23 +498,49 @@ def _desktop_dialog_unavailable_response():
     return jsonify(
         {
             "ok": False,
-            "error": "当前环境不支持本地文件选择，请在桌面端客户端中操作。",
+            "error": "Current environment does not support local file selection. Please use the desktop client.",
         }
     ), 400
 
 
 def _webview_file_types(material_type: str = "all") -> tuple[str, ...]:
-    material_type = str(material_type or "").strip().lower()
-    if material_type == "image":
-        return ("所有文件 (*.*)",)
-    if material_type == "video":
-        return ("视频文件 (*.mp4;*.mov;*.avi;*.mkv;*.flv;*.wmv;*.m4v)", "所有文件 (*.*)")
-    if material_type == "audio":
-        return ("音频文件 (*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac)", "所有文件 (*.*)")
-    return ("所有文件 (*.*)",)
+    material_types = {
+        item.strip().lower()
+        for item in str(material_type or "").replace("+", ",").split(",")
+        if item.strip()
+    }
+    if not material_types or material_types == {"all"}:
+        material_types = {"all"}
+    if material_types == {"image"}:
+        return ("鎵€鏈夋枃浠?(*.*)",)
+    if material_types == {"video"}:
+        return ("瑙嗛鏂囦欢 (*.mp4;*.mov;*.avi;*.mkv;*.flv;*.wmv;*.m4v)", "鎵€鏈夋枃浠?(*.*)")
+    if material_types == {"audio"}:
+        return ("闊抽鏂囦欢 (*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac)", "鎵€鏈夋枃浠?(*.*)")
+    if material_types != {"all"}:
+        labels = []
+        patterns = []
+        if "image" in material_types:
+            labels.append("鍥剧墖")
+            patterns.extend(["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.webp"])
+        if "video" in material_types:
+            labels.append("瑙嗛")
+            patterns.extend(["*.mp4", "*.mov", "*.avi", "*.mkv", "*.flv", "*.wmv", "*.m4v"])
+        if "audio" in material_types:
+            labels.append("闊抽")
+            patterns.extend(["*.mp3", "*.wav", "*.m4a", "*.aac", "*.ogg", "*.flac"])
+        if patterns:
+            return (f"{'/'.join(labels)}鏂囦欢 ({';'.join(dict.fromkeys(patterns))})", "鎵€鏈夋枃浠?(*.*)")
+    return ("鎵€鏈夋枃浠?(*.*)",)
 
 
-def _run_desktop_window_dialog(dialog_kind: str, *, allow_multiple: bool = False, material_type: str = "all"):
+def _run_desktop_window_dialog(
+    dialog_kind: str,
+    *,
+    allow_multiple: bool = False,
+    material_type: str = "all",
+    initial_dir: str = "",
+):
     window = get_active_window()
     if window is None:
         return None
@@ -305,11 +549,19 @@ def _run_desktop_window_dialog(dialog_kind: str, *, allow_multiple: bool = False
         import webview
 
         dialog_type = webview.FileDialog.FOLDER if dialog_kind == "folder" else webview.FileDialog.OPEN
-        result = window.create_file_dialog(
-            dialog_type=dialog_type,
-            allow_multiple=allow_multiple,
-            file_types=_webview_file_types(material_type) if dialog_kind == "file" else (),
-        )
+        dialog_kwargs = {
+            "dialog_type": dialog_type,
+            "allow_multiple": allow_multiple,
+            "file_types": _webview_file_types(material_type) if dialog_kind == "file" else (),
+        }
+        initial_dir = str(initial_dir or "").strip()
+        if initial_dir and os.path.isdir(initial_dir):
+            dialog_kwargs["directory"] = initial_dir
+        try:
+            result = window.create_file_dialog(**dialog_kwargs)
+        except TypeError:
+            dialog_kwargs.pop("directory", None)
+            result = window.create_file_dialog(**dialog_kwargs)
     except Exception:
         logging.exception("desktop window dialog failed: %s", dialog_kind)
         return None
@@ -324,7 +576,7 @@ def _run_desktop_window_dialog(dialog_kind: str, *, allow_multiple: bool = False
     return str(result or "").strip()
 
 
-def _run_windows_dialog(dialog_kind: str) -> Optional[str]:
+def _run_windows_dialog(dialog_kind: str, initial_dir: str = "") -> Optional[str]:
     if platform.system().lower() != "windows":
         return None
     scripts = {
@@ -350,6 +602,12 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     script = scripts.get(dialog_kind)
     if not script:
         return None
+    initial_dir = str(initial_dir or "").strip().replace("'", "''")
+    if dialog_kind == "folder" and initial_dir:
+        script = script.replace(
+            "$dialog.ShowNewFolderButton = $true",
+            "$dialog.ShowNewFolderButton = $true\n$dialog.SelectedPath = '{}'".format(initial_dir),
+        )
     try:
         completed = subprocess.run(
             [
@@ -378,9 +636,12 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     return (completed.stdout or "").strip() or ""
 
 
-def _select_local_directory():
+def _select_local_directory(initial_dir: str = ""):
+    initial_dir = str(initial_dir or "").strip()
+    if initial_dir and not os.path.isdir(initial_dir):
+        initial_dir = ""
     if get_active_window() is not None:
-        return _run_desktop_window_dialog("folder")
+        return _run_desktop_window_dialog("folder", initial_dir=initial_dir)
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -392,11 +653,14 @@ def _select_local_directory():
         root = tk.Tk()
         root.withdraw()
         try:
-            return filedialog.askdirectory()
+            dialog_kwargs = {}
+            if initial_dir:
+                dialog_kwargs["initialdir"] = initial_dir
+            return filedialog.askdirectory(**dialog_kwargs)
         finally:
             root.destroy()
 
-    selected = _run_windows_dialog("folder")
+    selected = _run_windows_dialog("folder", initial_dir=initial_dir)
     if selected is not None:
         return selected
     return None
@@ -427,14 +691,34 @@ def _select_local_file():
 
 
 def _windows_file_dialog_filter(material_type: str) -> str:
-    material_type = str(material_type or "").strip().lower()
-    if material_type == "image":
-        return "所有文件|*.*"
-    if material_type == "video":
-        return "视频文件|*.mp4;*.mov;*.avi;*.mkv;*.flv;*.wmv;*.m4v|所有文件|*.*"
-    if material_type == "audio":
-        return "音频文件|*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac|所有文件|*.*"
-    return "所有文件|*.*"
+    material_types = {
+        item.strip().lower()
+        for item in str(material_type or "").replace("+", ",").split(",")
+        if item.strip()
+    }
+    if not material_types or material_types == {"all"}:
+        material_types = {"all"}
+    if material_types == {"image"}:
+        return "鎵€鏈夋枃浠秥*.*"
+    if material_types == {"video"}:
+        return "瑙嗛鏂囦欢|*.mp4;*.mov;*.avi;*.mkv;*.flv;*.wmv;*.m4v|鎵€鏈夋枃浠秥*.*"
+    if material_types == {"audio"}:
+        return "闊抽鏂囦欢|*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac|鎵€鏈夋枃浠秥*.*"
+    if material_types != {"all"}:
+        labels = []
+        patterns = []
+        if "image" in material_types:
+            labels.append("鍥剧墖")
+            patterns.extend(["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.webp"])
+        if "video" in material_types:
+            labels.append("瑙嗛")
+            patterns.extend(["*.mp4", "*.mov", "*.avi", "*.mkv", "*.flv", "*.wmv", "*.m4v"])
+        if "audio" in material_types:
+            labels.append("闊抽")
+            patterns.extend(["*.mp3", "*.wav", "*.m4a", "*.aac", "*.ogg", "*.flac"])
+        if patterns:
+            return f"{'/'.join(labels)}鏂囦欢|{';'.join(dict.fromkeys(patterns))}|鎵€鏈夋枃浠秥*.*"
+    return "鎵€鏈夋枃浠秥*.*"
 
 
 def _select_local_files(material_type: str = "all") -> Optional[list[str]]:
@@ -452,14 +736,34 @@ def _select_local_files(material_type: str = "all") -> Optional[list[str]]:
         tk = None
         filedialog = None
 
-    filetypes = [("所有文件", "*.*")]
-    material_type = str(material_type or "").strip().lower()
-    if material_type == "image":
-        filetypes = [("所有文件", "*.*")]
-    elif material_type == "video":
-        filetypes = [("视频文件", "*.mp4 *.mov *.avi *.mkv *.flv *.wmv *.m4v"), ("所有文件", "*.*")]
-    elif material_type == "audio":
-        filetypes = [("音频文件", "*.mp3 *.wav *.m4a *.aac *.ogg *.flac"), ("所有文件", "*.*")]
+    filetypes = [("All files", "*.*")]
+    material_types = {
+        item.strip().lower()
+        for item in str(material_type or "").replace("+", ",").split(",")
+        if item.strip()
+    }
+    if not material_types or material_types == {"all"}:
+        material_types = {"all"}
+    if material_types == {"image"}:
+        filetypes = [("All files", "*.*")]
+    elif material_types == {"video"}:
+        filetypes = [("Video files", "*.mp4 *.mov *.avi *.mkv *.flv *.wmv *.m4v"), ("All files", "*.*")]
+    elif material_types == {"audio"}:
+        filetypes = [("Audio files", "*.mp3 *.wav *.m4a *.aac *.ogg *.flac"), ("All files", "*.*")]
+    elif material_types != {"all"}:
+        patterns = []
+        label_parts = []
+        if "image" in material_types:
+            label_parts.append("Image")
+            patterns.extend(["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.webp"])
+        if "video" in material_types:
+            label_parts.append("Video")
+            patterns.extend(["*.mp4", "*.mov", "*.avi", "*.mkv", "*.flv", "*.wmv", "*.m4v"])
+        if "audio" in material_types:
+            label_parts.append("Audio")
+            patterns.extend(["*.mp3", "*.wav", "*.m4a", "*.aac", "*.ogg", "*.flac"])
+        if patterns:
+            filetypes = [(f"{'/'.join(label_parts)} files", " ".join(dict.fromkeys(patterns))), ("All files", "*.*")]
 
     if tk and filedialog:
         root = tk.Tk()
@@ -529,17 +833,21 @@ def _is_supported_image_file(path: str) -> bool:
 
 
 def _matches_material_type(source_path: str, material_type: str) -> bool:
-    normalized = str(material_type or "all").strip().lower()
-    if normalized in {"", "all"}:
+    normalized_types = {
+        item.strip().lower()
+        for item in str(material_type or "all").replace("+", ",").split(",")
+        if item.strip()
+    }
+    if not normalized_types or normalized_types == {"all"}:
         return True
     ext = os.path.splitext(source_path)[1].lower()
-    if normalized == "image":
+    if "image" in normalized_types and _is_supported_image_file(source_path):
         return _is_supported_image_file(source_path)
-    if normalized == "video":
+    if "video" in normalized_types and ext in _VIDEO_EXTS:
         return ext in _VIDEO_EXTS
-    if normalized == "audio":
+    if "audio" in normalized_types and ext in _AUDIO_EXTS:
         return ext in _AUDIO_EXTS
-    return True
+    return False
 
 
 def _raw_runtime_flags():
@@ -626,6 +934,21 @@ def _parse_model_list_config(value) -> list:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
+def _parse_json_object_config(value, default: dict) -> dict:
+    if isinstance(value, dict):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        return deepcopy(default)
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return deepcopy(default)
+
+
 def _build_model_candidates(primary_model, configured_models) -> list:
     candidates = []
     seen = set()
@@ -641,14 +964,88 @@ def _build_model_candidates(primary_model, configured_models) -> list:
 def _get_ai_admin_config() -> dict:
     silicon_key = (get_secure_config("siliconflow_default_api_key", "") or "").strip()
     chat_key = (get_secure_config("chatanywhere_default_api_key", "") or "").strip()
+    genre_templates = _normalize_storyboard_template_labels(
+        _parse_json_object_config(
+        get_config("siliconflow_genre_templates", json.dumps(_AI_STORYBOARD_GENRE_DEFAULTS, ensure_ascii=False)),
+        _AI_STORYBOARD_GENRE_DEFAULTS,
+        ),
+        _AI_STORYBOARD_GENRE_DEFAULTS,
+    )
     return {
         "siliconflow_base_url": get_config("siliconflow_base_url", _AI_PROVIDER_DEFAULTS["siliconflow"]["base_url"]) or _AI_PROVIDER_DEFAULTS["siliconflow"]["base_url"],
         "siliconflow_docs_url": get_config("siliconflow_docs_url", _AI_PROVIDER_DEFAULTS["siliconflow"]["docs_url"]) or _AI_PROVIDER_DEFAULTS["siliconflow"]["docs_url"],
         "siliconflow_signup_url": get_config("siliconflow_signup_url", _AI_PROVIDER_DEFAULTS["siliconflow"]["signup_url"]) or _AI_PROVIDER_DEFAULTS["siliconflow"]["signup_url"],
         "siliconflow_model": get_config("siliconflow_model", "Kwai-Kolors/Kolors") or "Kwai-Kolors/Kolors",
-        "siliconflow_positive_prefix": get_config("siliconflow_positive_prefix", _AI_IMAGE_POSITIVE_PREFIX) or _AI_IMAGE_POSITIVE_PREFIX,
-        "siliconflow_scene_suffix": get_config("siliconflow_scene_suffix", _AI_IMAGE_SCENE_SUFFIX) or _AI_IMAGE_SCENE_SUFFIX,
+        "siliconflow_positive_prefix": get_config(
+            "siliconflow_positive_prefix",
+            _AI_IMAGE_PROMPT_DEFAULTS["character"]["positive_prefix"],
+        ) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["positive_prefix"],
+        "siliconflow_scene_suffix": get_config(
+            "siliconflow_scene_suffix",
+            _AI_IMAGE_PROMPT_DEFAULTS["character"]["suffix"],
+        ) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["suffix"],
+        "siliconflow_scene_positive_prefix": get_config(
+            "siliconflow_scene_positive_prefix",
+            _AI_IMAGE_PROMPT_DEFAULTS["scene"]["positive_prefix"],
+        ) or _AI_IMAGE_PROMPT_DEFAULTS["scene"]["positive_prefix"],
+        "siliconflow_character_positive_prefix": get_config(
+            "siliconflow_character_positive_prefix",
+            get_config("siliconflow_positive_prefix", _AI_IMAGE_PROMPT_DEFAULTS["character"]["positive_prefix"]) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["positive_prefix"],
+        ) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["positive_prefix"],
+        "siliconflow_dialogue_positive_prefix": get_config(
+            "siliconflow_dialogue_positive_prefix",
+            _AI_IMAGE_PROMPT_DEFAULTS["dialogue"]["positive_prefix"],
+        ) or _AI_IMAGE_PROMPT_DEFAULTS["dialogue"]["positive_prefix"],
+        "siliconflow_action_positive_prefix": get_config(
+            "siliconflow_action_positive_prefix",
+            _AI_IMAGE_PROMPT_DEFAULTS["action"]["positive_prefix"],
+        ) or _AI_IMAGE_PROMPT_DEFAULTS["action"]["positive_prefix"],
+        "siliconflow_scene_prompt_suffix": get_config(
+            "siliconflow_scene_prompt_suffix",
+            _AI_IMAGE_PROMPT_DEFAULTS["scene"]["suffix"],
+        ) or _AI_IMAGE_PROMPT_DEFAULTS["scene"]["suffix"],
+        "siliconflow_character_prompt_suffix": get_config(
+            "siliconflow_character_prompt_suffix",
+            get_config("siliconflow_scene_suffix", _AI_IMAGE_PROMPT_DEFAULTS["character"]["suffix"]) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["suffix"],
+        ) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["suffix"],
+        "siliconflow_dialogue_prompt_suffix": get_config(
+            "siliconflow_dialogue_prompt_suffix",
+            _AI_IMAGE_PROMPT_DEFAULTS["dialogue"]["suffix"],
+        ) or _AI_IMAGE_PROMPT_DEFAULTS["dialogue"]["suffix"],
+        "siliconflow_action_prompt_suffix": get_config(
+            "siliconflow_action_prompt_suffix",
+            _AI_IMAGE_PROMPT_DEFAULTS["action"]["suffix"],
+        ) or _AI_IMAGE_PROMPT_DEFAULTS["action"]["suffix"],
+        "siliconflow_scene_negative_prompt": get_config(
+            "siliconflow_scene_negative_prompt",
+            _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["scene"],
+        ) or _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["scene"],
+        "siliconflow_character_negative_prompt": get_config(
+            "siliconflow_character_negative_prompt",
+            _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["character"],
+        ) or _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["character"],
+        "siliconflow_dialogue_negative_prompt": get_config(
+            "siliconflow_dialogue_negative_prompt",
+            _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["dialogue"],
+        ) or _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["dialogue"],
+        "siliconflow_action_negative_prompt": get_config(
+            "siliconflow_action_negative_prompt",
+            _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["action"],
+        ) or _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["action"],
         "siliconflow_negative_prompt": get_config("siliconflow_negative_prompt", _AI_IMAGE_NEGATIVE_PROMPT) or _AI_IMAGE_NEGATIVE_PROMPT,
+        "siliconflow_scene_model_list": _parse_model_list_config(
+            get_config("siliconflow_scene_model_list", json.dumps(_AI_IMAGE_MODEL_LIST_DEFAULTS["scene"], ensure_ascii=False))
+        ),
+        "siliconflow_character_model_list": _parse_model_list_config(
+            get_config("siliconflow_character_model_list", json.dumps(_AI_IMAGE_MODEL_LIST_DEFAULTS["character"], ensure_ascii=False))
+        ),
+        "siliconflow_dialogue_model_list": _parse_model_list_config(
+            get_config("siliconflow_dialogue_model_list", json.dumps(_AI_IMAGE_MODEL_LIST_DEFAULTS["dialogue"], ensure_ascii=False))
+        ),
+        "siliconflow_action_model_list": _parse_model_list_config(
+            get_config("siliconflow_action_model_list", json.dumps(_AI_IMAGE_MODEL_LIST_DEFAULTS["action"], ensure_ascii=False))
+        ),
+        "siliconflow_genre_templates": genre_templates,
         "siliconflow_default_api_key": silicon_key,
         "chatanywhere_base_url": get_config("chatanywhere_base_url", _AI_PROVIDER_DEFAULTS["chatanywhere"]["base_url"]) or _AI_PROVIDER_DEFAULTS["chatanywhere"]["base_url"],
         "chatanywhere_docs_url": get_config("chatanywhere_docs_url", _AI_PROVIDER_DEFAULTS["chatanywhere"]["docs_url"]) or _AI_PROVIDER_DEFAULTS["chatanywhere"]["docs_url"],
@@ -664,10 +1061,139 @@ def _get_ai_admin_config() -> dict:
             "siliconflow_text_system_prompt",
             get_config("chatanywhere_system_prompt", _AI_STORYBOARD_SYSTEM_PROMPT) or _AI_STORYBOARD_SYSTEM_PROMPT
         ) or _AI_STORYBOARD_SYSTEM_PROMPT,
+        "script_prompt_template": _clean_prompt_template_value(
+            get_config("script_prompt_template", DEFAULT_SCRIPT_PROMPT_TEMPLATE),
+            DEFAULT_SCRIPT_PROMPT_TEMPLATE,
+        ),
+        "image_prompt_template": _clean_prompt_template_value(
+            get_config("image_prompt_template", DEFAULT_IMAGE_PROMPT_TEMPLATE),
+            DEFAULT_IMAGE_PROMPT_TEMPLATE,
+        ),
     }
 
 
+def _normalize_storyboard_shot_type(value, default: str = "character") -> str:
+    shot_type = str(value or "").strip().lower()
+    if shot_type not in {"scene", "character", "dialogue", "action"}:
+        return default
+    return shot_type
+
+
+def _normalize_storyboard_genre(value, default: str = "fantasy") -> str:
+    raw = str(value or "").strip().lower()
+    alias_map = {
+        "fantasy": "fantasy",
+        "鐜勫够": "fantasy",
+        "浠欎緺": "fantasy",
+        "鍥芥极鐜勫够": "fantasy",
+        "urban": "urban",
+        "閮藉競": "urban",
+        "閮藉競鐭墽": "urban",
+        "costume": "costume",
+        "鍙ら": "costume",
+        "campus": "campus",
+        "鏍″洯": "campus",
+        "scifi": "scifi",
+        "sci-fi": "scifi",
+        "绉戝够": "scifi",
+        "suspense": "suspense",
+        "鎮枒": "suspense",
+    }
+    resolved = alias_map.get(raw, raw)
+    return resolved if resolved in _AI_STORYBOARD_GENRE_DEFAULTS else default
+
+
+def _resolve_storyboard_genre_template(ai_cfg: dict, genre: str) -> dict:
+    templates = ai_cfg.get("siliconflow_genre_templates") or {}
+    if not isinstance(templates, dict):
+        templates = {}
+    normalized = _normalize_storyboard_genre(genre, default="fantasy")
+    template = templates.get(normalized)
+    if isinstance(template, dict):
+        return template
+    return deepcopy(_AI_STORYBOARD_GENRE_DEFAULTS.get(normalized) or _AI_STORYBOARD_GENRE_DEFAULTS["fantasy"])
+
+
+def _merge_prompt_lines(*parts: str) -> str:
+    chunks = []
+    for part in parts:
+        value = str(part or "").strip()
+        if value:
+            chunks.append(value)
+    return "\n".join(chunks)
+
+
+def _merge_negative_prompts(*parts: str) -> str:
+    results = []
+    seen = set()
+    for part in parts:
+        text = str(part or "").replace("\n", ",")
+        for token in [item.strip() for item in text.split(",")]:
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            results.append(token)
+    return ", ".join(results)
+
+
+def _compose_siliconflow_image_prompt(raw_prompt: str, shot_type: str, ai_cfg: dict) -> tuple[str, str]:
+    normalized_type = _normalize_storyboard_shot_type(shot_type, default="character")
+    positive = str(ai_cfg.get(f"siliconflow_{normalized_type}_positive_prefix") or "").strip()
+    suffix = str(ai_cfg.get(f"siliconflow_{normalized_type}_prompt_suffix") or "").strip()
+    negative = str(ai_cfg.get("siliconflow_negative_prompt") or "").strip()
+    prompt = str(raw_prompt or "").strip()
+    if normalized_type == "scene" and prompt:
+        prompt = re.sub(r"^浜虹墿涓€鑷存€ч敋鐐癸細.*?$", "", prompt, flags=re.MULTILINE)
+        prompt = re.sub(r"^浜虹墿涓讳綋锛?*?$", "人物主体：这是场景建立镜头，默认不要把人物作为主视觉。", prompt, flags=re.MULTILINE)
+        prompt = re.sub(r"杩滃闅愮害鍙[^銆傦紱\n]*浜虹墿[^銆傦紱\n]*", "", prompt)
+        prompt = re.sub(r"杩滃闅愮害鍙[^銆傦紱\n]*韬奖[^銆傦紱\n]*", "", prompt)
+        prompt = re.sub(r"\n{3,}", "\n\n", prompt).strip()
+    final_prompt = "\n".join([part for part in [positive, prompt, suffix] if part])
+    return final_prompt or prompt, negative
+
+
 def _clamp_int(value, default: int = 0, minimum: int = 0, maximum: Optional[int] = None) -> int:
+    return _clamp_int_impl(value, default, minimum, maximum)
+
+
+def _compose_siliconflow_image_prompt(raw_prompt: str, shot_type: str, ai_cfg: dict, genre: str = "fantasy") -> tuple[str, str]:
+    normalized_type = _normalize_storyboard_shot_type(shot_type, default="character")
+    normalized_genre = _normalize_storyboard_genre(genre, default="fantasy")
+    genre_template = _resolve_storyboard_genre_template(ai_cfg, normalized_genre)
+    positive = str(ai_cfg.get(f"siliconflow_{normalized_type}_positive_prefix") or "").strip()
+    suffix = str(ai_cfg.get(f"siliconflow_{normalized_type}_prompt_suffix") or "").strip()
+    shot_negative = str(ai_cfg.get(f"siliconflow_{normalized_type}_negative_prompt") or "").strip()
+    negative = _merge_negative_prompts(
+        ai_cfg.get("siliconflow_negative_prompt"),
+        shot_negative,
+        genre_template.get("negative_prompt"),
+    )
+    prompt = str(raw_prompt or "").strip()
+    if normalized_type == "scene" and prompt:
+        prompt = re.sub(r"^浜虹墿涓€鑷存€ч敋鐐癸細.*?$", "", prompt, flags=re.MULTILINE)
+        prompt = re.sub(r"^浜虹墿涓讳綋锛?*?$", "人物主体：这是场景建立镜头，默认不要把人物作为主视觉。", prompt, flags=re.MULTILINE)
+        prompt = re.sub(r"杩滃闅愮害鍙[^銆傦紱\\n]*浜虹墿[^銆傦紱\\n]*", "", prompt)
+        prompt = re.sub(r"杩滃闅愮害鍙[^銆傦紱\\n]*韬奖[^銆傦紱\\n]*", "", prompt)
+        prompt = re.sub(r"鐢婚潰閲嶅績鏀惧湪[^銆傦紱\\n]*浜虹墿[^銆傦紱\\n]*", "画面重心放在场景和空间关系，不要强行塞入角色。", prompt)
+        prompt = re.sub(r"\n{3,}", "\n\n", prompt).strip()
+    final_prompt = _merge_prompt_lines(
+        genre_template.get("positive_prefix"),
+        positive,
+        prompt,
+        genre_template.get(f"{normalized_type}_suffix"),
+        suffix,
+    )
+    return final_prompt or prompt, negative
+
+
+def _resolve_siliconflow_image_model_candidates(ai_cfg: dict, shot_type: str, requested_model: str = "") -> list:
+    normalized_type = _normalize_storyboard_shot_type(shot_type, default="character")
+    configured = ai_cfg.get(f"siliconflow_{normalized_type}_model_list") or []
+    fallback = [ai_cfg.get("siliconflow_model") or "Kwai-Kolors/Kolors"]
+    return _build_model_candidates(requested_model, configured or fallback)
+
+
+def _clamp_int_impl(value, default: int = 0, minimum: int = 0, maximum: Optional[int] = None) -> int:
     try:
         number = int(value)
     except Exception:
@@ -679,9 +1205,95 @@ def _clamp_int(value, default: int = 0, minimum: int = 0, maximum: Optional[int]
     return number
 
 
+def _safe_float_impl(value, default: float = 0.0, minimum: Optional[float] = None, maximum: Optional[float] = None) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        number = float(default)
+    if minimum is not None and number < minimum:
+        number = minimum
+    if maximum is not None and number > maximum:
+        number = maximum
+    return number
+
+
+def _normalize_storyboard_genre(value, default: str = "fantasy") -> str:
+    raw = str(value or "").strip().lower()
+    alias_map = {
+        "fantasy": "fantasy",
+        "鐜勫够": "fantasy",
+        "浠欎緺": "fantasy",
+        "鍥芥极鐜勫够": "fantasy",
+        "urban": "urban",
+        "閮藉競": "urban",
+        "閮藉競鐭墽": "urban",
+        "costume": "costume",
+        "鍙ら": "costume",
+        "campus": "campus",
+        "鏍″洯": "campus",
+        "scifi": "scifi",
+        "sci-fi": "scifi",
+        "绉戝够": "scifi",
+        "suspense": "suspense",
+        "鎮枒": "suspense",
+    }
+    resolved = alias_map.get(raw, raw)
+    return resolved if resolved in _AI_STORYBOARD_GENRE_DEFAULTS else default
+
+
+def _resolve_storyboard_genre_template(ai_cfg: dict, genre: str) -> dict:
+    templates = ai_cfg.get("siliconflow_genre_templates") or {}
+    if not isinstance(templates, dict):
+        templates = {}
+    normalized = _normalize_storyboard_genre(genre, default="fantasy")
+    template = templates.get(normalized)
+    if isinstance(template, dict):
+        return template
+    return deepcopy(_AI_STORYBOARD_GENRE_DEFAULTS.get(normalized) or _AI_STORYBOARD_GENRE_DEFAULTS["fantasy"])
+
+
+def _compose_siliconflow_image_prompt(raw_prompt: str, shot_type: str, ai_cfg: dict, genre: str = "fantasy") -> tuple[str, str]:
+    normalized_type = _normalize_storyboard_shot_type(shot_type, default="character")
+    normalized_genre = _normalize_storyboard_genre(genre, default="fantasy")
+    genre_template = _resolve_storyboard_genre_template(ai_cfg, normalized_genre)
+    positive = str(ai_cfg.get(f"siliconflow_{normalized_type}_positive_prefix") or "").strip()
+    suffix = str(ai_cfg.get(f"siliconflow_{normalized_type}_prompt_suffix") or "").strip()
+    shot_negative = str(ai_cfg.get(f"siliconflow_{normalized_type}_negative_prompt") or "").strip()
+    negative = _merge_negative_prompts(
+        ai_cfg.get("siliconflow_negative_prompt"),
+        shot_negative,
+        genre_template.get("negative_prompt"),
+    )
+    prompt = str(raw_prompt or "").strip()
+    if normalized_type == "scene" and prompt:
+        prompt = re.sub(r"^浜虹墿涓€鑷存€ч敋鐐癸細.*?$", "", prompt, flags=re.MULTILINE)
+        prompt = re.sub(
+            r"^浜虹墿涓讳綋锛?*?$",
+            "人物主体：这是场景建立镜头，默认不要把人物作为主视觉。",
+            prompt,
+            flags=re.MULTILINE,
+        )
+        prompt = re.sub(r"杩滃闅愮害鍙[^銆傦紱\n]*浜虹墿[^銆傦紱\n]*", "", prompt)
+        prompt = re.sub(r"杩滃闅愮害鍙[^銆傦紱\n]*韬奖[^銆傦紱\n]*", "", prompt)
+        prompt = re.sub(
+            r"鐢婚潰閲嶅績鏀惧湪[^銆傦紱\n]*浜虹墿[^銆傦紱\n]*",
+            "画面重心放在场景和空间关系，不要强行塞入角色。",
+            prompt,
+        )
+        prompt = re.sub(r"\n{3,}", "\n\n", prompt).strip()
+    final_prompt = _merge_prompt_lines(
+        genre_template.get("positive_prefix"),
+        positive,
+        prompt,
+        genre_template.get(f"{normalized_type}_suffix"),
+        suffix,
+    )
+    return final_prompt or prompt, negative
+
+
 def _format_wait_minutes(remaining_seconds: float) -> str:
     minutes = max(1, math.ceil(max(0.0, float(remaining_seconds or 0.0)) / 60.0))
-    return f"请等待 {minutes} 分钟"
+    return f"璇风瓑寰?{minutes} 鍒嗛挓"
 
 
 def _get_default_user_quota_value() -> int:
@@ -875,7 +1487,7 @@ def _proxy_remote_response():
             if request.path.startswith("/api/license/") and int(response.status_code or 0) >= 500:
                 return jsonify({
                     "ok": False,
-                    "error": "官方授权服务异常，请同步官网服务端后重试",
+                    "error": "瀹樻柟鎺堟潈鏈嶅姟寮傚父锛岃鍚屾瀹樼綉鏈嶅姟绔悗閲嶈瘯",
                     "status_code": int(response.status_code or 0),
                 }), 502
             return jsonify({
@@ -1091,31 +1703,45 @@ def _enforce_rate_limit(action_key: str, *, limit: int, window_seconds: int, ide
             **(details or {}),
         },
     )
-    return _rate_limit_response(action_key, "请求过于频繁，请稍后重试", retry_after)
+    return _rate_limit_response(action_key, "璇锋眰杩囦簬棰戠箒锛岃绋嶅悗閲嶈瘯", retry_after)
 
 
 def _build_usage_policy() -> dict:
     manga_cost = _get_manga_generate_cost()
+    ai_make_cost = _get_ai_make_generate_cost()
+    storyboard_cost = _get_storyboard_generate_cost()
     export_cost = 1
     online_status = _remote_online_status()
     return {
         "count_consuming_actions": [
             {
                 "key": "generate_batch",
-                "label": "批量混剪",
+                "label": "鎵归噺娣峰壀",
                 "cost_display": "每次成功生成任务扣 1 次",
                 "online_required": True,
             },
             {
                 "key": "export_drafts",
-                "label": "批量导出",
+                "label": "鎵归噺瀵煎嚭",
                 "cost_display": f"每次成功导出任务扣 {export_cost} 次",
                 "online_required": True,
             },
             {
                 "key": "ai_manga",
-                "label": "AI 漫剧",
+                "label": "AI 婕墽",
                 "cost_display": f"每次成功生成扣 {manga_cost} 次",
+                "online_required": True,
+            },
+            {
+                "key": "ai_make_generate",
+                "label": "AI 成片",
+                "cost_display": f"每次成功任务扣 {ai_make_cost} 次",
+                "online_required": True,
+            },
+            {
+                "key": "storyboard_generate",
+                "label": "婕墽鍔╂墜鐢熷浘",
+                "cost_display": f"每次成功生图扣 {storyboard_cost} 次",
                 "online_required": True,
             },
         ],
@@ -1123,58 +1749,59 @@ def _build_usage_policy() -> dict:
             {
                 "key": "register_trial",
                 "label": "新用户试用",
-                "description": f"新用户首次注册可获得 {_get_default_user_quota_value()} 次体验次数，同一设备只发放一次",
+                "description": f"新用户首次注册可获得 {_get_default_user_quota_value()} 次体验次数，同一设备只发放一次。",
             },
             {
                 "key": "daily_checkin",
-                "label": "每日签到",
-                "description": f"每天签到可领取 {_get_daily_checkin_reward()} 次",
+                "label": "姣忔棩绛惧埌",
+                "description": f"每天签到可领取 {_get_daily_checkin_reward()} 次。",
             },
             {
                 "key": "license_activate_bonus",
                 "label": "会员卡附赠次数",
-                "description": "部分会员卡会附带额外次数，激活成功后自动到账",
+                "description": "閮ㄥ垎浼氬憳鍗′細闄勫甫棰濆娆℃暟锛屾縺娲绘垚鍔熷悗鑷姩鍒拌处",
             },
             {
                 "key": "failed_task_refund",
-                "label": "失败任务返还",
-                "description": "已扣除但任务失败时，可返还对应次数",
+                "label": "澶辫触浠诲姟杩旇繕",
+                "description": "已扣除但任务失败时，可返还对应次数。",
             },
         ],
         "vip_gain_actions": [
             {
                 "key": "license_activate_vip",
-                "label": "CDK / 会员开卡",
-                "description": "开卡成功后按卡时长延长 VIP 到期时间",
+                "label": "CDK / 会员开通",
+                "description": "寮€鍗℃垚鍔熷悗鎸夊崱鏃堕暱寤堕暱 VIP 鍒版湡鏃堕棿",
             },
             {
                 "key": "invite_rewards",
                 "label": "邀请奖励",
-                "description": "被邀请人首次开卡后，邀请人与被邀请人按后台百分比加赠 VIP 天数",
+                "description": "琚個璇蜂汉棣栨寮€鍗″悗锛岄個璇蜂汉涓庤閭€璇蜂汉鎸夊悗鍙扮櫨鍒嗘瘮鍔犺禒 VIP 澶╂暟",
             },
         ],
         "free_actions": [
             {"key": "resource_exchange", "label": "资源互换", "description": "免费功能，不扣次数"},
             {"key": "effects_and_duo", "label": "效果配置 / Duo 资源浏览", "description": "只浏览、搜索和配置时不扣次数"},
-            {"key": "draft_tools", "label": "草稿读取 / 批量分割 / 片段微调", "description": "当前不扣次数"},
-            {"key": "account_center", "label": "账户中心 / 邀请中心 / 使用教程", "description": "查看信息不扣次数"},
+            {"key": "draft_tools", "label": "鑽夌璇诲彇 / 鎵归噺鍒嗗壊 / 鐗囨寰皟", "description": "褰撳墠涓嶆墸娆℃暟"},
+            {"key": "account_center", "label": "璐︽埛涓績 / 閭€璇蜂腑蹇?/ 浣跨敤鏁欑▼", "description": "鏌ョ湅淇℃伅涓嶆墸娆℃暟"},
             {"key": "byok_ai_tools", "label": "AI 成片 / 文本 / 音频 / 视频生成", "description": "当前走 BYOK，不走平台次数"},
-            {"key": "assistant", "label": "智能助手", "description": "当前只允许导航、创建素材目录、生成文字模板这类免费动作，不直接代执行扣次功能"},
         ],
         "online_required_actions": [
-            {"key": "register", "label": "注册"},
-            {"key": "login", "label": "登录"},
-            {"key": "daily_checkin", "label": "每日签到"},
+            {"key": "register", "label": "娉ㄥ唽"},
+            {"key": "login", "label": "鐧诲綍"},
+            {"key": "daily_checkin", "label": "姣忔棩绛惧埌"},
             {"key": "license_activate", "label": "授权激活"},
-            {"key": "license_deactivate", "label": "授权解绑"},
+            {"key": "license_deactivate", "label": "鎺堟潈瑙ｇ粦"},
             {"key": "generate_batch", "label": "批量混剪（按组精准替换 / 混剪裂变替换 / 分区混剪裂变 / 槽位拼接混剪）"},
-            {"key": "export_drafts", "label": "批量导出"},
-            {"key": "ai_manga", "label": "AI 漫剧"},
+            {"key": "export_drafts", "label": "鎵归噺瀵煎嚭"},
+            {"key": "ai_manga", "label": "AI 婕墽"},
+            {"key": "ai_make_generate", "label": "AI 成片"},
+            {"key": "storyboard_generate", "label": "婕墽鍔╂墜鐢熷浘"},
         ],
         "offline_policy": {
             "count_changing_actions_require_online": True,
             "authorization_actions_require_online": True,
-            "message": "断网或无法连到验证服务时，扣次数、加次数、改授权状态这类服务端校验动作会直接拦截。",
+            "message": "断网或无法连接验证服务时，扣次数、加次数、改授权状态这类服务端校验动作会被直接拦截。",
         },
         "online_status": online_status,
     }
@@ -1246,8 +1873,8 @@ def _resource_exchange_membership_label(user: User, quota_payload: Optional[dict
     if user.role == "admin":
         return "管理员"
     if payload.get("is_vip"):
-        return "VIP会员"
-    return "试用用户"
+        return "VIP浼氬憳"
+    return "璇曠敤鐢ㄦ埛"
 
 
 def _resource_exchange_sort_key(item: dict):
@@ -1288,11 +1915,11 @@ def _validate_resource_exchange_payload(data: dict) -> tuple[Optional[dict], Opt
     project_intro = (payload.get("project_intro") or "").strip()
     contact = (payload.get("contact") or "").strip()
     if not project_name or not project_intro or not contact:
-        return None, "所有字段都是必填项"
+        return None, "鎵€鏈夊瓧娈甸兘鏄繀濉」"
     if len(project_name) > _RESOURCE_EXCHANGE_PROJECT_LIMIT:
-        return None, f"项目名称不能超过 {_RESOURCE_EXCHANGE_PROJECT_LIMIT} 个字"
+        return None, f"椤圭洰鍚嶇О涓嶈兘瓒呰繃 {_RESOURCE_EXCHANGE_PROJECT_LIMIT} 涓瓧"
     if len(project_intro) > _RESOURCE_EXCHANGE_INTRO_LIMIT:
-        return None, f"项目介绍不能超过 {_RESOURCE_EXCHANGE_INTRO_LIMIT} 个字"
+        return None, f"椤圭洰浠嬬粛涓嶈兘瓒呰繃 {_RESOURCE_EXCHANGE_INTRO_LIMIT} 涓瓧"
     return {
         "project_name": project_name,
         "project_intro": project_intro,
@@ -1324,7 +1951,7 @@ def _resource_exchange_post_to_dict(item: ResourceExchangePost | dict | None) ->
         "id": str(post.get("id") or uuid.uuid4().hex[:12]),
         "user_id": int(post.get("user_id") or 0),
         "username": str(post.get("username") or "").strip(),
-        "membership_label": str(post.get("membership_label") or "试用用户").strip() or "试用用户",
+        "membership_label": str(post.get("membership_label") or "璇曠敤鐢ㄦ埛").strip() or "璇曠敤鐢ㄦ埛",
         "membership_value": int(post.get("membership_value") or 0),
         "project_name": str(post.get("project_name") or "").strip(),
         "project_intro": str(post.get("project_intro") or "").strip(),
@@ -1356,16 +1983,16 @@ def _build_resource_exchange_public_item(item: dict) -> dict:
 def _manga_aspect_preset(aspect: str) -> tuple[int, int, str]:
     normalized = (aspect or "portrait").strip().lower()
     mapping = {
-        "portrait": (1080, 1920, "竖屏 9:16"),
-        "landscape": (1920, 1080, "横屏 16:9"),
-        "square": (1080, 1080, "方屏 1:1"),
+        "portrait": (1080, 1920, "绔栧睆 9:16"),
+        "landscape": (1920, 1080, "妯睆 16:9"),
+        "square": (1080, 1080, "鏂瑰睆 1:1"),
     }
     return mapping.get(normalized, mapping["portrait"])
 
 
 def _clean_manga_scene_text(text: str) -> str:
     value = str(text or "").strip()
-    value = re.sub(r"^\s*(?:第\s*\d+\s*[幕场集话]|[\d一二三四五六七八九十]+)\s*[\.\-、:：)]*\s*", "", value)
+    value = re.sub(r"^\s*(?:绗琝s*\d+\s*[骞曞満闆嗚瘽]|[\d涓€浜屼笁鍥涗簲鍏竷鍏節鍗乚+)\s*[\.\-銆?锛?]*\s*", "", value)
     return value.strip()
 
 
@@ -1469,7 +2096,7 @@ def _ensure_manga_placeholder_video(user_id: int, width: int, height: int, durat
             **_quiet_subprocess_kwargs(),
         )
     except Exception as exc:
-        raise ValueError(f"生成 AI 漫剧占位片段失败: {exc}") from exc
+        raise ValueError(f"鐢熸垚 AI 婕墽鍗犱綅鐗囨澶辫触: {exc}") from exc
     return output_path
 
 
@@ -1483,7 +2110,7 @@ def _build_manga_material_workspace(user_id: int, project_id: str, project_name:
     notes = []
     for scene in scenes:
         index = int(scene.get("index") or len(folders) + 1)
-        title = str(scene.get("text") or f"场景 {index}").strip()
+        title = str(scene.get("text") or f"鍦烘櫙 {index}").strip()
         folder_name = _safe_folder_name(f"{index:02d}_{title[:12]}", f"{index:02d}_scene")
         folder_path = os.path.join(materials_root, folder_name)
         os.makedirs(folder_path, exist_ok=True)
@@ -1492,11 +2119,11 @@ def _build_manga_material_workspace(user_id: int, project_id: str, project_name:
             "title": title,
             "path": folder_path,
         })
-        notes.append(f"{index:02d}. {title} | 参考时长 {float(scene.get('duration') or 3):.1f}s")
+        notes.append(f"{index:02d}. {title} | 鍙傝€冩椂闀?{float(scene.get('duration') or 3):.1f}s")
 
     script_path = os.path.join(workspace_root, "scene_notes.txt")
     with open(script_path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(notes) if notes else "暂无场景说明")
+        handle.write("\n".join(notes) if notes else "鏆傛棤鍦烘櫙璇存槑")
 
     return {
         "workspace_root": workspace_root,
@@ -1678,6 +2305,8 @@ def _build_vip_rules_summary() -> dict:
         "daily_checkin_reward": _get_daily_checkin_reward(),
         "license_points_ratio": _clamp_int(settings.get("points_ratio", 0), 0, 0, None),
         "manga_generate_cost": _get_manga_generate_cost(),
+        "ai_make_generate_cost": _get_ai_make_generate_cost(),
+        "storyboard_generate_cost": _get_storyboard_generate_cost(),
         "invite_referrer_reward": invite_settings["referrer_reward"],
         "invite_invitee_reward": invite_settings["invitee_reward"],
         "usage_policy": _build_usage_policy(),
@@ -1754,7 +2383,7 @@ def _build_material_layout(base_root: str, draft_name: str, strategy: str, slots
     if not base_root:
         raise ValueError("请先选择素材根目录")
     if not draft_name:
-        raise ValueError("缺少草稿名称")
+        raise ValueError("缂哄皯鑽夌鍚嶇О")
 
     safe_draft_name = _safe_folder_name(draft_name, "draft")
     target_root = os.path.join(base_root, safe_draft_name)
@@ -1764,11 +2393,11 @@ def _build_material_layout(base_root: str, draft_name: str, strategy: str, slots
     if strategy == "mix":
         normalized_slots = ["素材池"]
     elif not normalized_slots:
-        normalized_slots = ["槽位 1"]
+        normalized_slots = ["妲戒綅 1"]
 
     created = []
     for index, raw_name in enumerate(normalized_slots, start=1):
-        label = str(raw_name or "").strip() or f"槽位 {index}"
+        label = str(raw_name or "").strip() or f"妲戒綅 {index}"
         if strategy == "partition":
             folder_name = _safe_folder_name(label, f"part_{index:02d}")
         elif strategy == "mix":
@@ -1784,6 +2413,7 @@ def _build_material_layout(base_root: str, draft_name: str, strategy: str, slots
         created.append({"label": label, "path": folder_path, "file_count": file_count})
 
     return {
+        "base_root": base_root,
         "root": target_root,
         "folders": created,
         "draft_name": safe_draft_name,
@@ -1804,14 +2434,14 @@ def _assistant_route_preview(command: str, context: Optional[dict] = None) -> di
     if not text:
         return {
             "ok": False,
-            "error": "请输入要执行的助手命令",
+            "error": "请输入要执行的助手命令。",
         }
 
-    if ("分区" in text and "视频" in text) or "分区混剪" in text:
+    if ("鍒嗗尯" in text and "瑙嗛" in text) or "鍒嗗尯娣峰壀" in text:
         return {
             "ok": True,
             "intent": "open_partition_mix",
-            "summary": "打开批量混剪并切到“分区混剪裂变”。",
+            "summary": "打开批量混剪并切到分区混剪裂变。",
             "requires_confirmation": False,
             "impact": "仅导航，不会直接执行生成。",
             "client_action": {
@@ -1822,11 +2452,11 @@ def _assistant_route_preview(command: str, context: Optional[dict] = None) -> di
             },
         }
 
-    if ("按组" in text and "混剪" in text) or "精准替换" in text:
+    if ("鎸夌粍" in text and "娣峰壀" in text) or "绮惧噯鏇挎崲" in text:
         return {
             "ok": True,
             "intent": "open_group_mix",
-            "summary": "打开批量混剪并切到“按组精准替换”。",
+            "summary": "打开批量混剪并切到按组精准替换。",
             "requires_confirmation": False,
             "impact": "仅导航，不会直接执行生成。",
             "client_action": {
@@ -1837,25 +2467,25 @@ def _assistant_route_preview(command: str, context: Optional[dict] = None) -> di
             },
         }
 
-    if "导出" in text and "草稿" in text:
+    if "瀵煎嚭" in text and "鑽夌" in text:
         return {
             "ok": True,
             "intent": "open_export",
-            "summary": "打开批量导出页并准备导出当前已选草稿。",
+            "summary": "打开草稿处理区并准备导出当前草稿片段。",
             "requires_confirmation": False,
-            "impact": "仅导航到导出页，真正导出仍需你确认执行。",
+            "impact": "仅导航到导出入口，真正导出仍需你确认执行。",
             "client_action": {
                 "type": "navigate",
-                "panel_id": "panel-export",
-                "subtab_target": "export-settings",
+                "panel_id": "panel-split",
+                "subtab_target": "split-draft",
             },
         }
 
-    if ("检查" in text or "查看" in text) and "草稿" in text and ("槽位" in text or "结构" in text):
+    if ("妫€鏌" in text or "鏌ョ湅" in text) and "鑽夌" in text and ("妲戒綅" in text or "缁撴瀯" in text):
         return {
             "ok": True,
             "intent": "inspect_draft_slots",
-            "summary": "打开草稿结构检查入口，方便核对槽位与文字位置。",
+            "summary": "打开草稿结构查看入口，便于核对槽位和文字位置。",
             "requires_confirmation": False,
             "impact": "仅导航，不会修改草稿。",
             "client_action": {
@@ -1865,7 +2495,7 @@ def _assistant_route_preview(command: str, context: Optional[dict] = None) -> di
             },
         }
 
-    if "创建" in text and ("素材目录" in text or "素材文件夹" in text):
+    if "鍒涘缓" in text and ("绱犳潗鐩綍" in text or "绱犳潗鏂囦欢澶" in text):
         missing = []
         if not draft_path:
             missing.append("draft_path")
@@ -1889,7 +2519,7 @@ def _assistant_route_preview(command: str, context: Optional[dict] = None) -> di
             },
         }
 
-    if "生成" in text and "文字" in text and ("模板" in text or "替换" in text):
+    if "鐢熸垚" in text and "鏂囧瓧" in text and ("妯℃澘" in text or "鏇挎崲" in text):
         return {
             "ok": True,
             "intent": "build_text_template",
@@ -1903,7 +2533,7 @@ def _assistant_route_preview(command: str, context: Optional[dict] = None) -> di
             },
         }
 
-    if "助手" in text and ("日志" in text or "记录" in text):
+    if "鍔╂墜" in text and ("鏃ュ織" in text or "璁板綍" in text):
         return {
             "ok": True,
             "intent": "open_assistant_logs",
@@ -2281,7 +2911,7 @@ def _encode_file_to_data_uri(path: str) -> str:
 
 def _load_draft_content_legacy_unused_0(template_path):
     if not template_path:
-        return None, '缺少草稿路径'
+        return None, '缂哄皯鑽夌璺緞'
     candidates = _find_draft_content_files(template_path)
     draft_logger.info("draft_inspect: candidates=%s", candidates)
     for draft_content in candidates:
@@ -2293,12 +2923,12 @@ def _load_draft_content_legacy_unused_0(template_path):
             return data, None
         draft_logger.warning("draft_inspect: load_failed path=%s err=%s", draft_content, err)
     if candidates and any(os.path.exists(p) for p in candidates):
-        return None, '解析失败: draft_content.json 读取失败'
-    return None, '未找到 draft_content.json'
+        return None, '瑙ｆ瀽澶辫触: draft_content.json 璇诲彇澶辫触'
+    return None, '鏈壘鍒?draft_content.json'
 
 def _load_draft_content_legacy_unused_1(template_path):
     if not template_path:
-        return None, '缺少草稿路径'
+        return None, '缂哄皯鑽夌璺緞'
     candidates = _find_draft_content_files(template_path)
     draft_logger.info("draft_inspect: candidates=%s", candidates)
     for draft_content in candidates:
@@ -2310,8 +2940,8 @@ def _load_draft_content_legacy_unused_1(template_path):
             return data, None
         draft_logger.warning("draft_inspect: load_failed path=%s err=%s", draft_content, err)
     if candidates and any(os.path.exists(p) for p in candidates):
-        return None, '解析失败: draft_content.json 读取失败'
-    return None, '未找到 draft_content.json'
+        return None, '瑙ｆ瀽澶辫触: draft_content.json 璇诲彇澶辫触'
+    return None, '鏈壘鍒?draft_content.json'
 
 def _extract_materials_from_meta(template_path: str):
     template_path = _normalize_draft_project_path(template_path)
@@ -2324,7 +2954,7 @@ def _extract_materials_from_meta(template_path: str):
     draft_logger.info("draft_inspect: meta_path=%s", meta_path)
     data, err = _load_json_with_encodings(meta_path)
     if err is not None or not isinstance(data, dict):
-        return [], f'解析失败: draft_meta_info.json 读取失败 ({err})'
+        return [], f'瑙ｆ瀽澶辫触: draft_meta_info.json 璇诲彇澶辫触 ({err})'
     materials = []
     for group in data.get("draft_materials", []) or []:
         if not isinstance(group, dict):
@@ -2360,7 +2990,7 @@ def _load_draft_virtual_store(template_path: str):
         return None, None
     data, err = _load_json_with_encodings(store_path)
     if err is not None or not isinstance(data, dict):
-        return None, f"解析失败: draft_virtual_store.json 读取失败 ({err})"
+        return None, f"瑙ｆ瀽澶辫触: draft_virtual_store.json 璇诲彇澶辫触 ({err})"
     return data, None
 
 
@@ -2503,9 +3133,9 @@ def _extract_official_track_fallback(template_path: str):
         )
         return tracks, seg_map, None
 
-    error = meta_err or store_err or "解析失败"
+    error = meta_err or store_err or "瑙ｆ瀽澶辫触"
     if encrypted:
-        error = "解析失败: 官方草稿时间线不可直接读取"
+        error = "解析失败: 官方草稿时间线暂不支持直接读取"
     return [], {}, error
 
 def _scan_material_files(template_path: str):
@@ -2618,18 +3248,18 @@ def _normalize_replace_types_api(replace_type) -> list[str]:
         "photos": "image",
         "pic": "image",
         "pics": "image",
-        "图片": "image",
-        "图像": "image",
+        "鍥剧墖": "image",
+        "鍥惧儚": "image",
         "video": "video",
         "videos": "video",
         "movie": "video",
         "movies": "video",
-        "视频": "video",
+        "瑙嗛": "video",
         "audio": "audio",
         "audios": "audio",
         "music": "audio",
-        "音频": "audio",
-        "音乐": "audio",
+        "闊抽": "audio",
+        "闊充箰": "audio",
         "both": "both",
     }
 
@@ -2779,7 +3409,34 @@ def _extract_template_info(template_path):
                     'type': type_map.get(media_type, ''),
                 })
 
-    for item in mats.get('texts', []) or []:
+    text_items = [item for item in (mats.get('texts', []) or []) if isinstance(item, dict)]
+    referenced_text_ids = set()
+    available_text_ids = {str(item.get('id') or '').strip() for item in text_items if str(item.get('id') or '').strip()}
+    for track in data.get('tracks', []) or []:
+        if not isinstance(track, dict):
+            continue
+        for segment in track.get('segments', []) or []:
+            if not isinstance(segment, dict):
+                continue
+            segment_ids = set()
+            direct_id = str(segment.get('material_id') or segment.get('materialId') or '').strip()
+            if direct_id:
+                segment_ids.add(direct_id)
+            for ref_key in ('extra_material_refs', 'material_refs', 'material_ids'):
+                refs = segment.get(ref_key)
+                if isinstance(refs, list):
+                    segment_ids.update(str(item).strip() for item in refs if str(item).strip())
+                elif isinstance(refs, dict):
+                    for value in refs.values():
+                        if isinstance(value, list):
+                            segment_ids.update(str(item).strip() for item in value if str(item).strip())
+                        else:
+                            text_id = str(value or '').strip()
+                            if text_id:
+                                segment_ids.add(text_id)
+            referenced_text_ids.update(text_id for text_id in segment_ids if text_id in available_text_ids)
+
+    for item in text_items:
         if not isinstance(item, dict):
             continue
         default_text = item.get('recognize_text') or item.get('content') or ''
@@ -2980,7 +3637,7 @@ def _build_mix_generation_warning_v2(materials_root, replace_strategy, replace_t
             if 0 < count < batch_count:
                 undersized.append(f"{os.path.basename(folder)}({count})")
         if undersized:
-            return '这些槽位目录素材数少于批量数量，后续批次会循环复用：' + '，'.join(undersized[:6])
+            return '这些槽位目录素材数少于批量数量，后续批次会循环复用：' + '、'.join(undersized[:6])
         return None
 
     if replace_strategy == 'sequence':
@@ -2990,7 +3647,7 @@ def _build_mix_generation_warning_v2(materials_root, replace_strategy, replace_t
             if 0 < count < batch_count:
                 undersized.append(f"{os.path.basename(folder)}({count})")
         if undersized:
-            return '这些拼接槽位目录视频数少于批量数量，后续批次会循环复用：' + '，'.join(undersized[:6])
+            return '这些拼接槽位目录视频数少于批量数量，后续批次会循环复用：' + '、'.join(undersized[:6])
         return None
 
     if replace_strategy == 'partition':
@@ -3007,7 +3664,7 @@ def _build_mix_generation_warning_v2(materials_root, replace_strategy, replace_t
             if 0 < count < batch_count:
                 undersized.append(f"{os.path.basename(folder)}({count})")
         if undersized:
-            return '这些分区目录素材数少于批量数量，后续批次会循环复用：' + '，'.join(undersized[:6])
+            return '这些分区目录素材数少于批量数量，后续批次会循环复用：' + '、'.join(undersized[:6])
     return None
 
 def _extract_template_tracks(template_path):
@@ -3033,7 +3690,7 @@ def _extract_template_tracks(template_path):
         draft_logger.info("draft_inspect: tracks=%s", len(tracks))
         return tracks, seg_map, None
     except Exception:
-        return [], {}, '解析失败'
+        return [], {}, '瑙ｆ瀽澶辫触'
 
 
 def _auth_error(message, code=401):
@@ -3048,6 +3705,20 @@ def _deprecated_json(payload, status=200):
 
 
 def _legacy_template_payload(**extra):
+    quota = None
+    quota_cost = 0
+    quota_reason = ''
+    if task_type == 'image':
+        quota_cost = _get_storyboard_generate_cost()
+        quota_reason = 'storyboard_generate'
+    elif task_type == 'text':
+        quota_cost = _get_ai_make_generate_cost()
+        quota_reason = 'ai_make_generate'
+    if quota_cost > 0:
+        quota, quota_error = _ensure_quota_available(user, quota_cost, '额度不足，无法继续执行当前 AI 任务。')
+        if quota_error:
+            return quota_error
+
     payload = {
         "deprecated": True,
         "message": "template_id endpoints are legacy; prefer local draft_path flows",
@@ -3340,8 +4011,8 @@ def _remote_desktop_task_complete(task_id: str, token: str, success: bool, error
     except Exception as exc:
         logging.warning("remote desktop task complete failed: %s", exc)
 
-def browse_folder_thread():
-    return _select_local_directory()
+def browse_folder_thread(initial_dir: str = ""):
+    return _select_local_directory(initial_dir=initial_dir)
 
 def browse_file_thread():
     return _select_local_file()
@@ -3352,7 +4023,8 @@ def browse_files_thread(material_type: str = "all"):
 
 @api_bp.route('/browse-folder', methods=['POST'])
 def browse_folder():
-    folder = browse_folder_thread()
+    data = request.get_json(silent=True) or {}
+    folder = browse_folder_thread((data.get('initial_dir') or '').strip())
     if folder is None:
         return _desktop_dialog_unavailable_response()
     return jsonify({'ok': True, 'folder': folder or ''})
@@ -3392,7 +4064,7 @@ def browse_files():
 def net_assets_start():
     return jsonify({
         'ok': False,
-        'error': '第三方平台素材采集已下线，不再对用户开放。'
+        'error': '第三方平台素材采集已下线，不再对用户开放。',
     }), 410
 
 
@@ -3412,16 +4084,16 @@ def hotlist():
         "producthunt", "steam", "xueqiu-hotstock"
     }
     if platform not in allowed_ids:
-        return jsonify({'ok': False, 'error': '不支持的平台'}), 400
+        return jsonify({'ok': False, 'error': '涓嶆敮鎸佺殑骞冲彴'}), 400
     base = "https://api.lolimi.cn/API/hot/entire"
     try:
         params = {"id": platform}
         res = requests.get(base, params=params, timeout=20)
         if res.status_code != 200:
-            return jsonify({'ok': False, 'error': f"接口错误: {res.text[:200]}"})
+            return jsonify({'ok': False, 'error': f"鎺ュ彛閿欒: {res.text[:200]}"})
         data = res.json()
         if data.get("status") in ("error", "fail"):
-            return jsonify({'ok': False, 'error': '接口返回失败'}), 400
+            return jsonify({'ok': False, 'error': '鎺ュ彛杩斿洖澶辫触'}), 400
         items = data.get("items") or []
         updated_ts = data.get("updatedTime") or data.get("timestamp")
         normalized = []
@@ -3431,7 +4103,7 @@ def hotlist():
             extra = item.get("extra") or {}
             hot_raw = item.get("hot") or item.get("heat") or item.get("score") or item.get("view") or extra.get("hot") or extra.get("heat") or extra.get("score") or extra.get("view") or "-"
             if isinstance(hot_raw, str):
-                hot_raw = hot_raw.replace("热度", "").strip()
+                hot_raw = hot_raw.replace("鐑害", "").strip()
             time_raw = item.get("time") or item.get("date") or extra.get("time") or extra.get("date") or updated_ts or ""
             if isinstance(time_raw, (int, float)):
                 ts = float(time_raw)
@@ -3447,7 +4119,7 @@ def hotlist():
                 "title": item.get("title") or item.get("name") or item.get("topic") or "-",
                 "hot": hot_raw,
                 "author": item.get("author") or item.get("user") or item.get("owner") or item.get("source") or extra.get("author") or extra.get("user") or extra.get("owner") or extra.get("source") or "-",
-                "time": time_raw.replace(" 时间:", "").strip()
+                "time": time_raw.replace(" 鏃堕棿:", "").strip()
             })
         return jsonify({'ok': True, 'items': normalized})
     except Exception as e:
@@ -3462,9 +4134,9 @@ def draft_inspect_api():
     raw_draft_path = data.get('draft_path')
     draft_path = _normalize_draft_project_path(raw_draft_path)
     if draft_path and not _is_valid_draft_project_path(draft_path):
-        return jsonify({'ok': False, 'error': '请选择真正的剪映草稿目录，当前路径不是有效草稿'}), 400
+        return jsonify({'ok': False, 'error': '璇烽€夋嫨鐪熸鐨勫壀鏄犺崏绋跨洰褰曪紝褰撳墠璺緞涓嶆槸鏈夋晥鑽夌'}), 400
     if not draft_path:
-        return jsonify({'ok': False, 'error': '缺少草稿路径'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯鑽夌璺緞'}), 400
     draft_logger.info("draft_inspect: request path=%s", draft_path)
     materials, material_items, texts, err1 = _extract_template_info(draft_path)
     tracks, seg_map, err2 = _extract_template_tracks(draft_path)
@@ -3492,11 +4164,11 @@ def draft_timeline_summary_api():
     data = request.get_json(silent=True) or {}
     draft_path = _normalize_draft_project_path((data.get('draft_path') or '').strip())
     if not draft_path:
-        return jsonify({'ok': False, 'error': '缺少草稿路径'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯鑽夌璺緞'}), 400
 
     draft_data, load_err = _load_draft_content(draft_path)
     if load_err or not isinstance(draft_data, dict):
-        return jsonify({'ok': False, 'error': load_err or '草稿读取失败'}), 400
+        return jsonify({'ok': False, 'error': load_err or '鑽夌璇诲彇澶辫触'}), 400
 
     draft_data = _resolve_active_draft_payload(draft_data)
     tracks = draft_data.get('tracks', []) or []
@@ -3579,7 +4251,7 @@ def drafts_timeline_summary_api():
     data = request.get_json(silent=True) or {}
     draft_paths = data.get('draft_paths') or []
     if not isinstance(draft_paths, list) or not draft_paths:
-        return jsonify({'ok': False, 'error': '缺少草稿列表'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯鑽夌鍒楄〃'}), 400
 
     items = []
     for raw in draft_paths:
@@ -3593,7 +4265,7 @@ def drafts_timeline_summary_api():
         draft_data, load_err = _load_draft_content(draft_path)
         if load_err or not isinstance(draft_data, dict):
             entry['ok'] = False
-            entry['error'] = load_err or '草稿读取失败'
+            entry['error'] = load_err or '鑽夌璇诲彇澶辫触'
             items.append(entry)
             continue
 
@@ -3623,7 +4295,7 @@ def draft_split_main_track_api():
     track_name = (data.get('track_name') or '').strip()
     save_path = output_dir or 'skip'
     if False and not save_path:
-        return jsonify({'ok': False, 'error': '请先设置采集保存目录，或在当前页面手动填写保存目录'}), 400
+        return jsonify({'ok': False, 'error': '请先设置采集保存目录，或在当前页面手动填写保存目录。'}), 400
 
     try:
         segment_seconds = float(data.get('segment_seconds') or 0)
@@ -3631,15 +4303,15 @@ def draft_split_main_track_api():
         segment_seconds = 0
 
     if not draft_path:
-        return jsonify({'ok': False, 'error': '缺少草稿路径'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯鑽夌璺緞'}), 400
     if segment_seconds <= 0:
-        return jsonify({'ok': False, 'error': '请输入有效的分割时长'}), 400
+        return jsonify({'ok': False, 'error': '璇疯緭鍏ユ湁鏁堢殑鍒嗗壊鏃堕暱'}), 400
     if not output_dir:
         return jsonify({'ok': False, 'error': '未找到导出目录'}), 400
 
     draft_data, load_err = _load_draft_content(draft_path)
     if load_err or not isinstance(draft_data, dict):
-        return jsonify({'ok': False, 'error': load_err or '草稿读取失败'}), 400
+        return jsonify({'ok': False, 'error': load_err or '鑽夌璇诲彇澶辫触'}), 400
 
     draft_data = _resolve_active_draft_payload(draft_data)
     tracks = draft_data.get('tracks', []) or []
@@ -3654,7 +4326,7 @@ def draft_split_main_track_api():
         if not track_name and target_track is None:
             target_track = track
     if not target_track:
-        return jsonify({'ok': False, 'error': '未找到可分割的主轨道'}), 400
+        return jsonify({'ok': False, 'error': '鏈壘鍒板彲鍒嗗壊鐨勪富杞ㄩ亾'}), 400
 
     video_materials = {}
     for item in (draft_data.get('materials', {}) or {}).get('videos', []) or []:
@@ -3792,7 +4464,7 @@ def draft_split_main_track_api():
                     results.append({
                         'segment_index': segment_index,
                         'ok': False,
-                        'error': f'图片片段转视频失败: {exc}',
+                        'error': f'鍥剧墖鐗囨杞棰戝け璐? {exc}',
                         'source': src,
                     })
                     continue
@@ -3841,7 +4513,7 @@ def draft_split_main_track_api():
                     'segment_index': segment_index,
                     'piece_index': piece_index,
                     'ok': False,
-                    'error': _resp_message(add_resp, '添加片段失败'),
+                    'error': _resp_message(add_resp, '娣诲姞鐗囨澶辫触'),
                 })
             piece_offset += piece_duration
             timeline_cursor += piece_duration
@@ -4145,8 +4817,14 @@ def workspace_settings():
                 },
             },
             'ai': {
-                'script_prompt_template': ai_cfg.get('script_prompt_template') or get_config('script_prompt_template', '') or '',
-                'image_prompt_template': ai_cfg.get('image_prompt_template') or get_config('image_prompt_template', '') or '',
+                'script_prompt_template': _clean_prompt_template_value(
+                    ai_cfg.get('script_prompt_template') or get_config('script_prompt_template', DEFAULT_SCRIPT_PROMPT_TEMPLATE),
+                    DEFAULT_SCRIPT_PROMPT_TEMPLATE,
+                ),
+                'image_prompt_template': _clean_prompt_template_value(
+                    ai_cfg.get('image_prompt_template') or get_config('image_prompt_template', DEFAULT_IMAGE_PROMPT_TEMPLATE),
+                    DEFAULT_IMAGE_PROMPT_TEMPLATE,
+                ),
             },
         }
 
@@ -4210,8 +4888,8 @@ def workspace_settings():
     ai_cfg = data.get('ai') or {}
     if ai_cfg:
         user_config_patch['ai'] = {
-            'script_prompt_template': (ai_cfg.get('script_prompt_template') or '').strip(),
-            'image_prompt_template': (ai_cfg.get('image_prompt_template') or '').strip(),
+        'script_prompt_template': (ai_cfg.get('script_prompt_template') or '').strip(),
+        'image_prompt_template': (ai_cfg.get('image_prompt_template') or '').strip(),
         }
 
     config = save_user_config(user.id, user_config_patch, merge=True) if user_config_patch else load_user_config(user.id)
@@ -4402,8 +5080,47 @@ def _get_manga_generate_cost():
         return 1
 
 
+def _get_ai_make_generate_cost():
+    try:
+        return _clamp_int(get_config("ai_make_generate_cost", "0"), 0, 0, None)
+    except Exception:
+        return 0
+
+
+def _get_storyboard_generate_cost():
+    try:
+        return _clamp_int(get_config("storyboard_generate_cost", "0"), 0, 0, None)
+    except Exception:
+        return 0
+
+
+def _ensure_quota_available(user: User, cost: int, error_message: str):
+    clean_cost = _clamp_int(cost, 0, 0, None)
+    quota = get_or_create_quota(user.id)
+    if clean_cost > 0 and not _quota_has_unlimited_access(quota) and (quota.remaining or 0) < clean_cost:
+        return quota, jsonify({'ok': False, 'error': error_message, **quota_to_dict(quota)}), 403
+    return quota, None
+
+
+def _apply_quota_charge(quota: Optional[UserQuota], user_id: int, cost: int, reason: str, project_id: Optional[str] = None):
+    clean_cost = _clamp_int(cost, 0, 0, None)
+    if clean_cost <= 0 or quota is None or _quota_has_unlimited_access(quota):
+        return quota
+    quota.remaining = max(0, (quota.remaining or 0) - clean_cost)
+    quota.total_generated = (quota.total_generated or 0) + clean_cost
+    db.session.add(quota)
+    db.session.add(UserQuotaLog(
+        user_id=user_id,
+        change=-clean_cost,
+        reason=reason,
+        project_id=project_id,
+        remaining_after=quota.remaining,
+    ))
+    return quota
+
+
 def _quota_reason_label(reason: str) -> str:
-    return _QUOTA_REASON_LABELS.get(reason or "", reason or "积分变动")
+    return _QUOTA_REASON_LABELS.get(reason or "", reason or "绉垎鍙樺姩")
 
 
 def _serialize_quota_log(item: UserQuotaLog):
@@ -4525,7 +5242,7 @@ def _bind_device_to_code(
             return True, None
 
     if len(active_bindings) >= (cdk.device_limit or 1):
-        return False, "设备数量已满，请先解绑旧设备"
+        return False, "璁惧鏁伴噺宸叉弧锛岃鍏堣В缁戞棫璁惧"
 
     binding = LicenseBinding(
         code_id=cdk.id,
@@ -4670,7 +5387,7 @@ def license_verify():
         return limit_err
     if not code or not device_fingerprint:
         audit_security_event("license_verify_invalid_payload", level="warning", request_obj=request, details={"code": code})
-        return jsonify({'ok': False, 'error': '缺少设备指纹'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯璁惧鎸囩汗'}), 400
     cdk = CdkCode.query.filter_by(code=code).first()
     if not cdk or cdk.status != 1:
         audit_security_event("license_verify_invalid_code", level="warning", request_obj=request, details={"code": code})
@@ -4732,7 +5449,7 @@ def license_deactivate():
         return limit_err
     if not code or not device_fingerprint:
         audit_security_event("license_deactivate_invalid_payload", level="warning", request_obj=request, user_id=user.id, details={"code": code})
-        return jsonify({'ok': False, 'error': '缺少设备指纹'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯璁惧鎸囩汗'}), 400
     cdk = CdkCode.query.filter_by(code=code).first()
     if not cdk or cdk.activated_by != user.id:
         audit_security_event("license_deactivate_forbidden", level="warning", request_obj=request, user_id=user.id, details={"code": code})
@@ -4870,9 +5587,9 @@ def admin_announcements():
         content = str(data.get('content') or '').strip()
         is_published = bool(data.get('is_published', True))
         if not title:
-            return jsonify({'ok': False, 'error': '公告标题不能为空'}), 400
+            return jsonify({'ok': False, 'error': '鍏憡鏍囬涓嶈兘涓虹┖'}), 400
         if not content:
-            return jsonify({'ok': False, 'error': '公告内容不能为空'}), 400
+            return jsonify({'ok': False, 'error': '鍏憡鍐呭涓嶈兘涓虹┖'}), 400
 
         item = None
         if announcement_id not in (None, '', 0, '0'):
@@ -4934,6 +5651,271 @@ def admin_announcement_delete(announcement_id: int):
     return jsonify({'ok': True, 'id': announcement_id})
 
 
+_AI_STORYBOARD_STYLE_DEFAULTS = {
+    "modern_manhua": {
+        "label": "鐜颁唬鍥芥极",
+        "positive_prefix": "modern Chinese manhua, clean comic lines, cinematic framing, polished lighting, controlled color blocks, storyboard-ready composition, detailed environment",
+        "negative_prompt": "photoreal documentary, western superhero comic, chibi, low detail, childish cartoon",
+    },
+    "xianxia_manhua": {
+        "label": "浠欎緺鍥芥极",
+        "positive_prefix": "xianxia manhua, immortal fantasy, oriental epic atmosphere, spiritual energy, cinematic Chinese fantasy, stylized light-shadow contrast, storyboard-ready composition",
+        "negative_prompt": "modern city, office scene, casual wear, realistic photography, western fantasy armor",
+    },
+    "ancient_manhua": {
+        "label": "鍙ら鍥芥极",
+        "positive_prefix": "ancient Chinese manhua, hanfu, traditional architecture, elegant oriental composition, historical atmosphere, graceful lighting",
+        "negative_prompt": "modern props, neon, sci-fi device, school uniform, contemporary street",
+    },
+    "ink_wash": {
+        "label": "姘村ⅷ鍥介",
+        "positive_prefix": "Chinese ink wash style, brush texture, poetic atmosphere, restrained palette, oriental painting composition, elegant blank space",
+        "negative_prompt": "heavy neon, glossy cg, over-saturated anime, plastic 3d render",
+    },
+    "cinematic_illustration": {
+        "label": "鐢靛奖璐ㄦ劅鎻掔敾",
+        "positive_prefix": "cinematic illustration, dramatic light and shadow, movie still composition, premium texture, rich atmosphere, narrative frame",
+        "negative_prompt": "flat snapshot, cheap poster, low contrast, random composition",
+    },
+    "dark_realism": {
+        "label": "鏆楅粦鍐欏疄",
+        "positive_prefix": "dark realism, moody atmosphere, dramatic shadows, grounded texture, tense cinematic realism, serious tone",
+        "negative_prompt": "cute idol style, bright healing palette, dreamy fairy tale, childish anime",
+    },
+}
+
+
+def _get_ai_admin_config() -> dict:
+    silicon_key = (get_secure_config("siliconflow_default_api_key", "") or "").strip()
+    chat_key = (get_secure_config("chatanywhere_default_api_key", "") or "").strip()
+    genre_templates = _normalize_storyboard_template_labels(
+        _parse_json_object_config(
+            get_config("siliconflow_genre_templates", json.dumps(_AI_STORYBOARD_GENRE_DEFAULTS, ensure_ascii=False)),
+            _AI_STORYBOARD_GENRE_DEFAULTS,
+        ),
+        _AI_STORYBOARD_GENRE_DEFAULTS,
+    )
+    style_templates = _parse_json_object_config(
+        get_config("siliconflow_style_templates", json.dumps(_AI_STORYBOARD_STYLE_DEFAULTS, ensure_ascii=False)),
+        _AI_STORYBOARD_STYLE_DEFAULTS,
+    )
+    cfg = {
+        "siliconflow_genre_templates": genre_templates,
+        "siliconflow_style_templates": style_templates,
+        "siliconflow_default_api_key": silicon_key,
+        "chatanywhere_default_api_key": chat_key,
+    }
+    cfg.update({
+        "siliconflow_base_url": get_config("siliconflow_base_url", _AI_PROVIDER_DEFAULTS["siliconflow"]["base_url"]) or _AI_PROVIDER_DEFAULTS["siliconflow"]["base_url"],
+        "siliconflow_docs_url": get_config("siliconflow_docs_url", _AI_PROVIDER_DEFAULTS["siliconflow"]["docs_url"]) or _AI_PROVIDER_DEFAULTS["siliconflow"]["docs_url"],
+        "siliconflow_signup_url": get_config("siliconflow_signup_url", _AI_PROVIDER_DEFAULTS["siliconflow"]["signup_url"]) or _AI_PROVIDER_DEFAULTS["siliconflow"]["signup_url"],
+        "siliconflow_model": get_config("siliconflow_model", "Kwai-Kolors/Kolors") or "Kwai-Kolors/Kolors",
+        "siliconflow_positive_prefix": get_config("siliconflow_positive_prefix", _AI_IMAGE_PROMPT_DEFAULTS["character"]["positive_prefix"]) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["positive_prefix"],
+        "siliconflow_scene_suffix": get_config("siliconflow_scene_suffix", _AI_IMAGE_PROMPT_DEFAULTS["character"]["suffix"]) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["suffix"],
+        "siliconflow_scene_positive_prefix": get_config("siliconflow_scene_positive_prefix", _AI_IMAGE_PROMPT_DEFAULTS["scene"]["positive_prefix"]) or _AI_IMAGE_PROMPT_DEFAULTS["scene"]["positive_prefix"],
+        "siliconflow_character_positive_prefix": get_config("siliconflow_character_positive_prefix", get_config("siliconflow_positive_prefix", _AI_IMAGE_PROMPT_DEFAULTS["character"]["positive_prefix"]) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["positive_prefix"]) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["positive_prefix"],
+        "siliconflow_dialogue_positive_prefix": get_config("siliconflow_dialogue_positive_prefix", _AI_IMAGE_PROMPT_DEFAULTS["dialogue"]["positive_prefix"]) or _AI_IMAGE_PROMPT_DEFAULTS["dialogue"]["positive_prefix"],
+        "siliconflow_action_positive_prefix": get_config("siliconflow_action_positive_prefix", _AI_IMAGE_PROMPT_DEFAULTS["action"]["positive_prefix"]) or _AI_IMAGE_PROMPT_DEFAULTS["action"]["positive_prefix"],
+        "siliconflow_scene_prompt_suffix": get_config("siliconflow_scene_prompt_suffix", _AI_IMAGE_PROMPT_DEFAULTS["scene"]["suffix"]) or _AI_IMAGE_PROMPT_DEFAULTS["scene"]["suffix"],
+        "siliconflow_character_prompt_suffix": get_config("siliconflow_character_prompt_suffix", get_config("siliconflow_scene_suffix", _AI_IMAGE_PROMPT_DEFAULTS["character"]["suffix"]) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["suffix"]) or _AI_IMAGE_PROMPT_DEFAULTS["character"]["suffix"],
+        "siliconflow_dialogue_prompt_suffix": get_config("siliconflow_dialogue_prompt_suffix", _AI_IMAGE_PROMPT_DEFAULTS["dialogue"]["suffix"]) or _AI_IMAGE_PROMPT_DEFAULTS["dialogue"]["suffix"],
+        "siliconflow_action_prompt_suffix": get_config("siliconflow_action_prompt_suffix", _AI_IMAGE_PROMPT_DEFAULTS["action"]["suffix"]) or _AI_IMAGE_PROMPT_DEFAULTS["action"]["suffix"],
+        "siliconflow_scene_negative_prompt": get_config("siliconflow_scene_negative_prompt", _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["scene"]) or _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["scene"],
+        "siliconflow_character_negative_prompt": get_config("siliconflow_character_negative_prompt", _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["character"]) or _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["character"],
+        "siliconflow_dialogue_negative_prompt": get_config("siliconflow_dialogue_negative_prompt", _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["dialogue"]) or _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["dialogue"],
+        "siliconflow_action_negative_prompt": get_config("siliconflow_action_negative_prompt", _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["action"]) or _AI_IMAGE_SHOT_NEGATIVE_DEFAULTS["action"],
+        "siliconflow_negative_prompt": get_config("siliconflow_negative_prompt", _AI_IMAGE_NEGATIVE_PROMPT) or _AI_IMAGE_NEGATIVE_PROMPT,
+        "siliconflow_scene_model_list": _parse_model_list_config(get_config("siliconflow_scene_model_list", json.dumps(_AI_IMAGE_MODEL_LIST_DEFAULTS["scene"], ensure_ascii=False))),
+        "siliconflow_character_model_list": _parse_model_list_config(get_config("siliconflow_character_model_list", json.dumps(_AI_IMAGE_MODEL_LIST_DEFAULTS["character"], ensure_ascii=False))),
+        "siliconflow_dialogue_model_list": _parse_model_list_config(get_config("siliconflow_dialogue_model_list", json.dumps(_AI_IMAGE_MODEL_LIST_DEFAULTS["dialogue"], ensure_ascii=False))),
+        "siliconflow_action_model_list": _parse_model_list_config(get_config("siliconflow_action_model_list", json.dumps(_AI_IMAGE_MODEL_LIST_DEFAULTS["action"], ensure_ascii=False))),
+        "siliconflow_scene_num_inference_steps": _clamp_int(get_config("siliconflow_scene_num_inference_steps", _AI_IMAGE_SCENE_PARAM_DEFAULTS["num_inference_steps"]), _AI_IMAGE_SCENE_PARAM_DEFAULTS["num_inference_steps"], 1, 100),
+        "siliconflow_scene_guidance_scale": _safe_float_impl(get_config("siliconflow_scene_guidance_scale", _AI_IMAGE_SCENE_PARAM_DEFAULTS["guidance_scale"]), _AI_IMAGE_SCENE_PARAM_DEFAULTS["guidance_scale"], 1.0, 20.0),
+        "siliconflow_scene_seed": str(get_config("siliconflow_scene_seed", _AI_IMAGE_SCENE_PARAM_DEFAULTS["seed"]) or "").strip(),
+        "chatanywhere_base_url": get_config("chatanywhere_base_url", _AI_PROVIDER_DEFAULTS["chatanywhere"]["base_url"]) or _AI_PROVIDER_DEFAULTS["chatanywhere"]["base_url"],
+        "chatanywhere_docs_url": get_config("chatanywhere_docs_url", _AI_PROVIDER_DEFAULTS["chatanywhere"]["docs_url"]) or _AI_PROVIDER_DEFAULTS["chatanywhere"]["docs_url"],
+        "chatanywhere_signup_url": get_config("chatanywhere_signup_url", _AI_PROVIDER_DEFAULTS["chatanywhere"]["signup_url"]) or _AI_PROVIDER_DEFAULTS["chatanywhere"]["signup_url"],
+        "siliconflow_text_model_list": _parse_model_list_config(get_config("siliconflow_text_model_list", get_config("chatanywhere_model_list", json.dumps(_AI_STORYBOARD_DEFAULT_MODELS, ensure_ascii=False)))),
+        "siliconflow_text_system_prompt": get_config("siliconflow_text_system_prompt", get_config("chatanywhere_system_prompt", _AI_STORYBOARD_SYSTEM_PROMPT) or _AI_STORYBOARD_SYSTEM_PROMPT) or _AI_STORYBOARD_SYSTEM_PROMPT,
+        "script_prompt_template": _clean_prompt_template_value(get_config("script_prompt_template", DEFAULT_SCRIPT_PROMPT_TEMPLATE), DEFAULT_SCRIPT_PROMPT_TEMPLATE),
+        "image_prompt_template": _clean_prompt_template_value(get_config("image_prompt_template", DEFAULT_IMAGE_PROMPT_TEMPLATE), DEFAULT_IMAGE_PROMPT_TEMPLATE),
+    })
+    return cfg
+
+
+def _normalize_storyboard_style(value, default: str = "modern_manhua") -> str:
+    raw = str(value or "").strip().lower()
+    alias_map = {
+        "modern_manhua": "modern_manhua",
+        "鐜颁唬鍥芥极": "modern_manhua",
+        "xianxia_manhua": "xianxia_manhua",
+        "浠欎緺鍥芥极": "xianxia_manhua",
+        "ancient_manhua": "ancient_manhua",
+        "鍙ら鍥芥极": "ancient_manhua",
+        "ink_wash": "ink_wash",
+        "姘村ⅷ鍥介": "ink_wash",
+        "cinematic_illustration": "cinematic_illustration",
+        "鐢靛奖璐ㄦ劅鎻掔敾": "cinematic_illustration",
+        "dark_realism": "dark_realism",
+        "鏆楅粦鍐欏疄": "dark_realism",
+    }
+    resolved = alias_map.get(raw, raw)
+    return resolved if resolved in _AI_STORYBOARD_STYLE_DEFAULTS else default
+
+
+def _resolve_storyboard_style_template(ai_cfg: dict, style_key: str) -> dict:
+    templates = ai_cfg.get("siliconflow_style_templates") or {}
+    if not isinstance(templates, dict):
+        templates = {}
+    normalized = _normalize_storyboard_style(style_key, default="modern_manhua")
+    template = templates.get(normalized)
+    if isinstance(template, dict):
+        return template
+    return deepcopy(_AI_STORYBOARD_STYLE_DEFAULTS.get(normalized) or _AI_STORYBOARD_STYLE_DEFAULTS["modern_manhua"])
+
+
+def _compose_siliconflow_image_prompt(raw_prompt: str, shot_type: str, ai_cfg: dict, genre: str = "fantasy", style_key: str = "modern_manhua") -> tuple[str, str]:
+    normalized_type = _normalize_storyboard_shot_type(shot_type, default="character")
+    normalized_genre = _normalize_storyboard_genre(genre, default="fantasy")
+    normalized_style = _normalize_storyboard_style(style_key, default="modern_manhua")
+    genre_template = _resolve_storyboard_genre_template(ai_cfg, normalized_genre)
+    style_template = _resolve_storyboard_style_template(ai_cfg, normalized_style)
+    positive = str(ai_cfg.get(f"siliconflow_{normalized_type}_positive_prefix") or "").strip()
+    suffix = str(ai_cfg.get(f"siliconflow_{normalized_type}_prompt_suffix") or "").strip()
+    shot_negative = str(ai_cfg.get(f"siliconflow_{normalized_type}_negative_prompt") or "").strip()
+    negative = _merge_negative_prompts(
+        ai_cfg.get("siliconflow_negative_prompt"),
+        shot_negative,
+        genre_template.get("negative_prompt"),
+        style_template.get("negative_prompt"),
+    )
+    prompt = str(raw_prompt or "").strip()
+    if normalized_type == "scene" and prompt:
+        prompt = re.sub(r"^娴滆櫣澧挎稉鈧懛瀛樷偓褔鏁嬮悙鐧哥窗.*?$", "", prompt, flags=re.MULTILINE)
+        prompt = re.sub(r"^?????.*?$", "????????????????????????????????????????????????", prompt, flags=re.MULTILINE)
+        prompt = re.sub(r"鏉╂粌顦╅梾鎰閸欘垵顫哰^閵嗗偊绱盶n]*娴滆櫣澧縖^閵嗗偊绱盶n]*", "", prompt)
+        prompt = re.sub(r"鏉╂粌顦╅梾鎰閸欘垵顫哰^閵嗗偊绱盶n]*闊偄濂朳^閵嗗偊绱盶n]*", "", prompt)
+        prompt = re.sub(r"閻㈠娼伴柌宥呯妇閺€鎯ф躬[^閵嗗偊绱盶n]*娴滆櫣澧縖^閵嗗偊绱盶n]*", "閻㈠娼伴柌宥呯妇閺€鎯ф躬娑撴牜鏅憴鍌氱紦缁斿鈧胶骞嗘晶鍐╃毤閸ユ潙鎷扮粚娲？閸忓磭閮撮敍灞藉讲娴犮儲鐥呴張澶夋眽閻椻晪绱濇稉宥堫洣瀵缚顢戞繅鐐插弳鐟欐帟澹婇妴?", prompt)
+        prompt = re.sub(r"\n{3,}", "\n\n", prompt).strip()
+    final_prompt = _merge_prompt_lines(
+        genre_template.get("positive_prefix"),
+        positive,
+        style_template.get("positive_prefix"),
+        prompt,
+        genre_template.get(f"{normalized_type}_suffix"),
+        suffix,
+    )
+    return final_prompt or prompt, negative
+
+
+
+def _compose_siliconflow_image_prompt(raw_prompt: str, shot_type: str, ai_cfg: dict, genre: str = "fantasy", style_key: str = "modern_manhua") -> tuple[str, str]:
+    normalized_type = _normalize_storyboard_shot_type(shot_type, default="character")
+    normalized_genre = _normalize_storyboard_genre(genre, default="fantasy")
+    normalized_style = _normalize_storyboard_style(style_key, default="modern_manhua")
+    genre_template = _resolve_storyboard_genre_template(ai_cfg, normalized_genre)
+    style_template = _resolve_storyboard_style_template(ai_cfg, normalized_style)
+    positive = str(ai_cfg.get(f"siliconflow_{normalized_type}_positive_prefix") or "").strip()
+    suffix = str(ai_cfg.get(f"siliconflow_{normalized_type}_prompt_suffix") or "").strip()
+    shot_negative = str(ai_cfg.get(f"siliconflow_{normalized_type}_negative_prompt") or "").strip()
+    negative = _merge_negative_prompts(
+        ai_cfg.get("siliconflow_negative_prompt"),
+        shot_negative,
+        genre_template.get("negative_prompt"),
+        style_template.get("negative_prompt"),
+    )
+    prompt = _clean_storyboard_prompt_fragment(raw_prompt, limit=600)
+    if normalized_type == "scene" and prompt:
+        prompt = _merge_prompt_lines(
+            prompt,
+            "Scene-first composition, wide establishing shot, do not let a character dominate the frame.",
+        )
+    final_prompt = _merge_prompt_lines(
+        genre_template.get("positive_prefix"),
+        style_template.get("positive_prefix"),
+        positive,
+        prompt,
+        genre_template.get(f"{normalized_type}_suffix"),
+        suffix,
+    )
+    return final_prompt or prompt, negative
+
+
+def _clean_storyboard_prompt_fragment(value: str, limit: int = 240) -> str:
+    text = str(value or "").replace("\r", "\n")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit].strip()
+
+
+def _normalize_storyboard_prompt_characters(value) -> list:
+    raw_items = value if isinstance(value, (list, tuple, set)) else re.split(r"[,\./\s]+", str(value or ""))
+    items = []
+    seen = set()
+    for raw in raw_items:
+        name = _clean_storyboard_prompt_fragment(raw, limit=32)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        items.append(name)
+    return items
+
+
+def _strip_storyboard_control_lines(value: str) -> str:
+    prefixes = (
+        "please",
+        "genre:",
+        "style:",
+        "subject:",
+        "scene:",
+        "focus:",
+        "action:",
+        "camera:",
+        "emotion:",
+        "context:",
+        "details:",
+        "negative:",
+    )
+    cleaned_lines = []
+    for line in str(value or "").replace("\r", "\n").split("\n"):
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith(prefixes):
+            continue
+        if re.match(r"^[A-Za-z0-9 ,./:_-]{16,}$", text):
+            continue
+        cleaned_lines.append(text)
+    return _clean_storyboard_prompt_fragment(", ".join(cleaned_lines), limit=360)
+
+
+def _build_structured_storyboard_image_prompt(extra_body: dict, shot_type: str, genre: str, style_key: str, ai_cfg: dict) -> str:
+    normalized_type = _normalize_storyboard_shot_type(shot_type, default="character")
+    normalized_genre = _normalize_storyboard_genre(genre, default="fantasy")
+    normalized_style = _normalize_storyboard_style(style_key, default="modern_manhua")
+    genre_template = _resolve_storyboard_genre_template(ai_cfg, normalized_genre)
+    style_template = _resolve_storyboard_style_template(ai_cfg, normalized_style)
+
+    genre_label = str(genre_template.get("label") or normalized_genre).strip()
+    style_label = str(style_template.get("label") or normalized_style).strip()
+    characters = _normalize_storyboard_prompt_characters(extra_body.get("characters") or extra_body.get("speaker") or "")
+
+    parts = [
+        f"genre: {genre_label}",
+        f"style: {style_label}",
+        f"shot: {normalized_type}",
+    ]
+    if characters:
+        parts.append(f"subject: {', '.join(characters[:4])}")
+    for key in ("scene", "dialogue", "visual_action", "setting", "camera", "emotion", "visual_focus", "style_hint", "consistency_anchor", "global_context", "neighbor_context", "image_prompt_text"):
+        value = _clean_storyboard_prompt_fragment(extra_body.get(key), limit=220)
+        if value:
+            parts.append(value)
+    prompt_supplement = _strip_storyboard_control_lines(extra_body.get("prompt_supplement") or "")
+    if prompt_supplement:
+        parts.append(prompt_supplement)
+    return _merge_prompt_lines(*parts)
+
+
 @api_bp.route('/admin/license-settings', methods=['GET', 'POST'])
 def admin_license_settings():
     user, err = get_auth_user(require_admin=True)
@@ -4941,15 +5923,14 @@ def admin_license_settings():
         return err
     if request.method == 'POST':
         data = request.get_json() or {}
-        legacy_cooldown_hours = data.get("license_transfer_cooldown_hours")
-        if "license_transfer_cooldown_minutes" not in data and legacy_cooldown_hours is not None:
-            data["license_transfer_cooldown_minutes"] = _clamp_int(legacy_cooldown_hours, 0, 0, None) * 60
         for key in (
             "license_offline_hours",
             "license_transfer_cooldown_minutes",
             "license_code_length",
             "license_points_ratio",
             "manga_generate_cost",
+            "ai_make_generate_cost",
+            "storyboard_generate_cost",
             "daily_checkin_reward",
             "default_user_quota",
             "invite_referrer_reward",
@@ -4960,10 +5941,27 @@ def admin_license_settings():
             "siliconflow_model",
             "siliconflow_positive_prefix",
             "siliconflow_scene_suffix",
+            "siliconflow_scene_positive_prefix",
+            "siliconflow_character_positive_prefix",
+            "siliconflow_dialogue_positive_prefix",
+            "siliconflow_action_positive_prefix",
+            "siliconflow_scene_prompt_suffix",
+            "siliconflow_character_prompt_suffix",
+            "siliconflow_dialogue_prompt_suffix",
+            "siliconflow_action_prompt_suffix",
+            "siliconflow_scene_negative_prompt",
+            "siliconflow_character_negative_prompt",
+            "siliconflow_dialogue_negative_prompt",
+            "siliconflow_action_negative_prompt",
             "siliconflow_negative_prompt",
+            "siliconflow_scene_num_inference_steps",
+            "siliconflow_scene_guidance_scale",
+            "siliconflow_scene_seed",
             "siliconflow_text_system_prompt",
             "script_prompt_template",
             "image_prompt_template",
+            "siliconflow_genre_templates",
+            "siliconflow_style_templates",
         ):
             if key in data:
                 raw_value = data.get(key)
@@ -4975,14 +5973,33 @@ def admin_license_settings():
                     raw_value = _clamp_int(raw_value, 0, 0, None)
                 elif key == "license_transfer_cooldown_minutes":
                     raw_value = _clamp_int(raw_value, 0, 0, None)
-                    set_config("license_transfer_cooldown_hours", str(int(raw_value // 60) if raw_value else 0))
                 set_config(key, "" if raw_value is None else str(raw_value).strip())
         if "siliconflow_text_model_list" in data:
             set_config("siliconflow_text_model_list", json.dumps(_parse_model_list_config(data.get("siliconflow_text_model_list")), ensure_ascii=False))
+        for key in (
+            "siliconflow_scene_model_list",
+            "siliconflow_character_model_list",
+            "siliconflow_dialogue_model_list",
+            "siliconflow_action_model_list",
+        ):
+            if key in data:
+                set_config(key, json.dumps(_parse_model_list_config(data.get(key)), ensure_ascii=False))
+        if "siliconflow_genre_templates" in data:
+            set_config(
+                "siliconflow_genre_templates",
+                json.dumps(_parse_json_object_config(data.get("siliconflow_genre_templates"), _AI_STORYBOARD_GENRE_DEFAULTS), ensure_ascii=False),
+            )
+        if "siliconflow_style_templates" in data:
+            set_config(
+                "siliconflow_style_templates",
+                json.dumps(_parse_json_object_config(data.get("siliconflow_style_templates"), _AI_STORYBOARD_STYLE_DEFAULTS), ensure_ascii=False),
+            )
         if "siliconflow_default_api_key" in data:
             set_secure_config("siliconflow_default_api_key", str(data.get("siliconflow_default_api_key") or "").strip())
     settings = get_license_settings()
     settings['manga_generate_cost'] = _get_manga_generate_cost()
+    settings['ai_make_generate_cost'] = _get_ai_make_generate_cost()
+    settings['storyboard_generate_cost'] = _get_storyboard_generate_cost()
     settings['default_user_quota'] = _get_default_user_quota_value()
     settings['invite_referrer_reward'] = _clamp_int(_safe_int_config('invite_referrer_reward', 3), 3, 0, _MAX_INVITE_REWARD_PERCENT)
     settings['invite_invitee_reward'] = _clamp_int(_safe_int_config('invite_invitee_reward', 2), 2, 0, _MAX_INVITE_REWARD_PERCENT)
@@ -4994,13 +6011,40 @@ def admin_license_settings():
         "siliconflow_model": ai_settings.get("siliconflow_model") or "",
         "siliconflow_positive_prefix": ai_settings.get("siliconflow_positive_prefix") or "",
         "siliconflow_scene_suffix": ai_settings.get("siliconflow_scene_suffix") or "",
+        "siliconflow_scene_positive_prefix": ai_settings.get("siliconflow_scene_positive_prefix") or "",
+        "siliconflow_character_positive_prefix": ai_settings.get("siliconflow_character_positive_prefix") or "",
+        "siliconflow_dialogue_positive_prefix": ai_settings.get("siliconflow_dialogue_positive_prefix") or "",
+        "siliconflow_action_positive_prefix": ai_settings.get("siliconflow_action_positive_prefix") or "",
+        "siliconflow_scene_prompt_suffix": ai_settings.get("siliconflow_scene_prompt_suffix") or "",
+        "siliconflow_character_prompt_suffix": ai_settings.get("siliconflow_character_prompt_suffix") or "",
+        "siliconflow_dialogue_prompt_suffix": ai_settings.get("siliconflow_dialogue_prompt_suffix") or "",
+        "siliconflow_action_prompt_suffix": ai_settings.get("siliconflow_action_prompt_suffix") or "",
+        "siliconflow_scene_negative_prompt": ai_settings.get("siliconflow_scene_negative_prompt") or "",
+        "siliconflow_character_negative_prompt": ai_settings.get("siliconflow_character_negative_prompt") or "",
+        "siliconflow_dialogue_negative_prompt": ai_settings.get("siliconflow_dialogue_negative_prompt") or "",
+        "siliconflow_action_negative_prompt": ai_settings.get("siliconflow_action_negative_prompt") or "",
         "siliconflow_negative_prompt": ai_settings.get("siliconflow_negative_prompt") or "",
         "siliconflow_default_api_key_masked": f"{ai_settings['siliconflow_default_api_key'][:4]}****{ai_settings['siliconflow_default_api_key'][-4:]}" if ai_settings.get("siliconflow_default_api_key") else "",
         "siliconflow_has_default_api_key": bool(ai_settings.get("siliconflow_default_api_key")),
         "siliconflow_text_model_list": ai_settings.get("siliconflow_text_model_list") or [],
+        "siliconflow_scene_model_list": ai_settings.get("siliconflow_scene_model_list") or [],
+        "siliconflow_character_model_list": ai_settings.get("siliconflow_character_model_list") or [],
+        "siliconflow_dialogue_model_list": ai_settings.get("siliconflow_dialogue_model_list") or [],
+        "siliconflow_action_model_list": ai_settings.get("siliconflow_action_model_list") or [],
+        "siliconflow_scene_num_inference_steps": ai_settings.get("siliconflow_scene_num_inference_steps"),
+        "siliconflow_scene_guidance_scale": ai_settings.get("siliconflow_scene_guidance_scale"),
+        "siliconflow_scene_seed": ai_settings.get("siliconflow_scene_seed") or "",
         "siliconflow_text_system_prompt": ai_settings.get("siliconflow_text_system_prompt") or "",
-        "script_prompt_template": get_config("script_prompt_template", "") or "",
-        "image_prompt_template": get_config("image_prompt_template", "") or "",
+        "siliconflow_genre_templates": ai_settings.get("siliconflow_genre_templates") or deepcopy(_AI_STORYBOARD_GENRE_DEFAULTS),
+        "siliconflow_style_templates": ai_settings.get("siliconflow_style_templates") or deepcopy(_AI_STORYBOARD_STYLE_DEFAULTS),
+        "script_prompt_template": _clean_prompt_template_value(
+            get_config("script_prompt_template", DEFAULT_SCRIPT_PROMPT_TEMPLATE),
+            DEFAULT_SCRIPT_PROMPT_TEMPLATE,
+        ),
+        "image_prompt_template": _clean_prompt_template_value(
+            get_config("image_prompt_template", DEFAULT_IMAGE_PROMPT_TEMPLATE),
+            DEFAULT_IMAGE_PROMPT_TEMPLATE,
+        ),
     })
     return jsonify({"ok": True, "settings": settings})
 
@@ -5079,8 +6123,9 @@ def admin_cdk_batch():
     duration_days = int(data.get("duration_days") or 0)
     quantity = int(data.get("quantity") or 0)
     if not card_type or duration_days <= 0 or quantity <= 0:
-        return jsonify({"ok": False, "error": "card_type、duration_days、quantity 不能为空且必须大于 0"}), 400
+        return jsonify({"ok": False, "error": "card_type銆乨uration_days銆乹uantity 涓嶈兘涓虹┖涓斿繀椤诲ぇ浜?0"}), 400
     bonus_points = int(data.get("bonus_points") or 0)
+    price = float(data.get("price") or 0)
     device_limit = int(data.get("device_limit") or 1)
     transfer_times = int(data.get("transfer_times") or 0)
     redeem_days = int(data.get("redeem_days") or 0)
@@ -5088,6 +6133,7 @@ def admin_cdk_batch():
     if template:
         template.duration_days = duration_days
         template.bonus_points = bonus_points
+        template.price = price
         template.device_limit = device_limit
         template.transfer_times = transfer_times
         template.redeem_days = redeem_days
@@ -5096,6 +6142,7 @@ def admin_cdk_batch():
             name=card_type,
             duration_days=duration_days,
             bonus_points=bonus_points,
+            price=price,
             device_limit=device_limit,
             transfer_times=transfer_times,
             redeem_days=redeem_days,
@@ -5139,6 +6186,7 @@ def admin_cdk_templates():
             "name": item.name,
             "duration_days": item.duration_days,
             "bonus_points": item.bonus_points,
+            "price": item.price,
             "device_limit": item.device_limit,
             "transfer_times": item.transfer_times,
             "redeem_days": item.redeem_days,
@@ -5192,7 +6240,7 @@ def admin_cdk_extract():
     card_type = (data.get("card_type") or "").strip()
     quantity = _clamp_int(data.get("quantity") or 0, 0, 1, 500)
     if not card_type or quantity <= 0:
-        return jsonify({"ok": False, "error": "请选择卡类型并填写提取数量"}), 400
+        return jsonify({"ok": False, "error": "璇烽€夋嫨鍗＄被鍨嬪苟濉啓鎻愬彇鏁伴噺"}), 400
 
     items = (
         CdkCode.query
@@ -5566,7 +6614,7 @@ def admin_server_ops_overview():
         "1. 回退到上一份备份或上一版文件",
         "2. 重启 videofactory-auth.service",
         "3. 确认 systemctl is-active 为 active",
-        "4. 再验域名与核心接口",
+        "4. 再验证域名与核心接口",
     ]
 
     return jsonify({
@@ -5610,11 +6658,11 @@ def admin_server_backup_create():
     except subprocess.CalledProcessError as exc:
         return jsonify({
             "ok": False,
-            "error": "backup script failed",
+            "error": "创建备份失败。",
             "detail": (exc.stderr or exc.stdout or "").strip()[:800],
         }), 500
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": "创建备份失败。", "detail": str(exc)[:800]}), 500
 
     archive_path = (result.stdout or "").strip().splitlines()
     archive_value = archive_path[-1].strip() if archive_path else ""
@@ -5685,13 +6733,13 @@ def micro_adjust_api():
     micro_adjust = data.get('micro_adjust') or {}
 
     if not draft_path:
-        return jsonify({'ok': False, 'error': '缺少草稿路径'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯鑽夌璺緞'}), 400
     if not os.path.exists(draft_path):
         return jsonify({'ok': False, 'error': '草稿路径不存在'}), 400
     if not isinstance(micro_adjust, dict) or not micro_adjust:
-        return jsonify({'ok': False, 'error': '缺少微调配置'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯寰皟閰嶇疆'}), 400
     if export_format not in (None, 'mp4', 'mov'):
-        return jsonify({'ok': False, 'error': '不支持的导出格式'}), 400
+        return jsonify({'ok': False, 'error': '涓嶆敮鎸佺殑瀵煎嚭鏍煎紡'}), 400
 
     output_path = export_path or get_drafts_folder() or draft_path
     if output_path:
@@ -5710,7 +6758,7 @@ def micro_adjust_api():
             'draft_id': summary.get('draft_id')
         })
     except Exception as e:
-        return jsonify({'ok': False, 'error': f'微调失败: {e}'}), 500
+        return jsonify({'ok': False, 'error': f'寰皟澶辫触: {e}'}), 500
 
 
 def _user_ai_root(user_id: int):
@@ -5890,7 +6938,7 @@ def admin_resource_exchange_review(post_id):
     action = (data.get('action') or '').strip().lower()
     reason = (data.get('reason') or '').strip()
     if action not in ('approve', 'reject'):
-        return jsonify({'ok': False, 'error': '审核动作无效'}), 400
+        return jsonify({'ok': False, 'error': '瀹℃牳鍔ㄤ綔鏃犳晥'}), 400
     if action == 'reject' and not reason:
         return jsonify({'ok': False, 'error': '拒绝时必须填写原因'}), 400
 
@@ -5921,14 +6969,26 @@ def materials_create_layout():
     materials_root = (data.get('materials_root') or '').strip()
     strategy = (data.get('strategy') or 'group').strip() or 'group'
     slots = [str(item).strip() for item in (data.get('slots') or []) if str(item).strip()]
+    replace_materials = bool(data.get('replace_materials', True))
+    replace_audios = bool(data.get('replace_audios', False))
+    replace_type = data.get('replace_type', 'both')
 
     if not draft_path:
-        return jsonify({'ok': False, 'error': '缺少草稿路径'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯鑽夌璺緞'}), 400
     if not materials_root:
         return jsonify({'ok': False, 'error': '缺少素材根目录'}), 400
 
     draft_name = os.path.basename(os.path.normpath(draft_path))
     try:
+        canonical_slots = _filter_replaceable_template_materials(
+            draft_path,
+            replace_materials,
+            replace_audios,
+            replace_type,
+            strategy,
+        )
+        if canonical_slots:
+            slots = canonical_slots
         layout = _build_material_layout(materials_root, draft_name, strategy, slots)
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 400
@@ -5937,6 +6997,10 @@ def materials_create_layout():
         'draft_path': draft_path,
         'materials_root': materials_root,
         'strategy': strategy,
+        'replace_materials': replace_materials,
+        'replace_audios': replace_audios,
+        'replace_type': replace_type,
+        'slot_count': len(slots),
         'folders': layout.get('folders', []),
     })
     return jsonify({'ok': True, 'layout': layout})
@@ -5953,11 +7017,11 @@ def materials_fill_folder():
     material_type = (data.get('material_type') or 'all').strip().lower()
 
     if not target_folder:
-        return jsonify({'ok': False, 'error': '缺少目标目录'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯鐩爣鐩綍'}), 400
     if not os.path.isdir(target_folder):
         return jsonify({'ok': False, 'error': '目标目录不存在'}), 400
     if not file_paths:
-        return jsonify({'ok': False, 'error': '请先选择素材文件'}), 400
+        return jsonify({'ok': False, 'error': '璇峰厛閫夋嫨绱犳潗鏂囦欢'}), 400
 
     copied = 0
     copied_files = []
@@ -6036,7 +7100,7 @@ def assistant_command_execute():
     if not preview.get('ok'):
         return jsonify(preview), 400
     if preview.get('requires_confirmation') and not confirmed:
-        return jsonify({'ok': False, 'error': '该命令需要确认后才能执行', 'preview': preview}), 400
+        return jsonify({'ok': False, 'error': '璇ュ懡浠ら渶瑕佺‘璁ゅ悗鎵嶈兘鎵ц', 'preview': preview}), 400
 
     action = (preview.get('client_action') or {}).get('type')
     if action and action not in _ASSISTANT_FREE_ACTIONS:
@@ -6060,7 +7124,7 @@ def assistant_command_execute():
         strategy = (client_action.get('strategy') or 'group').strip() or 'group'
         slots = [str(item).strip() for item in (client_action.get('slots') or []) if str(item).strip()]
         if not draft_path or not materials_root:
-            return jsonify({'ok': False, 'error': '创建素材目录前请先选草稿并指定素材目录', 'preview': preview}), 400
+            return jsonify({'ok': False, 'error': '鍒涘缓绱犳潗鐩綍鍓嶈鍏堥€夎崏绋垮苟鎸囧畾绱犳潗鐩綍', 'preview': preview}), 400
         draft_name = os.path.basename(os.path.normpath(draft_path))
         try:
             layout = _build_material_layout(materials_root, draft_name, strategy, slots)
@@ -6123,7 +7187,7 @@ def manga_batch_apply_effects():
     material_ids = data.get('material_ids') or []
     effects = data.get('effects') or {}
     if not material_ids:
-        return jsonify({'ok': False, 'error': '缺少素材ID'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯绱犳潗ID'}), 400
     items = UserMaterial.query.filter(UserMaterial.user_id == user.id, UserMaterial.id.in_(material_ids)).all()
     for item in items:
         meta = {}
@@ -6148,7 +7212,7 @@ def manga_batch_export():
     material_ids = data.get('material_ids') or []
     duration = float(data.get('duration') or 3)
     if not material_ids:
-        return jsonify({'ok': False, 'error': '缺少素材ID'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯绱犳潗ID'}), 400
 
     ffmpeg, _ffmpeg_source = find_ffmpeg_with_source()
     if not ffmpeg:
@@ -6328,12 +7392,7 @@ def export_drafts_api():
     else:
         quota = get_or_create_quota(user.id)
         if (quota.remaining or 0) < 1:
-            """
-            """
-            return jsonify({'ok': False, 'error': 'quota exhausted', **quota_to_dict(quota)}), 403
-        """
-        """
-        return jsonify({'ok': False, 'error': '额度不足，无法继续批量导出。', **quota_to_dict(quota)}), 403
+            return jsonify({'ok': False, 'error': '额度不足，无法继续批量导出', **quota_to_dict(quota)}), 403
     data = request.get_json(silent=True) or {}
     draft_paths = data.get('draft_paths') or []
     output_dir = (data.get('output_dir') or '').strip() or get_drafts_folder()
@@ -6342,23 +7401,23 @@ def export_drafts_api():
     export_fps = data.get('export_fps')
 
     if not isinstance(draft_paths, list) or not draft_paths:
-        return jsonify({'ok': False, 'error': '缺少草稿列表'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯鑽夌鍒楄〃'}), 400
     if export_format not in (None, 'mp4', 'mov'):
-        return jsonify({'ok': False, 'error': '不支持的导出格式'}), 400
+        return jsonify({'ok': False, 'error': '涓嶆敮鎸佺殑瀵煎嚭鏍煎紡'}), 400
     if export_resolution not in (None, '720p', '1080p', '4k'):
         return jsonify({'ok': False, 'error': '不支持的导出分辨率'}), 400
     if export_fps not in (None, ''):
         try:
             export_fps = int(export_fps)
         except Exception:
-            return jsonify({'ok': False, 'error': '导出帧率无效'}), 400
+            return jsonify({'ok': False, 'error': '瀵煎嚭甯х巼鏃犳晥'}), 400
         if export_fps <= 0 or export_fps > 240:
-            return jsonify({'ok': False, 'error': '导出帧率超出范围'}), 400
+            return jsonify({'ok': False, 'error': '瀵煎嚭甯х巼瓒呭嚭鑼冨洿'}), 400
     else:
         export_fps = None
 
     if not output_dir:
-        return jsonify({'ok': False, 'error': '缺少导出目录'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯瀵煎嚭鐩綍'}), 400
     os.makedirs(output_dir, exist_ok=True)
 
     from app.services.jianying_service import JianYingService
@@ -6399,7 +7458,7 @@ def export_drafts_api():
                 exported_name = summary.get('draft_name')
                 warnings = summary.get('warnings') or []
             except Exception as inner_exc:
-                warnings.append(f'MCP 导出兼容失败，已回退为草稿复制导出: {inner_exc}')
+                warnings.append(f'MCP 瀵煎嚭鍏煎澶辫触锛屽凡鍥為€€涓鸿崏绋垮鍒跺鍑? {inner_exc}')
 
             if not exported_name:
                 safe_name = item['draft_name'] or f'draft_{uuid.uuid4().hex[:8]}'
@@ -6456,11 +7515,11 @@ def export_main_track_api():
 
     ffmpeg, _source = find_ffmpeg_with_source()
     if not ffmpeg:
-        return jsonify({'ok': False, 'error': '未找到 ffmpeg'}), 400
+        return jsonify({'ok': False, 'error': '鏈壘鍒?ffmpeg'}), 400
 
     draft_data, load_err = _load_draft_content(draft_path)
     if load_err or not isinstance(draft_data, dict):
-        return jsonify({'ok': False, 'error': load_err or '草稿读取失败'}), 400
+        return jsonify({'ok': False, 'error': load_err or '鑽夌璇诲彇澶辫触'}), 400
 
     os.makedirs(output_dir, exist_ok=True)
     draft_data = _resolve_active_draft_payload(draft_data)
@@ -6476,7 +7535,7 @@ def export_main_track_api():
         if not track_name and not target_track:
             target_track = track
     if not target_track:
-        return jsonify({'ok': False, 'error': '未找到可导出的主轨道'}), 400
+        return jsonify({'ok': False, 'error': '鏈壘鍒板彲瀵煎嚭鐨勪富杞ㄩ亾'}), 400
 
     video_materials = {}
     for item in (draft_data.get('materials', {}) or {}).get('videos', []) or []:
@@ -6631,7 +7690,7 @@ def manga_history_regenerate(log_id):
             with current_app.test_request_context(json=data, headers={'Authorization': request.headers.get('Authorization', '')}):
                 return ai_manga_generate_draft()
         except Exception as e:
-            return jsonify({'ok': False, 'error': f'重新生成草稿失败: {e}'}), 500
+            return jsonify({'ok': False, 'error': f'閲嶆柊鐢熸垚鑽夌澶辫触: {e}'}), 500
     character_path = params.get('character_image_path') or ''
     if character_path:
         params['character_image'] = _encode_file_to_data_uri(character_path)
@@ -6651,7 +7710,7 @@ def manga_history_regenerate(log_id):
             return ai_manga_generate()
     except Exception as e:
         _log_openclaw_error(user.id, params, str(e))
-        return jsonify({'ok': False, 'error': f'重新生成失败: {e}'}), 500
+        return jsonify({'ok': False, 'error': f'閲嶆柊鐢熸垚澶辫触: {e}'}), 500
 
 
 @api_bp.route('/manga/history/<int:log_id>/redownload', methods=['POST'])
@@ -6690,7 +7749,7 @@ def manga_templates():
     params = data.get('params') or {}
     preview_material_id = data.get('preview_material_id')
     if not name:
-        return jsonify({'ok': False, 'error': '模板名称不能为空'}), 400
+        return jsonify({'ok': False, 'error': '妯℃澘鍚嶇О涓嶈兘涓虹┖'}), 400
     item = MangaTemplate(
         user_id=user.id,
         name=name,
@@ -6763,20 +7822,20 @@ def _ensure_default_ai_providers():
     defaults = [
         {
             'provider_code': 'jimeng',
-            'provider_name': '即梦 AI',
+            'provider_name': '鍗虫ⅵ AI',
             'description': '图像和视频生成',
             'docs_url': '',
         },
         {
             'provider_code': 'volc',
-            'provider_name': '火山引擎',
+            'provider_name': '鐏北寮曟搸',
             'description': '语音合成与相关能力',
             'docs_url': 'https://www.volcengine.com/docs/6561/79816',
         },
         {
             'provider_code': 'openai',
             'provider_name': 'OpenAI',
-            'description': '文本、图片、音频和视频生成',
+            'description': '鏂囨湰銆佸浘鐗囥€侀煶棰戝拰瑙嗛鐢熸垚',
             'docs_url': 'https://platform.openai.com/docs/api-reference/introduction',
         },
         {
@@ -6885,42 +7944,42 @@ def ai_provider_guide(provider_code):
     code = (provider_code or '').strip().lower()
     guide_map = {
         "openai": (
-            "# OpenAI 指南\n\n"
-            "1. 获取 API Key\n"
-            "2. Base URL 使用官方地址 `https://api.openai.com/v1`\n"
-            "3. 在 OpenAI 平台填写 Base URL\n\n"
-            "示例（兼容 OpenAI 协议的服务）：\n"
+            "# OpenAI 鎸囧崡\n\n"
+            "1. 鑾峰彇 API Key\n"
+            "2. Base URL 浣跨敤瀹樻柟鍦板潃 `https://api.openai.com/v1`\n"
+            "3. 鍦?OpenAI 骞冲彴濉啓 Base URL\n\n"
+            "绀轰緥锛堝吋瀹?OpenAI 鍗忚鐨勬湇鍔★級锛歕n"
             "- `https://dashscope.aliyuncs.com/compatible-mode/v1`\n"
             "- `https://api.deepseek.com`\n"
             "- `https://open.bigmodel.cn/api/paas/v4`\n"
             "- `https://openrouter.ai/api/v1`\n"
         ),
         "jimeng": (
-            "# 即梦 AI 指南\n\n"
-            "1. 在控制台开通服务\n"
-            "2. 获取 AK/SK\n"
-            "3. 填写 API Key=AK，API Secret=SK，Endpoint=地址\n\n"
-            "签名参数：Region=cn-north-1，Service=cv\n"
-            "需要填写 Action/Version\n"
+            "# 鍗虫ⅵ AI 鎸囧崡\n\n"
+            "1. 鍦ㄦ帶鍒跺彴寮€閫氭湇鍔n"
+            "2. 鑾峰彇 AK/SK\n"
+            "3. 濉啓 API Key=AK锛孉PI Secret=SK锛孍ndpoint=鍦板潃\n\n"
+            "绛惧悕鍙傛暟锛歊egion=cn-north-1锛孲ervice=cv\n"
+            "闇€瑕佸～鍐?Action/Version\n"
         ),
         "volc": (
-            "# 火山 TTS 指南\n\n"
-            "1. 开通 TTS 服务\n"
-            "2. 获取 access_token / appid / cluster\n"
-            "3. 填写 API Key=access_token，API Secret=appid，Endpoint=cluster\n\n"
-            "接口：`https://openspeech.bytedance.com/api/v1/tts`\n\n"
-            "注意：需要提供 voice_type\n"
+            "# 鐏北 TTS 鎸囧崡\n\n"
+            "1. 寮€閫?TTS 鏈嶅姟\n"
+            "2. 鑾峰彇 access_token / appid / cluster\n"
+            "3. 濉啓 API Key=access_token锛孉PI Secret=appid锛孍ndpoint=cluster\n\n"
+            "鎺ュ彛锛歚https://openspeech.bytedance.com/api/v1/tts`\n\n"
+            "娉ㄦ剰锛氶渶瑕佹彁渚?voice_type\n"
         ),
         "siliconflow": (
-            "# SiliconFlow 指南\n\n"
-            "1. 获取 API Key\n"
-            "2. Base URL 通常填写 `https://api.siliconflow.cn/v1`\n"
-            "3. 生图模型可填 `Kwai-Kolors/Kolors`\n"
-            "4. 脚本文本模型列表可在后台统一维护\n\n"
-            "文档：`https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions`\n"
+            "# SiliconFlow 鎸囧崡\n\n"
+            "1. 鑾峰彇 API Key\n"
+            "2. Base URL 閫氬父濉啓 `https://api.siliconflow.cn/v1`\n"
+            "3. 鐢熷浘妯″瀷鍙～ `Kwai-Kolors/Kolors`\n"
+            "4. 鑴氭湰鏂囨湰妯″瀷鍒楄〃鍙湪鍚庡彴缁熶竴缁存姢\n\n"
+            "鏂囨。锛歚https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions`\n"
         ),
     }
-    content = guide_map.get(code, "# 指南\n\n暂无说明")
+    content = guide_map.get(code, "# 鎸囧崡\n\n鏆傛棤璇存槑")
     return jsonify({"ok": True, "content": content})
 
 
@@ -6952,9 +8011,9 @@ def ai_keys():
     elif provider_code:
         provider = AIProvider.query.filter_by(provider_code=provider_code).first()
     if not provider:
-        return jsonify({'ok': False, 'error': '未找到供应商'}), 404
+        return jsonify({'ok': False, 'error': '鏈壘鍒颁緵搴斿晢'}), 404
     if not key_name or not api_key:
-        return jsonify({'ok': False, 'error': 'Key 名称或 API Key 不能为空'}), 400
+        return jsonify({'ok': False, 'error': 'Key 鍚嶇О鎴?API Key 涓嶈兘涓虹┖'}), 400
 
     item = UserApiKey(
         user_id=user.id,
@@ -6985,7 +8044,7 @@ def user_keys():
     provider_code = (data.get('provider_code') or '').strip()
     provider = AIProvider.query.filter_by(provider_code=provider_code).first()
     if not provider:
-        return jsonify({'ok': False, 'error': '未找到供应商'}), 404
+        return jsonify({'ok': False, 'error': '鏈壘鍒颁緵搴斿晢'}), 404
     key_name = (data.get('key_name') or '').strip()
     api_key = (data.get('api_key') or '').strip()
     api_secret = (data.get('api_secret') or '').strip()
@@ -6995,7 +8054,7 @@ def user_keys():
     except ValueError as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 400
     if not key_name or not api_key:
-        return jsonify({'ok': False, 'error': 'Key 名称或 API Key 不能为空'}), 400
+        return jsonify({'ok': False, 'error': 'Key 鍚嶇О鎴?API Key 涓嶈兘涓虹┖'}), 400
 
     item = UserApiKey(
         user_id=user.id,
@@ -7085,11 +8144,11 @@ def _test_key_request(provider_code: str, api_key: str, endpoint: str, base_url:
         except Exception as e:
             return False, str(e)
     if provider_code == "volc":
-        return False, "请提供 voice_type / app_id / cluster"
+        return False, "璇锋彁渚?voice_type / app_id / cluster"
     else:
         url = (endpoint or "").rstrip("/") + "/v1/models"
     if not url or url.startswith("/v1"):
-        return False, "未设置 Endpoint"
+        return False, "鏈缃?Endpoint"
     try:
         res = requests.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=15)
         if res.status_code == 200:
@@ -7117,9 +8176,9 @@ def user_key_test(key_id):
             cluster = data.get("cluster") or key.endpoint
             voice_type = data.get("voice_type")
             if not voice_type:
-                return jsonify({'ok': False, 'message': '缺少 voice_type'}), 400
+                return jsonify({'ok': False, 'message': '缂哄皯 voice_type'}), 400
             payload = {
-                "prompt": data.get("text") or "测试",
+                "prompt": data.get("text") or "娴嬭瘯",
                 "voice": voice_type,
                 "format": data.get("format") or "mp3",
             }
@@ -7132,7 +8191,7 @@ def user_key_test(key_id):
         action = data.get("action")
         version = data.get("version")
         if not action or not version:
-            return jsonify({'ok': False, 'message': '缺少 Action/Version'}), 400
+            return jsonify({'ok': False, 'message': '缂哄皯 Action/Version'}), 400
         from app.services.ai_service import _jimeng_signed_request
         try:
             payload = {"prompt": "test", "extra_body": {"action": action, "version": version}}
@@ -7250,13 +8309,26 @@ def ai_generate():
     task_type = (data.get('task_type') or '').strip()
     prompt = (data.get('prompt') or '').strip()
     if not task_type:
-        return jsonify({'ok': False, 'error': '请选择任务类型'}), 400
+        return jsonify({'ok': False, 'error': '璇烽€夋嫨浠诲姟绫诲瀷'}), 400
     if not prompt:
-        return jsonify({'ok': False, 'error': '请输入提示词'}), 400
+        return jsonify({'ok': False, 'error': '璇疯緭鍏ユ彁绀鸿瘝'}), 400
 
     key = _resolve_ai_runtime_key(user, task_type, key_id)
     if not key:
-        return jsonify({'ok': False, 'error': '没有可用的 AI 账号或系统预设 Key'}), 400
+        return jsonify({'ok': False, 'error': '娌℃湁鍙敤鐨?AI 璐﹀彿鎴栫郴缁熼璁?Key'}), 400
+    quota = None
+    quota_cost = 0
+    quota_reason = ''
+    if task_type == 'image':
+        quota_cost = _get_storyboard_generate_cost()
+        quota_reason = 'storyboard_generate'
+    elif task_type == 'text':
+        quota_cost = _get_ai_make_generate_cost()
+        quota_reason = 'ai_make_generate'
+    if quota_cost > 0:
+        quota, quota_error = _ensure_quota_available(user, quota_cost, '额度不足，无法继续执行当前 AI 任务。')
+        if quota_error:
+            return quota_error
 
     payload = {
         "prompt": prompt,
@@ -7277,7 +8349,7 @@ def ai_generate():
             try:
                 payload["extra_body"] = json.loads(extra_body)
             except Exception:
-                return jsonify({'ok': False, 'error': 'extra_body JSON 解析失败'}), 400
+                return jsonify({'ok': False, 'error': 'extra_body JSON 瑙ｆ瀽澶辫触'}), 400
 
     provider_code = str(
         getattr(key, "provider_code", "")
@@ -7300,8 +8372,68 @@ def ai_generate():
             payload["model_candidates"] = model_candidates
         if task_type == 'text':
             payload["system_prompt"] = payload.get("system_prompt") or ai_cfg.get("siliconflow_text_system_prompt") or ai_cfg.get("chatanywhere_system_prompt") or _AI_STORYBOARD_SYSTEM_PROMPT
+        elif task_type == 'image':
+            extra_body = payload.get("extra_body") if isinstance(payload.get("extra_body"), dict) else {}
+            shot_type = _normalize_storyboard_shot_type(extra_body.get("shot_type"), default="character")
+            genre = _normalize_storyboard_genre(extra_body.get("genre"), default="fantasy")
+            style_key = _normalize_storyboard_style(extra_body.get("style_key") or extra_body.get("style") or extra_body.get("style_label"), default="modern_manhua")
+            prompt_mode = str(extra_body.get("prompt_mode") or "").strip().lower()
+            prompt_source = payload.get("prompt") or ""
+            if prompt_mode == "structured_storyboard":
+                prompt_source = _build_structured_storyboard_image_prompt(extra_body, shot_type, genre, style_key, ai_cfg)
+            payload["prompt"], negative_prompt = _compose_siliconflow_image_prompt(prompt_source, shot_type, ai_cfg, genre, style_key)
+            if shot_type == "scene":
+                scene_policy = str(extra_body.get("scene_character_policy") or "forbid").strip().lower()
+                if scene_policy == "forbid":
+                    base_prompt = payload["prompt"]
+                    payload["prompt_variants"] = [
+                        base_prompt,
+                        _merge_prompt_lines(
+                            base_prompt,
+                            "严格要求：这是纯环境建立镜头，画面中不得出现任何人物、背影、剪影或 humanoid figure。",
+                            "只保留天地、裂隙、风暴、碎石、山体、能量结构和压迫空间。",
+                        ),
+                        _merge_prompt_lines(
+                            base_prompt,
+                            "纯场景镜头：不要出现任何角色轮廓、远景小人、站立人物或陪衬人物。",
+                            "重点只表现世界观建立、环境氛围、空间关系和危险感。",
+                        ),
+                    ]
+            image_models = _resolve_siliconflow_image_model_candidates(ai_cfg, shot_type, payload.get("model") or "")
+            if image_models:
+                payload["model"] = image_models[0]
+                payload["model_candidates"] = image_models
+            merged_extra = dict(extra_body)
+            merged_extra["shot_type"] = shot_type
+            merged_extra["genre"] = genre
+            merged_extra["style_key"] = style_key
+            merged_extra["prompt_mode"] = prompt_mode or "free_prompt"
+            if shot_type == "scene":
+                merged_extra["num_inference_steps"] = _clamp_int(
+                    extra_body.get("num_inference_steps") or ai_cfg.get("siliconflow_scene_num_inference_steps"),
+                    _AI_IMAGE_SCENE_PARAM_DEFAULTS["num_inference_steps"],
+                    1,
+                    100,
+                )
+                try:
+                    merged_extra["guidance_scale"] = float(
+                        extra_body.get("guidance_scale") or ai_cfg.get("siliconflow_scene_guidance_scale") or _AI_IMAGE_SCENE_PARAM_DEFAULTS["guidance_scale"]
+                    )
+                except Exception:
+                    merged_extra["guidance_scale"] = _AI_IMAGE_SCENE_PARAM_DEFAULTS["guidance_scale"]
+                scene_seed = str(extra_body.get("seed") or ai_cfg.get("siliconflow_scene_seed") or "").strip()
+                if scene_seed:
+                    merged_extra["seed"] = scene_seed
+            if negative_prompt and not str(merged_extra.get("negative_prompt") or "").strip():
+                merged_extra["negative_prompt"] = negative_prompt
+            payload["extra_body"] = merged_extra
 
     result = generate_with_key(key, task_type, payload)
+    if result.get('ok') and quota_cost > 0:
+        quota = quota or get_or_create_quota(user.id)
+        _apply_quota_charge(quota, user.id, quota_cost, quota_reason)
+        db.session.commit()
+        result['quota'] = quota_to_dict(quota)
     return jsonify(result)
 
 
@@ -7326,7 +8458,7 @@ def _enqueue_ai_task(user, key, task_type, payload, save_text_file=False):
 
 def _build_manga_draft_result(user: User, data: dict) -> dict:
     payload = data if isinstance(data, dict) else {}
-    project_name = (payload.get("project_name") or "").strip() or f"AI漫剧草稿_{_china_now().strftime('%m%d_%H%M')}"
+    project_name = (payload.get("project_name") or "").strip() or f"AI婕墽鑽夌_{_china_now().strftime('%m%d_%H%M')}"
     aspect = (payload.get("aspect") or "portrait").strip().lower() or "portrait"
     width, height, aspect_label = _manga_aspect_preset(aspect)
     scenes = _normalize_manga_draft_scenes(payload)
@@ -7352,15 +8484,15 @@ def _build_manga_draft_result(user: User, data: dict) -> dict:
     draft_name = _safe_folder_name(project_name, project_id)
     create_resp = svc.create_draft(draft_name=draft_name, width=width, height=height, fps=30)
     if not create_resp.ok:
-        raise ValueError(create_resp.message or "创建 AI 漫剧草稿失败")
+        raise ValueError(create_resp.message or "鍒涘缓 AI 婕墽鑽夌澶辫触")
 
     draft_id = str((create_resp.data or {}).get("draft_id") or "").strip()
     if not draft_id:
-        raise ValueError("创建 AI 漫剧草稿后未返回 draft_id")
+        raise ValueError("鍒涘缓 AI 婕墽鑽夌鍚庢湭杩斿洖 draft_id")
 
     video_track_resp = svc.create_track(draft_id, "video", "main")
     if not video_track_resp.ok:
-        raise ValueError(video_track_resp.message or "创建 AI 漫剧视频轨道失败")
+        raise ValueError(video_track_resp.message or "鍒涘缓 AI 婕墽瑙嗛杞ㄩ亾澶辫触")
     video_track_name = ((video_track_resp.data or {}).get("track_name") or "main").strip() or "main"
 
     text_track_resp = svc.create_track(draft_id, "text", "scene_notes")
@@ -7380,7 +8512,7 @@ def _build_manga_draft_result(user: User, data: dict) -> dict:
             track_name=video_track_name,
         )
         if not segment_resp.ok:
-            raise ValueError(segment_resp.message or f"创建场景 {scene.get('index')} 占位片段失败")
+            raise ValueError(segment_resp.message or f"鍒涘缓鍦烘櫙 {scene.get('index')} 鍗犱綅鐗囨澶辫触")
 
         if scene_text:
             text_resp = svc.add_text_segment(
@@ -7390,7 +8522,7 @@ def _build_manga_draft_result(user: User, data: dict) -> dict:
                 track_name=text_track_name,
             )
             if not text_resp.ok:
-                raise ValueError(text_resp.message or f"创建场景 {scene.get('index')} 说明文字失败")
+                raise ValueError(text_resp.message or f"鍒涘缓鍦烘櫙 {scene.get('index')} 璇存槑鏂囧瓧澶辫触")
 
         scene_items.append({
             "index": int(scene.get("index") or len(scene_items) + 1),
@@ -7405,7 +8537,7 @@ def _build_manga_draft_result(user: User, data: dict) -> dict:
 
     export_resp = svc.export_draft(draft_id, jianying_draft_path=output_dir)
     if not export_resp.ok:
-        raise ValueError(export_resp.message or "导出 AI 漫剧草稿失败")
+        raise ValueError(export_resp.message or "瀵煎嚭 AI 婕墽鑽夌澶辫触")
 
     export_data = export_resp.data or {}
     draft_root = str(export_data.get("output") or output_dir).strip()
@@ -7491,7 +8623,7 @@ def ai_manga_generate_draft():
     else:
         quota = get_or_create_quota(user.id)
         if not _quota_has_unlimited_access(quota) and quota.remaining < cost:
-            return jsonify({'ok': False, 'error': '额度不足，无法继续生成 AI 漫剧草稿。', **quota_to_dict(quota)}), 403
+            return jsonify({'ok': False, 'error': '额度不足，无法继续生成 AI 漫剧草稿', **quota_to_dict(quota)}), 403
 
     data = request.get_json(silent=True) or {}
     try:
@@ -7545,7 +8677,7 @@ def ai_manga_generate_draft():
         db.session.rollback()
         if remote_task_token:
             _remote_desktop_task_complete(remote_task_id, remote_task_token, False, str(exc))
-        return jsonify({'ok': False, 'error': f'生成 AI 漫剧草稿失败: {exc}'}), 500
+        return jsonify({'ok': False, 'error': f'鐢熸垚 AI 婕墽鑽夌澶辫触: {exc}'}), 500
 
     if remote_task_token:
         _remote_desktop_task_complete(remote_task_id, remote_task_token, True, "")
@@ -7643,7 +8775,7 @@ def ai_manga_generate():
         prefix = f"manga_{date_str}_"
         seq = _next_seq(manga_root, prefix)
         project_id = f"manga_{date_str}_{seq:03d}"
-        project_name = f"漫剧_{date_str}_{seq:03d}"
+        project_name = f"婕墽_{date_str}_{seq:03d}"
 
         save_dir = os.path.join(manga_root, project_id)
         os.makedirs(save_dir, exist_ok=True)
@@ -7813,10 +8945,15 @@ def ai_generate_video():
     key_id = data.get('key_id')
     prompt = (data.get('prompt') or '').strip()
     if not key_id or not prompt:
-        return jsonify({'ok': False, 'error': '缺少 Key 或提示词'}), 400
-    key = UserApiKey.query.filter_by(id=key_id, user_id=user.id).first()
+        return jsonify({'ok': False, 'error': 'missing key_id or prompt'}), 400
+    key = _resolve_ai_runtime_key(user, 'video', key_id)
     if not key:
-        return jsonify({'ok': False, 'error': 'Key 不存在'}), 404
+        return jsonify({'ok': False, 'error': 'key not found'}), 404
+    cost = _get_ai_make_generate_cost()
+    if cost > 0:
+        quota, quota_error = _ensure_quota_available(user, cost, 'quota exhausted for ai make video')
+        if quota_error:
+            return quota_error
     payload = {
         "prompt": prompt,
         "model": data.get("model"),
@@ -7825,6 +8962,8 @@ def ai_generate_video():
         "custom_path": data.get("custom_path"),
         "extra_body": _parse_extra_body(data.get("extra_body")),
     }
+    payload["quota_cost"] = cost
+    payload["quota_reason"] = "ai_make_generate"
     style = data.get("style")
     if style:
         payload.setdefault("extra_body", {})
@@ -7843,10 +8982,15 @@ def ai_generate_audio():
     key_id = data.get('key_id')
     text = (data.get('text') or '').strip()
     if not text:
-        return jsonify({'ok': False, 'error': '缺少文本'}), 400
+        return jsonify({'ok': False, 'error': '缂哄皯鏂囨湰'}), 400
     key = _resolve_ai_runtime_key(user, 'audio', key_id)
     if not key:
-        return jsonify({'ok': False, 'error': '没有可用的配音账号或系统预设 Key'}), 404
+        return jsonify({'ok': False, 'error': '娌℃湁鍙敤鐨勯厤闊宠处鍙锋垨绯荤粺棰勮 Key'}), 404
+    cost = _get_ai_make_generate_cost()
+    if cost > 0:
+        quota, quota_error = _ensure_quota_available(user, cost, 'quota exhausted for ai make audio')
+        if quota_error:
+            return quota_error
     payload = {
         "prompt": text,
         "model": data.get("model"),
@@ -7855,6 +8999,8 @@ def ai_generate_audio():
         "custom_path": data.get("custom_path"),
         "extra_body": _parse_extra_body(data.get("extra_body")),
     }
+    payload["quota_cost"] = cost
+    payload["quota_reason"] = "ai_make_generate"
     task_id = _enqueue_ai_task(user, key, "audio", payload, save_text_file=False)
     return jsonify({'ok': True, 'task_id': task_id})
 
@@ -7868,10 +9014,15 @@ def ai_generate_text():
     key_id = data.get('key_id')
     prompt = (data.get('prompt') or '').strip()
     if not prompt:
-        return jsonify({'ok': False, 'error': '缺少提示词'}), 400
+        return jsonify({'ok': False, 'error': 'missing prompt'}), 400
     key = _resolve_ai_runtime_key(user, 'text', key_id)
     if not key:
-        return jsonify({'ok': False, 'error': '没有可用的脚本账号或系统预设 Key'}), 404
+        return jsonify({'ok': False, 'error': '娌℃湁鍙敤鐨勮剼鏈处鍙锋垨绯荤粺棰勮 Key'}), 404
+    cost = _get_ai_make_generate_cost()
+    if cost > 0:
+        quota, quota_error = _ensure_quota_available(user, cost, 'quota exhausted for ai make text')
+        if quota_error:
+            return quota_error
     payload = {
         "prompt": prompt,
         "model": data.get("model"),
@@ -7879,6 +9030,8 @@ def ai_generate_text():
         "max_tokens": data.get("max_tokens"),
         "extra_body": _parse_extra_body(data.get("extra_body")),
     }
+    payload["quota_cost"] = cost
+    payload["quota_reason"] = "ai_make_generate"
     provider_code = str(
         getattr(key, "provider_code", "")
         or getattr(getattr(key, "provider", None), "provider_code", "")
@@ -7962,7 +9115,7 @@ def effects_list():
     is_vip = data.get('is_vip')
 
     if not effect_type:
-        return jsonify({'error': '缺少 effect_type'}), 400
+        return jsonify({'error': '缂哄皯 effect_type'}), 400
 
     manager = JianYingResourceManager()
     try:
@@ -8394,7 +9547,7 @@ def api_login():
         return limit_err
     if not account or not password:
         audit_security_event("login_invalid_payload", level="warning", request_obj=request, details={"account": account})
-        return jsonify({'ok': False, 'error': '请输入账号和密码'}), 400
+        return jsonify({'ok': False, 'error': '璇疯緭鍏ヨ处鍙峰拰瀵嗙爜'}), 400
 
     if not accepted_agreements:
         return jsonify({'ok': False, 'error': '请先同意用户协议和隐私协议'}), 400
@@ -8838,23 +9991,23 @@ def _assistant_route_preview(command: str, context: Optional[dict] = None) -> di
     if not text:
         return {"ok": False, "error": "请输入要执行的助手命令。"}
 
-    if ("分区" in text and "混剪" in text) or ("分区" in text and "视频" in text):
-        return {"ok": True, "intent": "open_partition_mix", "summary": "打开批量混剪并切到“分区混剪裂变”。", "requires_confirmation": False, "impact": "仅导航，不会直接执行生成。", "client_action": {"type": "navigate", "panel_id": "panel-materials", "mix_target": "partition", "anchor": "mix-mode-partition-anchor"}}
-    if ("按组" in text and "混剪" in text) or "精准替换" in text:
-        return {"ok": True, "intent": "open_group_mix", "summary": "打开批量混剪并切到“按组精准替换”。", "requires_confirmation": False, "impact": "仅导航，不会直接执行生成。", "client_action": {"type": "navigate", "panel_id": "panel-materials", "mix_target": "group", "anchor": "mix-mode-group-anchor"}}
-    if "duo" in lowered or ("资源" in text and ("特效" in text or "贴纸" in text)):
+    if ("鍒嗗尯" in text and "娣峰壀" in text) or ("鍒嗗尯" in text and "瑙嗛" in text):
+        return {"ok": True, "intent": "open_partition_mix", "summary": "打开批量混剪并切到分区混剪裂变。", "requires_confirmation": False, "impact": "仅导航，不会直接执行生成。", "client_action": {"type": "navigate", "panel_id": "panel-materials", "mix_target": "partition", "anchor": "mix-mode-partition-anchor"}}
+    if ("鎸夌粍" in text and "娣峰壀" in text) or "绮惧噯鏇挎崲" in text:
+        return {"ok": True, "intent": "open_group_mix", "summary": "打开批量混剪并切到按组精准替换。", "requires_confirmation": False, "impact": "仅导航，不会直接执行生成。", "client_action": {"type": "navigate", "panel_id": "panel-materials", "mix_target": "group", "anchor": "mix-mode-group-anchor"}}
+    if "duo" in lowered or ("璧勬簮" in text and ("鐗规晥" in text or "璐寸焊" in text)):
         return {"ok": True, "intent": "open_duo_resources", "summary": "打开 Duo 资源工作台。", "requires_confirmation": False, "impact": "仅导航到 Duo 资源，不会直接修改草稿。", "client_action": {"type": "navigate", "panel_id": "panel-effects", "anchor": "effects-duo-anchor"}}
-    if ("分割" in text and ("视频" in text or "文件" in text or "草稿" in text)) or "批量分割" in text:
+    if ("鍒嗗壊" in text and ("瑙嗛" in text or "鏂囦欢" in text or "鑽夌" in text)) or "鎵归噺鍒嗗壊" in text:
         return {"ok": True, "intent": "open_split_tools", "summary": "打开批量分割工作台。", "requires_confirmation": False, "impact": "仅导航到分割工具，不会立刻执行。", "client_action": {"type": "navigate", "panel_id": "panel-split", "subtab_target": "split-file"}}
-    if "片段微调" in text or "节奏变速" in text or "摇晃关键帧" in text or "画面校正" in text:
-        return {"ok": True, "intent": "open_clip_tools", "summary": "打开片段微调工作台。", "requires_confirmation": False, "impact": "仅导航到微调页面，不会立即修改草稿。", "client_action": {"type": "navigate", "panel_id": "panel-clip"}}
-    if ("AI" in text and "账号" in text) or "脚本模型" in text or "生图模型" in text or ("key" in lowered and "ai" in lowered):
-        return {"ok": True, "intent": "open_ai_settings", "summary": "打开 AI 账号管理。", "requires_confirmation": False, "impact": "仅导航到软件设置中的 AI 账号管理，不会立即保存配置。", "client_action": {"type": "navigate", "panel_id": "panel-settings", "section_id": "settings-ai-section"}}
-    if "导出" in text and "草稿" in text:
-        return {"ok": True, "intent": "open_export", "summary": "打开批量导出页并准备导出当前已选草稿。", "requires_confirmation": False, "impact": "仅导航到导出页，真正导出仍需你确认执行。", "client_action": {"type": "navigate", "panel_id": "panel-export", "subtab_target": "export-settings"}}
-    if ("检查" in text or "查看" in text) and "草稿" in text and ("槽位" in text or "结构" in text):
-        return {"ok": True, "intent": "inspect_draft_slots", "summary": "打开草稿结构检查入口，方便核对槽位与文字位置。", "requires_confirmation": False, "impact": "仅导航，不会修改草稿。", "client_action": {"type": "navigate", "panel_id": "panel-split", "subtab_target": "split-draft"}}
-    if "创建" in text and ("素材目录" in text or "素材文件夹" in text):
+    if "鐗囨寰皟" in text or "鑺傚鍙橀€�" in text or "鎽囨檭鍏抽敭甯х" in text or "鐢婚潰鏍℃" in text:
+        return {"ok": True, "intent": "open_clip_tools", "summary": "打开片段微调工作台。", "requires_confirmation": False, "impact": "仅导航到微调页面，不会立刻修改草稿。", "client_action": {"type": "navigate", "panel_id": "panel-clip"}}
+    if ("AI" in text and "璐﹀彿" in text) or "鑴氭湰妯″瀷" in text or "鐢熷浘妯″瀷" in text or ("key" in lowered and "ai" in lowered):
+        return {"ok": True, "intent": "open_ai_settings", "summary": "打开 AI 账号管理。", "requires_confirmation": False, "impact": "仅导航到软件设置中的 AI 账号管理，不会立刻保存配置。", "client_action": {"type": "navigate", "panel_id": "panel-settings", "section_id": "settings-ai-section"}}
+    if "瀵煎嚭" in text and "鑽夌" in text:
+        return {"ok": True, "intent": "open_export", "summary": "打开批量分割里的草稿处理区并准备导出当前草稿片段。", "requires_confirmation": False, "impact": "仅导航到草稿处理区，真正导出仍需你确认执行。", "client_action": {"type": "navigate", "panel_id": "panel-split", "subtab_target": "split-draft"}}
+    if ("妫€鏌" in text or "鏌ョ湅" in text) and "鑽夌" in text and ("妲戒綅" in text or "缁撴瀯" in text):
+        return {"ok": True, "intent": "inspect_draft_slots", "summary": "打开草稿结构查看入口，便于核对槽位和文字位置。", "requires_confirmation": False, "impact": "仅导航，不会修改草稿。", "client_action": {"type": "navigate", "panel_id": "panel-split", "subtab_target": "split-draft"}}
+    if "鍒涘缓" in text and ("绱犳潗鐩綍" in text or "绱犳潗鏂囦欢澶" in text):
         missing = []
         if not draft_path:
             missing.append("draft_path")
@@ -8863,8 +10016,107 @@ def _assistant_route_preview(command: str, context: Optional[dict] = None) -> di
         if strategy != "mix" and not slots:
             missing.append("slots")
         return {"ok": True, "intent": "create_material_layout", "summary": "按当前草稿和模式创建素材目录结构。", "requires_confirmation": True, "impact": "会在你选择的素材根目录下创建新的草稿素材目录。", "missing": missing, "client_action": {"type": "create_material_layout", "draft_path": draft_path, "materials_root": materials_root, "strategy": strategy, "slots": slots}}
-    if "生成" in text and "文字" in text and ("模板" in text or "替换" in text):
+    if "鐢熸垚" in text and "鏂囧瓧" in text and ("妯℃澘" in text or "鏇挎崲" in text):
         return {"ok": True, "intent": "build_text_template", "summary": "为当前草稿生成一份可直接填写的文字替换模板。", "requires_confirmation": False, "impact": "仅生成模板内容，不会直接改写草稿。", "client_action": {"type": "fill_text_template", "text_count": text_count, "strategy": strategy}}
-    if "助手" in text and ("日志" in text or "记录" in text):
+    if "鍔╂墜" in text and ("鏃ュ織" in text or "璁板綍" in text):
         return {"ok": True, "intent": "open_assistant_logs", "summary": "打开助手日志面板。", "requires_confirmation": False, "impact": "仅导航。", "client_action": {"type": "navigate", "panel_id": "panel-assistant"}}
     return {"ok": False, "error": "暂未识别这条命令。当前优先支持：分区混剪、按组混剪、Duo 资源、批量分割、片段微调、AI 账号管理、导出当前草稿、检查草稿槽位、创建素材目录、生成文字替换模板。", "received": text, "matched_hint": lowered}
+def _build_usage_policy() -> dict:
+    manga_cost = _get_manga_generate_cost()
+    ai_make_cost = _get_ai_make_generate_cost()
+    storyboard_cost = _get_storyboard_generate_cost()
+    export_cost = 1
+    online_status = _remote_online_status()
+    return {
+        "count_consuming_actions": [
+            {
+                "key": "generate_batch",
+                "label": "批量混剪",
+                "cost_display": "每次成功生成任务扣 1 次",
+                "online_required": True,
+            },
+            {
+                "key": "export_drafts",
+                "label": "批量导出",
+                "cost_display": f"每次成功导出任务扣 {export_cost} 次",
+                "online_required": True,
+            },
+            {
+                "key": "ai_manga",
+                "label": "AI 漫剧",
+                "cost_display": f"每次成功生成扣 {manga_cost} 次",
+                "online_required": True,
+            },
+            {
+                "key": "ai_make_generate",
+                "label": "AI智做",
+                "cost_display": f"每次成功任务扣 {ai_make_cost} 次",
+                "online_required": True,
+            },
+            {
+                "key": "storyboard_generate",
+                "label": "漫剧助手生图",
+                "cost_display": f"每次成功生图扣 {storyboard_cost} 次",
+                "online_required": True,
+            },
+        ],
+        "quota_gain_actions": [
+            {
+                "key": "register_trial",
+                "label": "新用户试用",
+                "description": f"新用户首次注册可获得 {_get_default_user_quota_value()} 次体验次数，同一设备只发放一次。",
+            },
+            {
+                "key": "daily_checkin",
+                "label": "每日签到",
+                "description": f"每天签到可领取 {_get_daily_checkin_reward()} 次。",
+            },
+            {
+                "key": "license_activate_bonus",
+                "label": "会员卡附赠次数",
+                "description": "开通会员卡时，如果卡类型本身带附赠次数，会按配置同步发放。",
+            },
+            {
+                "key": "failed_task_refund",
+                "label": "失败返还",
+                "description": "已扣除但任务失败时，可返还对应次数。",
+            },
+        ],
+        "vip_gain_actions": [
+            {
+                "key": "license_activate_vip",
+                "label": "CDK / 会员开通",
+                "description": "成功激活后，会按开通时长延长 VIP 有效期。",
+            },
+            {
+                "key": "invite_rewards",
+                "label": "邀请奖励",
+                "description": "好友首次激活会员后，邀请人和被邀请人会按配置比例补发 VIP 时长。",
+            },
+        ],
+        "free_actions": [
+            {"key": "resource_exchange", "label": "资源互换", "description": "免费功能，不扣次数"},
+            {"key": "effects_and_duo", "label": "效果配置 / Duo 资源浏览", "description": "只浏览、搜索和配置时不扣次数"},
+            {"key": "draft_tools", "label": "草稿处理 / 批量分割 / 片段微调", "description": "本地浏览和配置时不扣次数"},
+            {"key": "account_center", "label": "账户中心 / 邀请中心 / 使用教程", "description": "查看、浏览和配置时不扣次数"},
+            {"key": "byok_ai_tools", "label": "AI 成片 / 文本 / 音频 / 视频生成", "description": "当前走 BYOK，不走平台次数"},
+        ],
+        "online_required_actions": [
+            {"key": "register", "label": "注册"},
+            {"key": "login", "label": "登录"},
+            {"key": "daily_checkin", "label": "每日签到"},
+            {"key": "license_activate", "label": "授权激活"},
+            {"key": "license_deactivate", "label": "授权解绑"},
+            {"key": "generate_batch", "label": "批量混剪（按组精准替换 / 混剪裂变替换 / 分区混剪裂变 / 槽位拼接混剪）"},
+            {"key": "export_drafts", "label": "批量导出"},
+            {"key": "ai_manga", "label": "AI 漫剧"},
+            {"key": "ai_make_generate", "label": "AI智做"},
+            {"key": "storyboard_generate", "label": "漫剧助手生图"},
+        ],
+        "offline_policy": {
+            "count_changing_actions_require_online": True,
+            "authorization_actions_require_online": True,
+            "message": "断网或无法连接验证服务时，扣次数、加次数、改授权状态这类服务端校验动作会被直接拦截。",
+        },
+        "online_status": online_status,
+    }

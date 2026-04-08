@@ -1,12 +1,41 @@
 import ctypes
 import logging
+import multiprocessing
 import os
 import socket
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+
+def _bootstrap_repo_venv_site_packages() -> None:
+    repo_root = Path(__file__).resolve().parent
+    venv_site = repo_root / "venv312" / "Lib" / "site-packages"
+    if not venv_site.exists():
+        return
+    site_text = str(venv_site)
+    if site_text not in sys.path:
+        sys.path.insert(0, site_text)
+
+
+def _ensure_repo_venv_python() -> None:
+    current_exe = str(Path(sys.executable).resolve())
+    expected_exe = str((Path(__file__).resolve().parent / "venv312" / "Scripts" / "python.exe").resolve())
+    if current_exe.lower() == expected_exe.lower():
+        return
+    if os.environ.get("VF_DESKTOP_REEXECED") == "1":
+        return
+    if not os.path.exists(expected_exe):
+        return
+
+    env = os.environ.copy()
+    env["VF_DESKTOP_REEXECED"] = "1"
+    subprocess.Popen([expected_exe, os.path.abspath(__file__)], cwd=str(Path(__file__).resolve().parent), env=env)
+    raise SystemExit(0)
 
 
 def _init_logging() -> str:
@@ -77,10 +106,18 @@ def _ensure_fixed_runtime_base_dir() -> str:
     return runtime_base
 
 def main() -> int:
+    # Ensure any spawned Python child process stays on the same interpreter
+    # as desktop_app.py (venv), instead of falling back to base system Python.
+    if getattr(sys, "_base_executable", "") != sys.executable:
+        sys._base_executable = sys.executable
+    multiprocessing.set_executable(sys.executable)
+    os.environ["PYTHONEXECUTABLE"] = sys.executable
     _ensure_fixed_runtime_base_dir()
-    # Desktop runtime should default to online auth mode for official packaged builds.
-    os.environ.setdefault("VF_REMOTE_AUTH_MODE", "1")
-    os.environ.setdefault("VF_OFFICIAL_SITE_URL", "https://www.zysj.site")
+    # Keep repo-local desktop runs self-contained. Packaged builds can still opt into
+    # remote auth explicitly via env or frozen runtime defaults.
+    if getattr(sys, "frozen", False):
+        os.environ.setdefault("VF_REMOTE_AUTH_MODE", "1")
+        os.environ.setdefault("VF_OFFICIAL_SITE_URL", "https://www.zysj.site")
     from werkzeug.serving import make_server
     from app import create_app
     from app.utils.desktop_runtime import (
@@ -165,4 +202,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    _bootstrap_repo_venv_site_packages()
+    _ensure_repo_venv_python()
     raise SystemExit(main())

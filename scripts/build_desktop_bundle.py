@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import py_compile
 import re
 import shutil
 import subprocess
@@ -17,9 +18,14 @@ from PIL import Image
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 PACKAGING_DIR = ROOT_DIR / "packaging"
+DEFAULT_BRANDING_DIR = PACKAGING_DIR / "branding"
+DEFAULT_BRANDING_LOGO = DEFAULT_BRANDING_DIR / "logo.png"
+DEFAULT_BRANDING_ICON = DEFAULT_BRANDING_DIR / "app_icon.ico"
+DEFAULT_OFFICIAL_DRAFT_TEMPLATE_FILE = PACKAGING_DIR / "official_draft_release_templates.json"
 DEFAULT_PRESET = ROOT_DIR / "env.presets" / "desktop_full.env.example"
 DEFAULT_SPEC = PACKAGING_DIR / "video_factory_desktop.spec"
 DEFAULT_INSTALLER_TEMPLATE = PACKAGING_DIR / "video_factory_installer.iss"
+DEFAULT_APP_VERSION = "1.0.1"
 DEFAULT_WINGET_UPX = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Links" / "upx.exe"
 OBFUSCATE_COPY_TARGETS = [
     "app",
@@ -34,6 +40,9 @@ OBFUSCATE_COPY_TARGETS = [
 PYARMOR_TARGETS = [
     "app/views/api.py",
     "app/utils/auth_token.py",
+    "app/services/jianying/official_draft_replace_service.py",
+    "app/services/jianying/draft_replacement_strategy.py",
+    "app/tasks.py",
 ]
 
 RUNTIME_DIR_NAMES = [
@@ -43,6 +52,21 @@ RUNTIME_DIR_NAMES = [
     "duo_cache",
     "mcp_cache",
 ]
+RELEASE_FORBIDDEN_NAME_PARTS = (
+    ".codex-tmp",
+    "backups",
+    "docs",
+    "reverse_capture",
+    "official_draft_regression",
+)
+RELEASE_FORBIDDEN_FILE_GLOBS = (
+    "tmp_*",
+    "@AutomationLog.txt",
+    "pyarmor.bug.log",
+)
+RELEASE_MINIFY_JS_TARGETS = (
+    "app/static/js/user-index.js",
+)
 
 
 def read_env_file(path: Path) -> dict:
@@ -122,14 +146,29 @@ def render_installer_script(
     template_path: Path,
     output_path: Path,
     dist_root: Path,
-    app_name: str,
+    app_display_name: str,
+    app_publisher: str,
     exe_name: str,
+    app_version: str,
+    install_subdir: str,
+    output_base_filename: str,
+    setup_icon_path: str,
 ) -> None:
     content = template_path.read_text(encoding="utf-8")
-    content = content.replace("__APP_NAME__", app_name)
+    content = content.replace("__APP_DISPLAY_NAME__", app_display_name)
+    content = content.replace("__APP_PUBLISHER__", app_publisher)
+    content = content.replace("__APP_VERSION__", app_version)
     content = content.replace("__APP_EXE_NAME__", f"{exe_name}.exe")
+    content = content.replace("__INSTALL_SUBDIR__", install_subdir)
+    content = content.replace("__OUTPUT_BASE_FILENAME__", output_base_filename)
     content = content.replace("__DIST_ROOT__", str(dist_root).replace("/", "\\"))
-    output_path.write_text(content, encoding="utf-8")
+    content = content.replace("__SETUP_ICON_FILE__", str(setup_icon_path or "").replace("/", "\\"))
+    output_path.write_text(content, encoding="utf-8-sig")
+
+
+def sanitize_installer_basename(name: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or "").strip()).strip("._-")
+    return sanitized or "VideoFactory_Setup"
 
 
 def build_obfuscated_workspace(source_root: Path, obf_root: Path) -> Path:
@@ -154,7 +193,28 @@ def build_obfuscated_workspace(source_root: Path, obf_root: Path) -> Path:
     command.extend([str(source_root / item) for item in PYARMOR_TARGETS])
     env = os.environ.copy()
     env["PYARMOR_HOME"] = str(obf_root / ".pyarmor")
-    run_command([str(item) for item in command], env=env, cwd=source_root)
+    print("[RUN]", " ".join(str(item) for item in command))
+    pyarmor_result = subprocess.run(
+        [str(item) for item in command],
+        cwd=str(source_root),
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    if pyarmor_result.stdout:
+        print(pyarmor_result.stdout, end="" if pyarmor_result.stdout.endswith("\n") else "\n")
+    if pyarmor_result.stderr:
+        print(pyarmor_result.stderr, end="" if pyarmor_result.stderr.endswith("\n") else "\n")
+    if pyarmor_result.returncode != 0:
+        if not _is_pyarmor_license_limit(pyarmor_result.stdout, pyarmor_result.stderr):
+            raise subprocess.CalledProcessError(
+                pyarmor_result.returncode,
+                [str(item) for item in command],
+                output=pyarmor_result.stdout,
+                stderr=pyarmor_result.stderr,
+            )
+        print("PyArmor trial license exhausted, falling back to pyc-only protection for core modules")
+        return build_pyc_only_workspace(obf_root)
 
     for relative_path in PYARMOR_TARGETS:
         generated = generated_root / relative_path
@@ -179,9 +239,66 @@ def build_obfuscated_workspace(source_root: Path, obf_root: Path) -> Path:
     return obf_root
 
 
+def _is_pyarmor_license_limit(stdout: str, stderr: str) -> bool:
+    output_parts = []
+    if stdout:
+        output_parts.append(str(stdout))
+    if stderr:
+        output_parts.append(str(stderr))
+    message = "\n".join(output_parts).lower()
+    return "out of license" in message or "license" in message
+
+
+def build_pyc_only_workspace(obf_root: Path) -> Path:
+    for relative_path in PYARMOR_TARGETS:
+        target = obf_root / relative_path
+        if not target.exists() or not target.is_file():
+            continue
+        pyc_target = target.with_suffix(".pyc")
+        py_compile.compile(str(target), cfile=str(pyc_target), doraise=True)
+        target.unlink()
+    return obf_root
+
+
 def run_command(command: list[str], env: dict, cwd: Path) -> None:
     print("[RUN]", " ".join(command))
     subprocess.run(command, cwd=str(cwd), env=env, check=True)
+
+
+def resolve_iscc_exe() -> str:
+    command_hit = which("ISCC.exe")
+    if command_hit:
+        return str(Path(command_hit).resolve())
+    candidates = [
+        Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
+        Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
+        Path.home() / "AppData" / "Local" / "Programs" / "Inno Setup 6" / "ISCC.exe",
+        Path(r"C:\Program Files (x86)\Inno Setup 5\ISCC.exe"),
+        Path(r"C:\Program Files\Inno Setup 5\ISCC.exe"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate.resolve())
+    return ""
+
+
+def build_inno_installer(installer_script: Path, output_dir: Path) -> Path | None:
+    iscc_exe = resolve_iscc_exe()
+    if not iscc_exe:
+        print("Warning: ISCC.exe not found, skipped installer compilation")
+        return None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            iscc_exe,
+            f"/O{output_dir}",
+            str(installer_script),
+        ],
+        env=os.environ.copy(),
+        cwd=ROOT_DIR,
+    )
+    installers = sorted(output_dir.glob("*.exe"), key=lambda item: item.stat().st_mtime, reverse=True)
+    return installers[0] if installers else None
 
 
 def ensure_build_dependencies(obfuscate: bool, source_root: Path) -> None:
@@ -208,6 +325,7 @@ def stage_runtime_files(
     preset_path: Path,
     env_values: dict,
     logo_path: str,
+    branding_icon_path: str,
     installer_script: Path,
     app_name: str,
     exe_name: str,
@@ -226,7 +344,11 @@ def stage_runtime_files(
     if logo_path:
         source = Path(logo_path)
         if source.exists():
-            shutil.copy2(source, branding_dir / source.name)
+            shutil.copy2(source, branding_dir / "logo.png")
+    if branding_icon_path:
+        icon_source = Path(branding_icon_path)
+        if icon_source.exists():
+            shutil.copy2(icon_source, branding_dir / "app_icon.ico")
 
     manifest = {
         "app_name": app_name,
@@ -242,6 +364,54 @@ def stage_runtime_files(
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def find_forbidden_release_entries(dist_root: Path) -> list[str]:
+    matches: list[str] = []
+    if not dist_root.exists():
+        return matches
+    for path in dist_root.rglob("*"):
+        rel = str(path.relative_to(dist_root)).replace("\\", "/")
+        lower_rel = rel.lower()
+        if any(part in lower_rel for part in RELEASE_FORBIDDEN_NAME_PARTS):
+            matches.append(rel)
+            continue
+        if path.is_file():
+            name = path.name
+            for pattern in RELEASE_FORBIDDEN_FILE_GLOBS:
+                if path.match(pattern) or Path(name).match(pattern):
+                    matches.append(rel)
+                    break
+    return sorted(set(matches))
+
+
+def ensure_release_output_clean(dist_root: Path) -> None:
+    forbidden_entries = find_forbidden_release_entries(dist_root)
+    if forbidden_entries:
+        preview = "；".join(forbidden_entries[:10])
+        raise SystemExit(f"构建已拦截：发布目录包含不应随商用包分发的文件。{preview}")
+
+
+def minify_release_assets(dist_root: Path) -> None:
+    npx_path = which("npx")
+    if not npx_path:
+        raise SystemExit("构建已拦截：未找到 npx，无法执行前端资源压缩。")
+    for relative_path in RELEASE_MINIFY_JS_TARGETS:
+        target = dist_root / relative_path
+        if not target.exists() or not target.is_file():
+            continue
+        tmp_path = target.with_suffix(f"{target.suffix}.min")
+        command = [
+            npx_path,
+            "terser",
+            str(target),
+            "--compress",
+            "--mangle",
+            "--output",
+            str(tmp_path),
+        ]
+        run_command(command, env=os.environ.copy(), cwd=ROOT_DIR)
+        shutil.move(str(tmp_path), str(target))
 
 
 def safe_git_output(args: list[str]) -> str:
@@ -305,10 +475,24 @@ def build_release_metadata(preset_path: Path, installer_script: Path) -> dict:
     }
 
 
+def load_official_draft_templates_from_file(path_text: str) -> list[str]:
+    file_path = Path(path_text).resolve()
+    payload = json.loads(file_path.read_text(encoding="utf-8"))
+    templates: list[str] = []
+    for item in payload.get("templates") or []:
+        if isinstance(item, dict):
+            template_path = str(item.get("path") or "").strip()
+        else:
+            template_path = str(item or "").strip()
+        if template_path:
+            templates.append(template_path)
+    return templates
+
+
 def resolve_icon_path(icon_path: str, logo_path: str, output_root: Path) -> str:
     candidate = (icon_path or "").strip()
     fallback_logo = (logo_path or "").strip()
-    source = candidate or fallback_logo
+    source = candidate or (str(DEFAULT_BRANDING_ICON) if DEFAULT_BRANDING_ICON.exists() else fallback_logo)
     if not source:
         return ""
 
@@ -333,6 +517,18 @@ def resolve_icon_path(icon_path: str, logo_path: str, output_root: Path) -> str:
         image = image.copy()
     image.save(target_path, format="ICO", sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
     return str(target_path.resolve())
+
+
+def resolve_logo_path(logo_path: str) -> str:
+    candidate = (logo_path or "").strip()
+    if candidate:
+        source_path = Path(candidate)
+        if source_path.exists():
+            return str(source_path.resolve())
+        return ""
+    if DEFAULT_BRANDING_LOGO.exists():
+        return str(DEFAULT_BRANDING_LOGO.resolve())
+    return ""
 
 
 def build_pyinstaller(
@@ -396,6 +592,8 @@ def main() -> None:
     parser.add_argument("--preset", default=str(DEFAULT_PRESET), help="env preset file to stage as .env")
     parser.add_argument("--name", default="VideoFactory", help="desktop app name")
     parser.add_argument("--exe-name", default="VideoFactory", help="internal Windows exe file name")
+    parser.add_argument("--display-name", default="", help="display name used in installer UI")
+    parser.add_argument("--version", default=DEFAULT_APP_VERSION, help="installer version")
     parser.add_argument("--icon", default="", help="optional .ico path for Windows exe")
     parser.add_argument("--logo", default="", help="optional logo asset path to copy into branding/")
     parser.add_argument("--console", action="store_true", help="show console window when launching the desktop app")
@@ -408,6 +606,17 @@ def main() -> None:
         default=[],
         help="absolute path to an official draft template to include in prepackage regression; may be repeated",
     )
+    parser.add_argument(
+        "--official-draft-template-file",
+        action="append",
+        default=[],
+        help="JSON file containing official draft templates to include in prepackage regression; may be repeated",
+    )
+    parser.add_argument(
+        "--use-default-official-drafts",
+        action="store_true",
+        help=f"load release-blocking official draft templates from {DEFAULT_OFFICIAL_DRAFT_TEMPLATE_FILE}",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print resolved config and exit")
     args = parser.parse_args()
 
@@ -418,12 +627,34 @@ def main() -> None:
         raise FileNotFoundError(f"spec not found: {DEFAULT_SPEC}")
 
     env_values = read_env_file(preset_path)
+    official_draft_templates = list(args.official_draft_template)
+    template_files = [Path(item).resolve() for item in args.official_draft_template_file]
+    if args.use_default_official_drafts:
+        template_files.append(DEFAULT_OFFICIAL_DRAFT_TEMPLATE_FILE)
+    for template_file in template_files:
+        if not template_file.exists():
+            raise FileNotFoundError(f"official draft template file not found: {template_file}")
+        official_draft_templates.extend(load_official_draft_templates_from_file(str(template_file)))
+    deduped_templates = []
+    seen_templates = set()
+    for item in official_draft_templates:
+        normalized = os.path.normcase(os.path.normpath(str(item)))
+        if normalized in seen_templates:
+            continue
+        seen_templates.add(normalized)
+        deduped_templates.append(str(item))
+    official_draft_templates = deduped_templates
+
     dist_parent = ROOT_DIR / "build" / "release"
     dist_root = dist_parent / args.name
     work_root = ROOT_DIR / "build" / "pyinstaller"
     obf_root = ROOT_DIR / "build" / "obfuscated"
     installer_script = ROOT_DIR / "build" / "installer" / f"{args.name}_setup.iss"
-    resolved_icon = resolve_icon_path(args.icon, args.logo, ROOT_DIR / "build")
+    installer_output_dir = ROOT_DIR / "build" / "installer" / "output"
+    resolved_logo = resolve_logo_path(args.logo)
+    resolved_icon = resolve_icon_path(args.icon, resolved_logo, ROOT_DIR / "build")
+    display_name = str(args.display_name or "").strip() or args.name
+    installer_output_base = f"{sanitize_installer_basename(args.name)}_{args.version}"
 
     if args.dry_run:
         payload = {
@@ -431,13 +662,16 @@ def main() -> None:
             "name": args.name,
             "dist_root": str(dist_root),
             "exe_name": args.exe_name,
+            "display_name": display_name,
+            "version": args.version,
             "work_root": str(work_root),
             "obf_root": str(obf_root),
             "icon": args.icon,
             "resolved_icon": resolved_icon,
-            "logo": args.logo,
+              "logo": resolved_logo,
             "console": args.console,
             "obfuscate": args.obfuscate,
+            "official_draft_templates": official_draft_templates,
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -456,7 +690,7 @@ def main() -> None:
 
     if not args.skip_precheck:
         precheck_command = [sys.executable, str(ROOT_DIR / "scripts" / "prepackage_check.py")]
-        for template_path in args.official_draft_template:
+        for template_path in official_draft_templates:
             precheck_command.extend(["--official-draft-template", template_path])
         run_command(precheck_command, env=env, cwd=ROOT_DIR)
 
@@ -490,25 +724,36 @@ def main() -> None:
         template_path=DEFAULT_INSTALLER_TEMPLATE,
         output_path=installer_script,
         dist_root=dist_root,
-        app_name=args.name,
+        app_display_name=display_name,
+        app_publisher=display_name,
         exe_name=args.exe_name,
+        app_version=args.version,
+        install_subdir=display_name,
+        output_base_filename=installer_output_base,
+        setup_icon_path=resolved_icon,
     )
     build_metadata = build_release_metadata(preset_path, installer_script)
     stage_runtime_files(
         dist_root=dist_root,
         preset_path=preset_path,
         env_values=env_values,
-        logo_path=args.logo,
+        logo_path=resolved_logo,
+        branding_icon_path=resolved_icon,
         installer_script=installer_script,
         app_name=args.name,
         exe_name=args.exe_name,
         build_metadata=build_metadata,
     )
+    minify_release_assets(dist_root)
+    ensure_release_output_clean(dist_root)
+    installer_binary = build_inno_installer(installer_script, installer_output_dir)
 
     print("")
     print("Desktop bundle prep completed")
     print(f"Bundle root: {dist_root}")
     print(f"Installer script: {installer_script}")
+    if installer_binary:
+        print(f"Installer exe: {installer_binary}")
     if resolved_icon:
         print(f"Exe icon: {resolved_icon}")
 

@@ -1734,17 +1734,16 @@
             display: flex;
             flex-wrap: wrap;
             gap: 10px 12px;
-            justify-content: center;
+            justify-content: flex-start;
             align-items: center !important;
             padding: 2px 0 4px 0;
             min-height: 44px;
         }
         .replace-type-chip {
-            display: inline-grid !important;
-            grid-auto-flow: column;
-            place-items: center !important;
-            place-content: center !important;
-            gap: 10px;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            gap: 8px;
             height: 44px !important;
             min-width: 78px;
             padding: 0 18px !important;
@@ -1766,9 +1765,9 @@
             flex: 0 0 auto;
             align-self: center !important;
             vertical-align: middle;
-            position: relative;
-            top: 0;
-            transform: translateY(0);
+            position: static;
+            top: auto;
+            transform: none;
         }
         .replace-type-chip span {
             display: inline-flex;
@@ -2299,9 +2298,13 @@
             font-size: 12px;
             font-weight: 700;
         }
-        .ai-inspiration-card {
-            margin-top: 16px;
-        }
+.ai-inspiration-card {
+    margin-top: 16px;
+}
+
+#aiInspirationCard + #aiCopyCard {
+    margin-top: 18px;
+}
         .resource-post-card,
         .tutorial-card {
             padding: 18px;
@@ -2842,7 +2845,7 @@
         }
         .material-pill-card {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             justify-content: space-between;
             gap: 12px;
             width: 100%;
@@ -2864,6 +2867,7 @@
             justify-content: center;
             min-width: 72px;
             min-height: 34px;
+            flex: 0 0 auto;
             margin: 0;
             padding: 0 12px;
             border-radius: 999px;
@@ -2871,12 +2875,17 @@
             border: 1px solid #bfdbfe;
             color: #0f172a;
             font-size: 13px;
+            white-space: nowrap;
         }
         .material-pill-card span {
+            display: block;
+            min-width: 0;
             color: #64748b;
             font-size: 13px;
             line-height: 1.5;
-            word-break: break-all;
+            white-space: normal;
+            word-break: break-word;
+            overflow-wrap: anywhere;
             flex: 1;
         }
         .text-strip {
@@ -2967,6 +2976,10 @@
             font-size: 13px;
             font-weight: 700;
             color: #0f172a;
+            line-height: 1.45;
+            white-space: normal;
+            word-break: break-word;
+            overflow-wrap: anywhere;
         }
         .partition-text-card textarea {
             min-height: 110px;
@@ -4018,6 +4031,23 @@
             cursor: pointer !important;
             transform: translateY(-50%) !important;
         }
+        #replaceTypeField .replace-type-chip {
+            position: static !important;
+            min-height: 44px !important;
+            padding-left: 18px !important;
+        }
+        #replaceTypeField .replace-type-chip::before,
+        #replaceTypeField .replace-type-chip::after {
+            content: none !important;
+            display: none !important;
+        }
+        #replaceTypeField .replace-type-chip input[type="checkbox"] {
+            position: static !important;
+            left: auto !important;
+            top: auto !important;
+            opacity: 1 !important;
+            transform: none !important;
+        }
 
 .manga-assistant-grid {
     align-items: start;
@@ -4168,9 +4198,14 @@
     gap: 12px;
 }
 
+.storyboard-recent-section {
+    margin-top: 18px;
+}
+
 .storyboard-recent-grid {
     display: grid;
-    gap: 14px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
     margin-top: 16px;
 }
 
@@ -4201,22 +4236,25 @@
 
 .storyboard-recent-card {
     display: grid;
-    grid-template-columns: 104px minmax(0, 1fr);
-    gap: 14px;
+    grid-template-columns: 180px minmax(0, 1fr);
     align-items: center;
+    gap: 14px;
     border: 1px solid rgba(15, 23, 42, 0.08);
-    border-radius: 18px;
-    padding: 14px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.98));
+    border-radius: 20px;
+    padding: 16px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.98));
+    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.05);
 }
 
 .storyboard-recent-preview {
+    position: relative;
     overflow: hidden;
-    border-radius: 16px;
-    background: rgba(226, 232, 240, 0.55);
-    width: 104px;
-    height: 104px;
-    margin-top: 4px;
+    border-radius: 20px;
+    background: rgba(226, 232, 240, 0.65);
+    width: 180px;
+    height: 180px;
+    min-height: 180px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
 }
 
 .storyboard-recent-preview img {
@@ -4227,28 +4265,91 @@
 }
 
 .storyboard-recent-body {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 10px;
     min-width: 0;
 }
 
-.storyboard-recent-meta {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
+.storyboard-recent-title {
+    display: block;
+    font-size: 18px;
+    line-height: 1.2;
+    color: #0f172a;
+    overflow-wrap: anywhere;
 }
 
 .storyboard-recent-check {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 2;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    color: #64748b;
-    font-size: 12px;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    margin: 0;
+    padding: 0;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+    cursor: pointer;
 }
 
-.storyboard-recent-body .key-actions {
-    margin-top: 0;
+.storyboard-recent-check input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.storyboard-recent-check-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    border: 2px solid rgba(148, 163, 184, 0.9);
+    background: #ffffff;
+    transition: all .16s ease;
+}
+
+.storyboard-recent-check input:checked + .storyboard-recent-check-indicator {
+    border-color: var(--vf-primary);
+    background: linear-gradient(135deg, var(--vf-primary), var(--vf-primary-strong));
+    box-shadow: 0 0 0 3px rgba(31, 111, 255, 0.14);
+}
+
+.storyboard-recent-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+}
+
+.storyboard-preview-open {
+    overflow: hidden;
+}
+
+.storyboard-preview-dialog {
+    width: min(1180px, calc(100vw - 24px));
+}
+
+.storyboard-preview-shell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    border-radius: 18px;
+    background: #0f172a;
+    overflow: hidden;
+}
+
+.storyboard-preview-shell img {
+    display: block;
+    max-width: 100%;
+    max-height: 78vh;
+    object-fit: contain;
 }
 
 .storyboard-recent-pager {
@@ -4306,7 +4407,7 @@
     margin-top: 6px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    word-break: break-all;
+    word-break: break-word;
 }
 
 .storyboard-sentence-actions {
@@ -4334,14 +4435,21 @@
 
     .storyboard-recent-card {
         grid-template-columns: 1fr;
+        padding: 16px;
     }
 
     .storyboard-recent-preview {
         width: 100%;
         height: auto;
+        aspect-ratio: 1 / 1;
+        min-height: 220px;
     }
 
     .storyboard-recent-preview img {
-        height: auto;
+        height: 100%;
+    }
+
+    .storyboard-recent-title {
+        font-size: 21px;
     }
 }

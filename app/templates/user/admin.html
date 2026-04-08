@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ site_settings.admin_title }}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/user-index.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/user-index.css', v='20260404j') }}">
     <style>
         body.admin-body{padding:12px 0 28px;background:radial-gradient(circle at top left,rgba(59,130,246,.12),transparent 26%),radial-gradient(circle at top right,rgba(15,23,42,.08),transparent 22%),linear-gradient(180deg,#eef3f9 0%,#f7f9fc 42%,#edf2f7 100%)}
         .admin-body .container{max-width:1680px;width:min(calc(100vw - 28px),1680px)}
@@ -56,7 +56,7 @@
         .overview-summary-card,.license-group{padding:22px;border-radius:24px;border:1px solid rgba(148,163,184,.16);background:linear-gradient(180deg,#ffffff,#fbfdff)}
         .overview-summary-card p,.license-group p{margin:0;color:#64748b;line-height:1.7;font-size:13px}
         .overview-summary-list,.invite-lines,.reward-lines,.user-meta{display:grid;gap:8px}
-        .overview-summary-list div,.invite-lines div,.reward-lines div,.user-meta div{color:#334155;font-size:13px;line-height:1.6}
+        .overview-summary-list div,.invite-lines div,.reward-lines div,.user-meta div{color:#334155;font-size:13px;line-height:1.6;overflow-wrap:anywhere;word-break:break-word}
         .overview-summary-list strong,.invite-lines strong,.reward-lines strong,.user-meta strong{color:#0f172a}
         .license-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
         .license-group-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
@@ -126,7 +126,7 @@
                         </section>
                         <div class="row" style="margin-top:16px;display:none;"><button id="saveSiteBtn" class="btn primary" type="button">保存配置</button><div id="siteStatus" class="hint"></div></div>
                     </div></section>
-                    <section class="admin-panel section" id="section-license"><div class="admin-card"><div class="section-head"><div><div class="section-kicker">授权激活</div><h2 class="card-title">授权规则、奖励与试用次数</h2><p class="section-copy">保持现有授权、试用和 CDK 规则接口不变。</p></div></div><div class="license-grid"><section class="license-group"><h3>授权规则</h3><div class="license-group-grid"><div class="field"><label for="license_offline_hours">离线时长（小时）</label><input id="license_offline_hours" type="number" min="0"><div class="field-note">设备离线后允许持续使用的时长。</div></div><div class="field"><label for="license_transfer_cooldown_hours">转移冷却（分钟）</label><input id="license_transfer_cooldown_hours" type="number" min="0"><div class="field-note">设备解绑后的冷却时间，冷却内不能继续转移到新设备。</div></div><div class="field full"><label for="license_code_length">CDK 长度</label><input id="license_code_length" type="number" min="6"><div class="field-note">新生成 CDK 的字符长度。</div></div></div></section><section class="license-group"><h3>消耗项</h3><p>只保留真正会直接扣减用户次数的配置，避免和奖励项混在一起。</p><div class="license-group-grid" style="margin-top:16px;"><div class="field full"><label for="manga_generate_cost">AI 漫剧单次消耗</label><input id="manga_generate_cost" type="number" min="0"><div class="field-note">支持自由设置，填 0 表示不扣次数。</div></div></div></section><section class="license-group"><h3>奖励项</h3><p>授权激活、签到和邀请码奖励统一走服务端配置，前端只负责展示和保存。</p><div class="license-group-grid" style="margin-top:16px;"><div class="field"><label for="license_points_ratio">激活积分倍率</label><input id="license_points_ratio" type="number" min="0"><div class="field-note">支持自由设置，填 0 表示激活后不额外赠送积分。</div></div><div class="field"><label for="daily_checkin_reward">每日签到奖励</label><input id="daily_checkin_reward" type="number" min="0"><div class="field-note">支持自由设置，填 0 表示签到不加次数。</div></div><div class="field"><label for="invite_referrer_reward">邀请人奖励百分比</label><input id="invite_referrer_reward" type="number" min="0" max="100"><div class="field-note">最高只允许 100%，服务端也会同步硬限制。</div></div><div class="field"><label for="invite_invitee_reward">被邀请人加赠百分比</label><input id="invite_invitee_reward" type="number" min="0" max="100"><div class="field-note">最高只允许 100%，服务端也会同步硬限制。</div></div></div></section><section class="license-group single-column"><h3>新用户默认试用项</h3><p>新注册用户的起始可用次数以 `default_user_quota` 为准，/user 与后台看板都应消费这一项。</p><div class="license-group-grid" style="margin-top:16px;"><div class="field full"><label for="default_user_quota">新用户默认试用次数</label><input id="default_user_quota" type="number" min="0"><div class="field-note">后台设置多少就发多少，但同一设备只发放一次新用户试用额度。</div></div></div></section></div><div class="row" style="margin-top:14px;"><button id="saveLicenseBtn" class="btn primary" type="button">保存授权激活规则</button><div id="licenseStatus" class="hint"></div></div></div></section>
+                    <section class="admin-panel section" id="section-license"><div class="admin-card"><div class="section-head"><div><div class="section-kicker">授权激活</div><h2 class="card-title">授权规则、奖励与试用次数</h2><p class="section-copy">保持现有授权、试用和 CDK 规则接口不变。</p></div></div><div class="license-grid"><section class="license-group"><h3>授权规则</h3><div class="license-group-grid"><div class="field"><label for="license_offline_hours">离线时长（小时）</label><input id="license_offline_hours" type="number" min="0"><div class="field-note">设备离线后允许持续使用的时长。</div></div><div class="field"><label for="license_transfer_cooldown_minutes">转移冷却（分钟）</label><input id="license_transfer_cooldown_minutes" type="number" min="0"><div class="field-note">设备解绑后的冷却时间，冷却分钟内不能继续转移到新设备。</div></div><div class="field full"><label for="license_code_length">CDK 长度</label><input id="license_code_length" type="number" min="6"><div class="field-note">新生成 CDK 的字符长度。</div></div></div></section><section class="license-group"><h3>消耗项</h3><p>只保留真正会直接扣减用户次数的配置，避免和奖励项混在一起。</p><div class="license-group-grid" style="margin-top:16px;"><div class="field"><label for="manga_generate_cost">AI 漫剧单次消耗</label><input id="manga_generate_cost" type="number" min="0"><div class="field-note">支持自由设置，填 0 表示不扣次数。</div></div><div class="field"><label for="ai_make_generate_cost">AI智做单次消耗</label><input id="ai_make_generate_cost" type="number" min="0"><div class="field-note">作用于 AI 文案、AI 灵感、视频和音频任务。</div></div><div class="field"><label for="storyboard_generate_cost">漫剧助手生图消耗</label><input id="storyboard_generate_cost" type="number" min="0"><div class="field-note">作用于分镜工作台里的 AI 生图。</div></div></div></section><section class="license-group"><h3>奖励项</h3><p>授权激活、签到和邀请码奖励统一走服务端配置，前端只负责展示和保存。</p><div class="license-group-grid" style="margin-top:16px;"><div class="field"><label for="license_points_ratio">激活积分倍率</label><input id="license_points_ratio" type="number" min="0"><div class="field-note">支持自由设置，填 0 表示激活后不额外赠送积分。</div></div><div class="field"><label for="daily_checkin_reward">每日签到奖励</label><input id="daily_checkin_reward" type="number" min="0"><div class="field-note">支持自由设置，填 0 表示签到不加次数。</div></div><div class="field"><label for="invite_referrer_reward">邀请人奖励百分比</label><input id="invite_referrer_reward" type="number" min="0" max="100"><div class="field-note">最高只允许 100%，服务端也会同步硬限制。</div></div><div class="field"><label for="invite_invitee_reward">被邀请人加赠百分比</label><input id="invite_invitee_reward" type="number" min="0" max="100"><div class="field-note">最高只允许 100%，服务端也会同步硬限制。</div></div></div></section><section class="license-group single-column"><h3>新用户默认试用项</h3><p>新注册用户的起始可用次数以 `default_user_quota` 为准，/user 与后台看板都应消费这一项。</p><div class="license-group-grid" style="margin-top:16px;"><div class="field full"><label for="default_user_quota">新用户默认试用次数</label><input id="default_user_quota" type="number" min="0"><div class="field-note">后台设置多少就发多少，但同一设备只发放一次新用户试用额度。</div></div></div></section></div><div class="row" style="margin-top:14px;"><button id="saveLicenseBtn" class="btn primary" type="button">保存授权激活规则</button><div id="licenseStatus" class="hint"></div></div></div></section>
                     <section class="admin-panel section" id="section-cdk">
                         <div class="admin-stack">
                             <div class="admin-card admin-subcard admin-subpanel active" data-cdk-panel="batch">
@@ -151,6 +151,7 @@
                                     <div class="field"><label for="cdk_duration_days">有效天数</label><input id="cdk_duration_days" type="number" min="1"></div>
                                     <div class="field"><label for="cdk_quantity">生成数量</label><input id="cdk_quantity" type="number" min="1"></div>
                                     <div class="field"><label for="cdk_bonus_points">赠送积分</label><input id="cdk_bonus_points" type="number" min="0" value="0"></div>
+                                    <div class="field"><label for="cdk_price">价格</label><input id="cdk_price" type="number" min="0" step="0.01" value="0"></div>
                                     <div class="field"><label for="cdk_device_limit">设备上限</label><input id="cdk_device_limit" type="number" min="1" value="1"><div class="field-note">按已绑定设备数计算，满了后需先解绑。</div></div>
                                     <div class="field"><label for="cdk_transfer_times">可转移次数</label><input id="cdk_transfer_times" type="number" min="0" value="0"></div>
                                     <div class="field"><label for="cdk_redeem_days">兑换截止天数</label><input id="cdk_redeem_days" type="number" min="0" value="0"></div>
@@ -267,16 +268,13 @@
         function switchSection(section){document.querySelectorAll('.section').forEach((node)=>node.classList.remove('active'));document.getElementById(`section-${section}`)?.classList.add('active');document.querySelectorAll('#adminNav .admin-tab').forEach((node)=>node.classList.toggle('active',node.dataset.section===section));document.querySelectorAll('.admin-nav-group').forEach((node)=>node.classList.toggle('active',node.getAttribute('data-admin-group')===section))}
         function formatCdkStatus(status){if(status===1)return'已激活';if(status===2)return'已过期';if(status===3)return'已禁用';return'未激活'}
         async function loadAdminInfo(){const token=getToken();if(!token){setNotice('');toggleAdminLock(true);return false}const res=await authFetch('/api/user/info');const data=await res.json();if(!res.ok||!data.ok){forceAdminLoggedOut(data.error||'登录状态已失效，请重新登录。');return false}if(data.user.role!=='admin'){forceAdminLoggedOut('当前账号不是管理员，无法进入管理后台。');return false}setNotice('');setAuthMessage('');toggleAdminLock(false);return true}
-        async function loadOverview(){const box=document.getElementById('overviewStats');const business=document.getElementById('overviewBusiness');const runtime=document.getElementById('runtimeFeatures');const [statsRes,quotaRes]=await Promise.all([authFetch('/api/admin/manga/stats'),authFetch('/api/admin/quota-summary')]);const statsData=await statsRes.json();const quotaData=await quotaRes.json();if(!statsRes.ok||!statsData.ok||!quotaRes.ok||!quotaData.ok){box.innerHTML=`<div class="hint">${statsData.error||quotaData.error||'概览加载失败。'}</div>`;if(business)business.innerHTML='';return}const stats=[['总用户数',quotaData.total_users||0],['活跃用户数',statsData.active_users||0],['AI 漫剧生成总数',statsData.total_generate||0],['全局剩余试用次数',quotaData.total_remaining||0],['已消耗总次数',quotaData.total_generated||0],['还有次数的用户',quotaData.active_trial_users||0],['已建额度档案用户',quotaData.quota_users||0],['受邀注册用户',quotaData.total_invited_users||0],['邀请奖励累计发放',quotaData.total_invite_reward||0]];box.innerHTML=stats.map(([label,value])=>`<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${value}</div></div>`).join('');if(business)business.innerHTML=[{title:'奖励规则',copy:'这三项直接来自 Config，/user 账户中心与邀请码中心应与这里保持一致。',items:[`邀请人奖励比例：<strong>${quotaData.invite_referrer_reward||0}</strong>%`,`被邀请人加赠比例：<strong>${quotaData.invite_invitee_reward||0}</strong>%`,`新用户默认试用：<strong>${quotaData.default_user_quota||0}</strong> 次`]},{title:'当前运营重点',copy:'看板只保留会影响额度、邀请和可运营性的核心数据。',items:[`剩余试用池：<strong>${quotaData.total_remaining||0}</strong> 次`,`邀请转化用户：<strong>${quotaData.total_invited_users||0}</strong> 人`,`邀请累计奖励：<strong>${quotaData.total_invite_reward||0}</strong> 天`]},{title:'奖励发放拆分',copy:'累计发放口径已合并邀请人与被邀请人的首卡奖励天数。',items:[`邀请人累计：<strong>${quotaData.total_invite_referrer_reward||0}</strong> 天`,`被邀请人累计：<strong>${quotaData.total_invite_invitee_reward||0}</strong> 天`,`合计发放：<strong>${quotaData.total_invite_reward||0}</strong> 天`]}].map((card)=>`<section class="overview-summary-card"><h3>${card.title}</h3><p>${card.copy}</p><div class="overview-summary-list" style="margin-top:16px;">${card.items.map((item)=>`<div>${item}</div>`).join('')}</div></section>`).join('');const featureRes=await fetch('/api/runtime-features');const featureData=await featureRes.json();runtime.textContent=featureRes.ok&&featureData.ok?`当前功能状态：Duo ${featureData.features.duo?'可用':'未开放'} / AI 漫剧 ${featureData.features.manga?'可用':'未开放'} / OpenClaw ${featureData.features.openclaw?'已保留':'未开放'}`:'当前功能状态读取失败。'}
-        function ensureSystemAiLicenseFields(){if(document.getElementById('admin_siliconflow_base_url'))return;const licenseGrid=document.querySelector('#section-license .license-grid');if(!licenseGrid)return;const silicon=document.createElement('section');silicon.className='license-group single-column';silicon.innerHTML='<h3>SiliconFlow 生图</h3><div class="license-group-grid" style="margin-top:16px;"><div class="field full"><label for="admin_siliconflow_base_url">Base URL</label><input id="admin_siliconflow_base_url" type="text" placeholder="https://api.siliconflow.cn/v1"></div><div class="field full"><label for="admin_siliconflow_api_key">默认 API Key</label><input id="admin_siliconflow_api_key" type="password" placeholder="保存后仅显示掩码"></div><div class="field"><label for="admin_siliconflow_docs_url">文档地址</label><input id="admin_siliconflow_docs_url" type="text"></div><div class="field"><label for="admin_siliconflow_signup_url">注册地址</label><input id="admin_siliconflow_signup_url" type="text"></div><div class="field full"><label for="admin_siliconflow_model">生图模型</label><input id="admin_siliconflow_model" type="text" placeholder="Kwai-Kolors/Kolors"></div><div class="field full"><label for="admin_siliconflow_positive_prefix">高质量固定前缀</label><textarea id="admin_siliconflow_positive_prefix"></textarea></div><div class="field full"><label for="admin_siliconflow_scene_suffix">场景补充后缀</label><textarea id="admin_siliconflow_scene_suffix"></textarea></div><div class="field full"><label for="admin_siliconflow_negative_prompt">负面提示词</label><textarea id="admin_siliconflow_negative_prompt"></textarea></div></div>';const text=document.createElement('section');text.className='license-group single-column';text.innerHTML='<h3>SiliconFlow 脚本模型</h3><div class="license-group-grid" style="margin-top:16px;"><div class="field full"><label for="admin_siliconflow_text_model_list">模型列表</label><textarea id="admin_siliconflow_text_model_list" placeholder="每行一个模型"></textarea></div><div class="field full"><label for="admin_siliconflow_text_system_prompt">System Prompt</label><textarea id="admin_siliconflow_text_system_prompt"></textarea></div></div>';const prompt=document.createElement('section');prompt.className='license-group single-column';prompt.innerHTML='<h3>提示词默认配置</h3><div class="license-group-grid" style="margin-top:16px;"><div class="field full"><label for="admin_script_prompt_template">脚本提示词默认模板</label><textarea id="admin_script_prompt_template" placeholder="例如：先整理人物、场景、动作、镜头与字幕。"></textarea></div><div class="field full"><label for="admin_image_prompt_template">生图提示词默认模板</label><textarea id="admin_image_prompt_template" placeholder="例如：突出人物一致性、场景风格、镜头语言和画面细节。"></textarea></div></div>';licenseGrid.appendChild(silicon);licenseGrid.appendChild(text);licenseGrid.appendChild(prompt)}
-        async function loadLicenseSettings(){ensureSystemAiLicenseFields();const status=document.getElementById('licenseStatus');status.textContent='正在加载...';const res=await authFetch('/api/admin/license-settings');const data=await res.json();if(!res.ok||!data.ok){status.textContent=data.error||'授权激活规则加载失败。';return}const s=data.settings||{};document.getElementById('license_offline_hours').value=s.offline_hours??s.license_offline_hours??0;document.getElementById('license_transfer_cooldown_hours').value=s.transfer_cooldown_minutes??0;document.getElementById('license_code_length').value=s.code_length??s.license_code_length??16;document.getElementById('license_points_ratio').value=s.points_ratio??s.license_points_ratio??0;document.getElementById('manga_generate_cost').value=s.manga_generate_cost??1;document.getElementById('daily_checkin_reward').value=s.daily_checkin_reward??1;document.getElementById('default_user_quota').value=s.default_user_quota??5;document.getElementById('invite_referrer_reward').value=s.invite_referrer_reward??0;document.getElementById('invite_invitee_reward').value=s.invite_invitee_reward??0;document.getElementById('admin_siliconflow_base_url').value=s.siliconflow_base_url||'';document.getElementById('admin_siliconflow_api_key').value=s.siliconflow_default_api_key_masked||'';document.getElementById('admin_siliconflow_docs_url').value=s.siliconflow_docs_url||'';document.getElementById('admin_siliconflow_signup_url').value=s.siliconflow_signup_url||'';document.getElementById('admin_siliconflow_model').value=s.siliconflow_model||'';document.getElementById('admin_siliconflow_positive_prefix').value=s.siliconflow_positive_prefix||'';document.getElementById('admin_siliconflow_scene_suffix').value=s.siliconflow_scene_suffix||'';document.getElementById('admin_siliconflow_negative_prompt').value=s.siliconflow_negative_prompt||'';document.getElementById('admin_siliconflow_text_model_list').value=Array.isArray(s.siliconflow_text_model_list)?s.siliconflow_text_model_list.join('\\n'):'';document.getElementById('admin_siliconflow_text_system_prompt').value=s.siliconflow_text_system_prompt||'';document.getElementById('admin_script_prompt_template').value=s.script_prompt_template||'';document.getElementById('admin_image_prompt_template').value=s.image_prompt_template||'';status.textContent='授权激活规则已加载。'}
-        async function saveLicenseSettings(){ensureSystemAiLicenseFields();const payload={license_offline_hours:parseInt(document.getElementById('license_offline_hours').value||'0',10),license_transfer_cooldown_minutes:parseInt(document.getElementById('license_transfer_cooldown_hours').value||'0',10),license_code_length:parseInt(document.getElementById('license_code_length').value||'16',10),license_points_ratio:parseInt(document.getElementById('license_points_ratio').value||'0',10),manga_generate_cost:parseInt(document.getElementById('manga_generate_cost').value||'0',10),daily_checkin_reward:parseInt(document.getElementById('daily_checkin_reward').value||'0',10),default_user_quota:parseInt(document.getElementById('default_user_quota').value||'0',10),invite_referrer_reward:parseInt(document.getElementById('invite_referrer_reward').value||'0',10),invite_invitee_reward:parseInt(document.getElementById('invite_invitee_reward').value||'0',10),siliconflow_base_url:(document.getElementById('admin_siliconflow_base_url').value||'').trim(),siliconflow_docs_url:(document.getElementById('admin_siliconflow_docs_url').value||'').trim(),siliconflow_signup_url:(document.getElementById('admin_siliconflow_signup_url').value||'').trim(),siliconflow_model:(document.getElementById('admin_siliconflow_model').value||'').trim(),siliconflow_positive_prefix:document.getElementById('admin_siliconflow_positive_prefix').value||'',siliconflow_scene_suffix:document.getElementById('admin_siliconflow_scene_suffix').value||'',siliconflow_negative_prompt:document.getElementById('admin_siliconflow_negative_prompt').value||'',siliconflow_text_model_list:(document.getElementById('admin_siliconflow_text_model_list').value||'').split(/\\r?\\n/).map((item)=>item.trim()).filter(Boolean),siliconflow_text_system_prompt:document.getElementById('admin_siliconflow_text_system_prompt').value||'',script_prompt_template:document.getElementById('admin_script_prompt_template').value||'',image_prompt_template:document.getElementById('admin_image_prompt_template').value||''};const siliconKeyInput=document.getElementById('admin_siliconflow_api_key');if(siliconKeyInput&&siliconKeyInput.value&&siliconKeyInput.value.indexOf('****')<0)payload.siliconflow_default_api_key=siliconKeyInput.value.trim();const status=document.getElementById('licenseStatus');status.textContent='正在保存...';const res=await authFetch('/api/admin/license-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await res.json();status.textContent=data.ok?'授权激活规则已保存。':(data.error||'保存失败。');if(data.ok)await loadOverview()}
+async function loadOverview(){const box=document.getElementById('overviewStats');const business=document.getElementById('overviewBusiness');const runtime=document.getElementById('runtimeFeatures');const [statsRes,quotaRes]=await Promise.all([authFetch('/api/admin/manga/stats'),authFetch('/api/admin/quota-summary')]);const statsData=await statsRes.json();const quotaData=await quotaRes.json();if(!statsRes.ok||!statsData.ok||!quotaRes.ok||!quotaData.ok){box.innerHTML=`<div class="hint">${statsData.error||quotaData.error||'概览加载失败。'}</div>`;if(business)business.innerHTML='';return}const stats=[['总用户数',quotaData.total_users||0],['活跃用户数',statsData.active_users||0],['AI 漫剧生成总数',statsData.total_generate||0],['全局剩余试用次数',quotaData.total_remaining||0],['已消耗总次数',quotaData.total_generated||0],['还有次数的用户',quotaData.active_trial_users||0],['已建额度档案用户',quotaData.quota_users||0],['受邀注册用户',quotaData.total_invited_users||0],['邀请奖励累计发放',quotaData.total_invite_reward||0]];box.innerHTML=stats.map(([label,value])=>`<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${value}</div></div>`).join('');if(business)business.innerHTML=[{title:'奖励规则',copy:'这三项直接来自 Config，/user 账户中心与邀请码中心应与这里保持一致。',items:[`邀请人奖励比例：<strong>${quotaData.invite_referrer_reward||0}</strong>%`,`被邀请人加赠比例：<strong>${quotaData.invite_invitee_reward||0}</strong>%`,`新用户默认试用：<strong>${quotaData.default_user_quota||0}</strong> 次`]},{title:'当前运营重点',copy:'看板只保留会影响额度、邀请和可运营性的核心数据。',items:[`剩余试用池：<strong>${quotaData.total_remaining||0}</strong> 次`,`邀请转化用户：<strong>${quotaData.total_invited_users||0}</strong> 人`,`邀请累计奖励：<strong>${quotaData.total_invite_reward||0}</strong> 天`]},{title:'奖励发放拆分',copy:'累计发放口径已合并邀请人与被邀请人的首卡奖励天数。',items:[`邀请人累计：<strong>${quotaData.total_invite_referrer_reward||0}</strong> 天`,`被邀请人累计：<strong>${quotaData.total_invite_invitee_reward||0}</strong> 天`,`合计发放：<strong>${quotaData.total_invite_reward||0}</strong> 天`]}].map((card)=>`<section class="overview-summary-card"><h3>${card.title}</h3><p>${card.copy}</p><div class="overview-summary-list" style="margin-top:16px;">${card.items.map((item)=>`<div>${item}</div>`).join('')}</div></section>`).join('');const featureRes=await fetch('/api/runtime-features');const featureData=await featureRes.json();runtime.textContent=featureRes.ok&&featureData.ok?`当前功能状态：Duo ${featureData.features.duo?'可用':'未开放'} / AI 漫剧 ${featureData.features.manga?'可用':'未开放'}`:'当前功能状态读取失败。'}
         function switchCdkSubtab(group='batch'){document.querySelectorAll('.admin-subtab[data-cdk-group]').forEach((button)=>button.classList.toggle('active',button.dataset.cdkGroup===group));document.querySelectorAll('.admin-subpanel[data-cdk-panel]').forEach((panel)=>panel.classList.toggle('active',panel.dataset.cdkPanel===group))}
         function buildCdkQuery(){const qs=new URLSearchParams();const batch=document.getElementById('cdk_filter_batch')?.value.trim()||'';const type=document.getElementById('cdk_filter_type')?.value.trim()||'';const status=document.getElementById('cdk_filter_status')?.value||'';if(batch)qs.set('batch_id',batch);if(type)qs.set('card_type',type);if(status!=='')qs.set('status',status);const q=qs.toString();return q?`?${q}`:''}
         async function loadCdkTemplates(){const res=await authFetch('/api/admin/cdk/templates');const data=await res.json();const items=Array.isArray(data.items)?data.items:[];const select=document.getElementById('cdk_template_select');const extract=document.getElementById('cdk_extract_card_type');if(select){select.innerHTML=['<option value="">手动填写</option>',...items.map((item)=>`<option value="${escapeHtml(item.name)}">${escapeHtml(item.name)}</option>`)].join('')}if(extract){extract.innerHTML=['<option value="">请选择卡类型</option>',...items.map((item)=>`<option value="${escapeHtml(item.name)}">${escapeHtml(item.name)}</option>`)].join('')}window.cdkTemplateCache=items;return items}
-        function applyCdkTemplate(name=''){const items=Array.isArray(window.cdkTemplateCache)?window.cdkTemplateCache:[];const item=items.find((entry)=>entry.name===name);if(!item)return;if(document.getElementById('cdk_card_type'))document.getElementById('cdk_card_type').value=item.name||'';if(document.getElementById('cdk_duration_days'))document.getElementById('cdk_duration_days').value=item.duration_days||'';if(document.getElementById('cdk_bonus_points'))document.getElementById('cdk_bonus_points').value=item.bonus_points||0;if(document.getElementById('cdk_device_limit'))document.getElementById('cdk_device_limit').value=item.device_limit||1;if(document.getElementById('cdk_transfer_times'))document.getElementById('cdk_transfer_times').value=item.transfer_times||0;if(document.getElementById('cdk_redeem_days'))document.getElementById('cdk_redeem_days').value=item.redeem_days||0;if(document.getElementById('cdk_extract_card_type'))document.getElementById('cdk_extract_card_type').value=item.name||''}
+        function applyCdkTemplate(name=''){const items=Array.isArray(window.cdkTemplateCache)?window.cdkTemplateCache:[];const item=items.find((entry)=>entry.name===name);if(!item)return;if(document.getElementById('cdk_card_type'))document.getElementById('cdk_card_type').value=item.name||'';if(document.getElementById('cdk_duration_days'))document.getElementById('cdk_duration_days').value=item.duration_days||'';if(document.getElementById('cdk_bonus_points'))document.getElementById('cdk_bonus_points').value=item.bonus_points||0;if(document.getElementById('cdk_price'))document.getElementById('cdk_price').value=item.price||0;if(document.getElementById('cdk_device_limit'))document.getElementById('cdk_device_limit').value=item.device_limit||1;if(document.getElementById('cdk_transfer_times'))document.getElementById('cdk_transfer_times').value=item.transfer_times||0;if(document.getElementById('cdk_redeem_days'))document.getElementById('cdk_redeem_days').value=item.redeem_days||0;if(document.getElementById('cdk_extract_card_type'))document.getElementById('cdk_extract_card_type').value=item.name||''}
         async function loadCdkList(){const res=await authFetch(`/api/admin/cdk/list${buildCdkQuery()}`);const data=await res.json();const tbody=document.getElementById('cdkTable');if(!tbody)return;if(!res.ok||!data.ok){tbody.innerHTML=`<tr><td colspan="9">${data.error||'加载失败。'}</td></tr>`;return}const items=data.items||[];tbody.innerHTML=items.length?items.map((item)=>`<tr><td>${item.code}</td><td>${item.card_type||'-'}</td><td>${item.duration_days||0}</td><td>${item.bonus_points||0}</td><td>${item.device_limit||0}</td><td>${item.transfer_times_left||0}</td><td><span class="badge ${item.status===3?'warn':''}">${formatCdkStatus(item.status)}</span></td><td>${item.batch_id||'-'}</td><td><button class="btn warn" type="button" onclick="disableCdk('${item.code}')">禁用</button></td></tr>`).join(''):'<tr><td colspan="9">还没有可显示的 CDK。</td></tr>'}
-        async function createCdkBatch(){const payload={card_type:document.getElementById('cdk_card_type').value.trim(),duration_days:parseInt(document.getElementById('cdk_duration_days').value||'0',10),quantity:parseInt(document.getElementById('cdk_quantity').value||'0',10),bonus_points:parseInt(document.getElementById('cdk_bonus_points').value||'0',10),device_limit:parseInt(document.getElementById('cdk_device_limit').value||'1',10),transfer_times:parseInt(document.getElementById('cdk_transfer_times').value||'0',10),redeem_days:parseInt(document.getElementById('cdk_redeem_days').value||'0',10)};const hint=document.getElementById('cdkCreateHint');hint.textContent='正在生成...';const res=await authFetch('/api/admin/cdk/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await res.json();hint.textContent=data.ok?`生成成功，批次 ${data.batch_id}，共 ${data.codes.length} 个。`:(data.error||'生成失败。');if(data.ok){await loadCdkTemplates();if(document.getElementById('cdk_template_select'))document.getElementById('cdk_template_select').value=payload.card_type||'';await loadCdkList();switchCdkSubtab('list')}}
+        async function createCdkBatch(){const payload={card_type:document.getElementById('cdk_card_type').value.trim(),duration_days:parseInt(document.getElementById('cdk_duration_days').value||'0',10),quantity:parseInt(document.getElementById('cdk_quantity').value||'0',10),bonus_points:parseInt(document.getElementById('cdk_bonus_points').value||'0',10),price:parseFloat(document.getElementById('cdk_price').value||'0'),device_limit:parseInt(document.getElementById('cdk_device_limit').value||'1',10),transfer_times:parseInt(document.getElementById('cdk_transfer_times').value||'0',10),redeem_days:parseInt(document.getElementById('cdk_redeem_days').value||'0',10)};const hint=document.getElementById('cdkCreateHint');hint.textContent='正在生成...';const res=await authFetch('/api/admin/cdk/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await res.json();hint.textContent=data.ok?`生成成功，批次 ${data.batch_id}，共 ${data.codes.length} 个。`:(data.error||'生成失败。');if(data.ok){await loadCdkTemplates();if(document.getElementById('cdk_template_select'))document.getElementById('cdk_template_select').value=payload.card_type||'';await loadCdkList();switchCdkSubtab('list')}}
         async function extractCdkCodes(){const hint=document.getElementById('cdkExtractHint');const result=document.getElementById('cdkExtractResult');const payload={card_type:document.getElementById('cdk_extract_card_type')?.value||'',quantity:parseInt(document.getElementById('cdk_extract_quantity')?.value||'0',10)};hint.textContent='正在提取...';const res=await authFetch('/api/admin/cdk/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await res.json();if(!res.ok||!data.ok){hint.textContent=data.error||'提取失败。';if(result)result.value='';return}if(result)result.value=(data.codes||[]).join('\n');hint.textContent=`已提取 ${data.count||0} 个 CDK。`}
         async function copyExtractedCdks(){const text=document.getElementById('cdkExtractResult')?.value||'';if(!text.trim())return;try{await navigator.clipboard.writeText(text);document.getElementById('cdkExtractHint').textContent='已复制到剪贴板。'}catch(error){document.getElementById('cdkExtractHint').textContent='复制失败，请手动复制。'}}
         function formatDateTime(value){if(!value)return'-';try{return new Date(value).toLocaleString()}catch(error){return value}}
@@ -294,9 +292,7 @@
         async function resetUsers(){document.getElementById('userSearchInput').value='';await loadUsers(1,'')}
         async function loadLogs(){const hint=document.getElementById('logsHint');const tbody=document.getElementById('logsTable');hint.textContent='正在加载...';const res=await authFetch('/api/admin/logs');const data=await res.json();if(!res.ok||!data.ok){hint.textContent=data.error||'日志加载失败。';tbody.innerHTML=`<tr><td colspan="6">${data.error||'日志加载失败。'}</td></tr>`;return}const items=data.items||[];hint.textContent=`共 ${items.length} 条记录。`;tbody.innerHTML=items.length?items.map((item)=>`<tr><td>${item.template_name||item.draft_name||'-'}</td><td>${item.status||'-'}</td><td>${item.result||'-'}</td><td>${item.error||'-'}</td><td>${item.username||item.user_id||'-'}</td><td>${item.created_at||'-'}</td></tr>`).join(''):'<tr><td colspan="6">还没有生成记录。</td></tr>'}
         function formatBytes(size){const value=Number(size)||0;if(value<1024)return `${value} B`;if(value<1024*1024)return `${(value/1024).toFixed(1)} KB`;if(value<1024*1024*1024)return `${(value/1024/1024).toFixed(1)} MB`;return `${(value/1024/1024/1024).toFixed(2)} GB`}
-        function buildStepLines(items){return (items||[]).map((item)=>`<div>${escapeHtml(item)}</div>`).join('')||'<div>-</div>'}
-        async function loadSecurityOps(){const hint=document.getElementById('securityHint');const stats=document.getElementById('securityOverviewStats');const deploy=document.getElementById('deploySteps');const rollback=document.getElementById('rollbackSteps');const backupTable=document.getElementById('serverBackupTable');const auditTable=document.getElementById('securityAuditTable');hint.textContent='正在加载...';const [securityRes,opsRes]=await Promise.all([authFetch('/api/admin/security/overview'),authFetch('/api/admin/server/ops')]);const securityData=await securityRes.json();const opsData=await opsRes.json();if(!securityRes.ok||!securityData.ok){hint.textContent=securityData.error||'安全概览加载失败。';stats.innerHTML='<div>安全概览加载失败。</div>';auditTable.innerHTML='<tr><td colspan="4">安全概览加载失败。</td></tr>';return}if(!opsRes.ok||!opsData.ok){hint.textContent=opsData.error||'运维概览加载失败。';deploy.innerHTML='<div>运维概览加载失败。</div>';rollback.innerHTML='<div>运维概览加载失败。</div>';backupTable.innerHTML='<tr><td colspan="4">运维概览加载失败。</td></tr>';return}const events=securityData.audit_events||[];const backups=opsData.backups||[];stats.innerHTML=`<div><strong>审计事件：</strong>${events.length}</div><div><strong>限流桶：</strong>${securityData.rate_limit_buckets||0}</div><div><strong>审计日志：</strong>${escapeHtml(securityData.audit_log_path||'-')}</div><div><strong>限流文件：</strong>${escapeHtml(securityData.rate_limit_path||'-')}</div><div><strong>备份目录：</strong>${escapeHtml(opsData.backup_root||'-')}</div><div><strong>项目根目录：</strong>${escapeHtml(opsData.project_root||'-')}</div>`;deploy.innerHTML=buildStepLines(opsData.deploy_steps);rollback.innerHTML=buildStepLines(opsData.rollback_steps);backupTable.innerHTML=backups.length?backups.map((item)=>`<tr><td>${escapeHtml(item.name||'-')}</td><td>${formatBytes(item.size)}</td><td>${formatDateTime(item.modified_at)}</td><td>${escapeHtml(item.path||'-')}</td></tr>`).join(''):'<tr><td colspan="4">还没有备份。</td></tr>';auditTable.innerHTML=events.length?events.slice().reverse().map((item)=>`<tr><td>${formatDateTime(item.ts)}</td><td>${escapeHtml(item.level||'-')}</td><td>${escapeHtml(item.event||'-')}</td><td>${escapeHtml(item.user_id||'-')} / ${escapeHtml(item.ip||'-')}</td></tr>`).join(''):'<tr><td colspan="4">还没有审计事件。</td></tr>';hint.textContent=`最近备份 ${backups.length} 个，最近审计 ${events.length} 条。`}
-        async function createServerBackup(includeEnv=false){const hint=document.getElementById('securityHint');hint.textContent=includeEnv?'正在创建包含 .env 的备份...':'正在创建服务端备份...';const res=await authFetch('/api/admin/server/backup/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_env:includeEnv})});const data=await res.json();if(!res.ok||!data.ok){hint.textContent=data.error||'创建备份失败。';return}hint.textContent=`备份已生成：${data.archive_path||'-'}`;await loadSecurityOps()}
+        async function createServerBackup(includeEnv=false){const hint=document.getElementById('securityHint');hint.textContent=includeEnv?'正在创建包含 .env 的备份...':'正在创建服务端备份...';const res=await authFetch('/api/admin/server/backup/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_env:includeEnv})});const data=await res.json();if(!res.ok||!data.ok){const detail=String(data.detail||'').trim().split(/\r?\n/)[0]||'';hint.textContent=detail?`${data.error||'创建备份失败。'} ${detail}`:(data.error||'创建备份失败。');return}hint.textContent=`备份已生成：${data.archive_path||'-'}`;await loadSecurityOps()}
         function formatResourceReviewStatus(status){if(status==='approved')return'<span class="badge">已通过</span>';if(status==='rejected')return'<span class="badge warn">已拒绝</span>';return'<span class="badge">待审核</span>'}
         function buildResourceReviewActions(item){const approve=`<button class="btn secondary" type="button" onclick="reviewResourcePost('${item.id}','approve')">通过</button>`;const reject=`<button class="btn warn" type="button" onclick="reviewResourcePost('${item.id}','reject')">拒绝</button>`;return item.status==='approved'?reject:(item.status==='rejected'?approve:`${approve} ${reject}`)}
         async function loadResourceReviewPosts(page=resourceReviewState.page,status=resourceReviewState.status,kw=resourceReviewState.kw){const hint=document.getElementById('resourceReviewHint');const pager=document.getElementById('resourceReviewPagerInfo');const tbody=document.getElementById('resourceReviewTable');const params=new URLSearchParams();resourceReviewState.page=Math.max(1,parseInt(page||1,10)||1);resourceReviewState.status=(status??document.getElementById('resourceReviewStatus')?.value??'pending').trim()||'pending';resourceReviewState.kw=(kw??document.getElementById('resourceReviewKeyword')?.value??'').trim();params.set('page',String(resourceReviewState.page));params.set('status',resourceReviewState.status);if(resourceReviewState.kw)params.set('kw',resourceReviewState.kw);hint.textContent='正在加载发布审核列表...';const res=await authFetch(`/api/admin/resource-exchange/posts?${params.toString()}`);const data=await res.json();if(!res.ok||!data.ok){hint.textContent=data.error||'发布审核列表加载失败。';tbody.innerHTML='<tr><td colspan="9">发布审核列表加载失败。</td></tr>';return}const items=data.items||[];const pagination=data.pagination||{};resourceReviewState.page=pagination.page||1;resourceReviewState.pages=pagination.pages||1;resourceReviewState.perPage=pagination.per_page||20;resourceReviewState.total=pagination.total||0;hint.textContent=`共 ${resourceReviewState.total} 条发布记录。`;pager.textContent=`第 ${resourceReviewState.page} / ${resourceReviewState.pages} 页，每页 ${resourceReviewState.perPage} 条`;document.getElementById('resourceReviewPrevBtn').disabled=resourceReviewState.page<=1;document.getElementById('resourceReviewNextBtn').disabled=resourceReviewState.page>=resourceReviewState.pages;tbody.innerHTML=items.length?items.map((item)=>`<tr><td>${escapeHtml(item.membership_label||'-')}</td><td>${escapeHtml(item.username||'-')}</td><td>${escapeHtml(item.project_name||'-')}</td><td>${escapeHtml(item.project_intro||'-')}</td><td>${escapeHtml(item.contact||'-')}</td><td>${formatDateTime(item.created_at)}</td><td>${formatResourceReviewStatus(item.status)}</td><td>${escapeHtml(item.review_reason||'-')}</td><td>${buildResourceReviewActions(item)}</td></tr>`).join(''):'<tr><td colspan="9">当前没有匹配的发布内容。</td></tr>'}
@@ -305,117 +301,335 @@
         initAuthUI=function(){const loginForm=document.getElementById('loginForm');if(!loginForm)return;loginForm.addEventListener('submit',async(event)=>{event.preventDefault();const account=document.getElementById('loginAccount').value.trim();const password=document.getElementById('loginPassword').value;if(!account||!password){setAuthMessage('请输入账号和密码。');return}const res=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:account,password,accepted_agreements:true})});const data=await res.json();if(!res.ok||!data.ok){setAuthMessage(data.error||'登录失败。');return}await ensureAdminAfterLogin(data.token||'')})};
         loadSiteSettings=async function(){const res=await fetch('/api/site-settings');const data=await res.json();const settings=applyAdminSiteCopy(data);populateSiteForm(settings);switchSiteSubtab(document.querySelector('.admin-subtab[data-site-group].active')?.dataset.siteGroup||'brand');if(getToken())await loadAnnouncements();return settings};
         saveSiteSettings=async function(group=''){const payload=getSiteFormValues(group);const status=document.getElementById(`siteStatus-${group||'brand'}`);if(status)status.textContent='正在保存...';const res=await authFetch('/api/site-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await res.json();if(!res.ok||!data.ok){if(status)status.textContent=data.error||'保存失败。';return}const settings=applyAdminSiteCopy(data.settings||payload);populateSiteForm(settings);if(status)status.textContent='已保存。'};
-        bindEvents=function(){document.querySelectorAll('#adminNav .admin-tab').forEach((button)=>{button.addEventListener('click',async()=>{const section=button.dataset.section;switchSection(section);if(section==='overview')await loadOverview();if(section==='site')await loadSiteSettings();if(section==='license')await loadLicenseSettings();if(section==='cdk'){switchCdkSubtab(document.querySelector('.admin-subtab[data-cdk-group].active')?.dataset.cdkGroup||'batch');await Promise.all([loadCdkTemplates(),loadCdkList()])}if(section==='bindings')await loadBindings();if(section==='users')await loadUsers(1,userListState.kw);if(section==='resource-review')await loadResourceReviewPosts(1,resourceReviewState.status,resourceReviewState.kw);if(section==='logs')await loadLogs();if(section==='security')await loadSecurityOps()})});document.querySelectorAll('.admin-subtab[data-cdk-group]').forEach((button)=>button.addEventListener('click',async(event)=>{event.preventDefault();switchSection('cdk');switchCdkSubtab(button.dataset.cdkGroup||'batch');if(button.dataset.cdkGroup==='list')await loadCdkList();if(button.dataset.cdkGroup==='extract')await loadCdkTemplates()}));document.getElementById('cdk_template_select')?.addEventListener('change',(event)=>applyCdkTemplate(event.target.value||''));document.getElementById('cdkTemplateReloadBtn')?.addEventListener('click',loadCdkTemplates);document.getElementById('cdkExtractBtn')?.addEventListener('click',extractCdkCodes);document.getElementById('cdkCopyBtn')?.addEventListener('click',copyExtractedCdks);document.getElementById('saveLicenseBtn')?.addEventListener('click',saveLicenseSettings);document.getElementById('cdkCreateBtn')?.addEventListener('click',createCdkBatch);document.getElementById('cdkRefreshBtn')?.addEventListener('click',loadCdkList);document.getElementById('cdkExportBtn')?.addEventListener('click',()=>{window.location.href=`/api/admin/cdk/export${buildCdkQuery()}`});document.getElementById('bindingsRefreshBtn')?.addEventListener('click',loadBindings);document.getElementById('bindingsExportBtn')?.addEventListener('click',()=>{window.location.href='/api/admin/license/bindings/export'});document.getElementById('announcementSaveBtn')?.addEventListener('click',saveAnnouncement);document.getElementById('announcementResetBtn')?.addEventListener('click',resetAnnouncementForm);document.getElementById('announcementRefreshBtn')?.addEventListener('click',loadAnnouncements);document.getElementById('userSearchBtn')?.addEventListener('click',searchUsers);document.getElementById('userSearchResetBtn')?.addEventListener('click',resetUsers);document.getElementById('userPrevPageBtn')?.addEventListener('click',()=>loadUsers(userListState.page-1,userListState.kw));document.getElementById('userNextPageBtn')?.addEventListener('click',()=>loadUsers(userListState.page+1,userListState.kw));document.getElementById('userSearchInput')?.addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();searchUsers()}});document.getElementById('resourceReviewSearchBtn')?.addEventListener('click',()=>loadResourceReviewPosts(1,document.getElementById('resourceReviewStatus').value,document.getElementById('resourceReviewKeyword').value.trim()));document.getElementById('resourceReviewPrevBtn')?.addEventListener('click',()=>loadResourceReviewPosts(resourceReviewState.page-1,resourceReviewState.status,resourceReviewState.kw));document.getElementById('resourceReviewNextBtn')?.addEventListener('click',()=>loadResourceReviewPosts(resourceReviewState.page+1,resourceReviewState.status,resourceReviewState.kw));document.getElementById('resourceReviewKeyword')?.addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();loadResourceReviewPosts(1,document.getElementById('resourceReviewStatus').value,document.getElementById('resourceReviewKeyword').value.trim())}});document.getElementById('logsRefreshBtn')?.addEventListener('click',loadLogs);document.getElementById('securityRefreshBtn')?.addEventListener('click',loadSecurityOps);document.getElementById('createServerBackupBtn')?.addEventListener('click',()=>createServerBackup(false));document.getElementById('createServerBackupWithEnvBtn')?.addEventListener('click',()=>createServerBackup(true));document.getElementById('clearAdminAuthBtn')?.addEventListener('click',()=>forceAdminLoggedOut('已切回未登录状态。'))};
+        bindEvents=function(){document.querySelectorAll('#adminNav .admin-tab').forEach((button)=>{button.addEventListener('click',async()=>{const section=button.dataset.section;switchSection(section);if(section==='overview')await loadOverview();if(section==='site')await loadSiteSettings();if(section==='license')await window.loadLicenseSettings?.();if(section==='cdk'){switchCdkSubtab(document.querySelector('.admin-subtab[data-cdk-group].active')?.dataset.cdkGroup||'batch');await Promise.all([loadCdkTemplates(),loadCdkList()])}if(section==='bindings')await loadBindings();if(section==='users')await loadUsers(1,userListState.kw);if(section==='resource-review')await loadResourceReviewPosts(1,resourceReviewState.status,resourceReviewState.kw);if(section==='logs')await loadLogs();if(section==='security')await window.loadSecurityOps?.()})});document.querySelectorAll('.admin-subtab[data-cdk-group]').forEach((button)=>button.addEventListener('click',async(event)=>{event.preventDefault();switchSection('cdk');switchCdkSubtab(button.dataset.cdkGroup||'batch');if(button.dataset.cdkGroup==='list')await loadCdkList();if(button.dataset.cdkGroup==='extract')await loadCdkTemplates()}));document.getElementById('cdk_template_select')?.addEventListener('change',(event)=>applyCdkTemplate(event.target.value||''));document.getElementById('cdkTemplateReloadBtn')?.addEventListener('click',loadCdkTemplates);document.getElementById('cdkExtractBtn')?.addEventListener('click',extractCdkCodes);document.getElementById('cdkCopyBtn')?.addEventListener('click',copyExtractedCdks);document.getElementById('cdkCreateBtn')?.addEventListener('click',createCdkBatch);document.getElementById('cdkRefreshBtn')?.addEventListener('click',loadCdkList);document.getElementById('cdkExportBtn')?.addEventListener('click',()=>{window.location.href=`/api/admin/cdk/export${buildCdkQuery()}`});document.getElementById('bindingsRefreshBtn')?.addEventListener('click',loadBindings);document.getElementById('bindingsExportBtn')?.addEventListener('click',()=>{window.location.href='/api/admin/license/bindings/export'});document.getElementById('announcementSaveBtn')?.addEventListener('click',saveAnnouncement);document.getElementById('announcementResetBtn')?.addEventListener('click',resetAnnouncementForm);document.getElementById('announcementRefreshBtn')?.addEventListener('click',loadAnnouncements);document.getElementById('userSearchBtn')?.addEventListener('click',searchUsers);document.getElementById('userSearchResetBtn')?.addEventListener('click',resetUsers);document.getElementById('userPrevPageBtn')?.addEventListener('click',()=>loadUsers(userListState.page-1,userListState.kw));document.getElementById('userNextPageBtn')?.addEventListener('click',()=>loadUsers(userListState.page+1,userListState.kw));document.getElementById('userSearchInput')?.addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();searchUsers()}});document.getElementById('resourceReviewSearchBtn')?.addEventListener('click',()=>loadResourceReviewPosts(1,document.getElementById('resourceReviewStatus').value,document.getElementById('resourceReviewKeyword').value.trim()));document.getElementById('resourceReviewPrevBtn')?.addEventListener('click',()=>loadResourceReviewPosts(resourceReviewState.page-1,resourceReviewState.status,resourceReviewState.kw));document.getElementById('resourceReviewNextBtn')?.addEventListener('click',()=>loadResourceReviewPosts(resourceReviewState.page+1,resourceReviewState.status,resourceReviewState.kw));document.getElementById('resourceReviewKeyword')?.addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();loadResourceReviewPosts(1,document.getElementById('resourceReviewStatus').value,document.getElementById('resourceReviewKeyword').value.trim())}});document.getElementById('logsRefreshBtn')?.addEventListener('click',loadLogs);document.getElementById('clearAdminAuthBtn')?.addEventListener('click',()=>forceAdminLoggedOut('已切回未登录状态。'))};
         (async function init(){applyAdminSiteCopy(siteSettingsCache);renderSiteManagementSection();bindEvents();initSiteCopyBindings();initAuthUI();resetAnnouncementForm();switchCdkSubtab('batch');await Promise.all([loadSiteSettings(),loadCdkTemplates()]);await restoreRuntimeToken();const ok=await loadAdminInfo();if(ok)await loadOverview()})();
         switchCdkSubtab('batch');
     </script>
     <script>
         (function () {
-            const securityAuditState = { page: 1, per_page: 15, pages: 1, total: 0 };
-            const levelMap = {
-                info: '信息',
-                warning: '警告',
-                error: '错误',
-                critical: '严重'
-            };
-            const eventMap = {
-                login_success: '登录成功',
-                login_failed: '登录失败',
-                register_duplicate_username: '注册失败：用户名已存在',
-                register_duplicate_email: '注册失败：邮箱已存在',
-                license_activate_success: '授权激活成功',
-                license_activate_conflict: '授权激活冲突',
-                license_verify_success: '授权验证成功',
-                license_deactivate_success: '授权解绑成功'
+            const DEFAULT_STYLE_TEMPLATES = {
+                modern_manhua: {label: 'Modern Manhua', positive_prefix: 'modern Chinese manhua, clean comic lines, cinematic framing, polished lighting, expressive characters, detailed environment', negative_prompt: 'photoreal documentary, western superhero comic, chibi, low detail, childish cartoon'},
+                xianxia_manhua: {label: 'Xianxia Manhua', positive_prefix: 'xianxia manhua, immortal fantasy, oriental epic atmosphere, misty mountains, spiritual energy, elegant costume, cinematic Chinese fantasy', negative_prompt: 'modern city, office scene, casual wear, realistic photography, western fantasy armor'},
+                ancient_manhua: {label: 'Ancient Manhua', positive_prefix: 'ancient Chinese manhua, hanfu, traditional architecture, elegant oriental composition, historical atmosphere, graceful lighting', negative_prompt: 'modern props, neon, sci-fi device, school uniform, contemporary street'},
+                ink_wash: {label: 'Ink Wash', positive_prefix: 'Chinese ink wash style, brush texture, poetic atmosphere, restrained palette, oriental painting composition, elegant blank space', negative_prompt: 'heavy neon, glossy cg, over-saturated anime, plastic 3d render'},
+                cinematic_illustration: {label: 'Cinematic Illustration', positive_prefix: 'cinematic illustration, dramatic light and shadow, movie still composition, premium texture, rich atmosphere, narrative frame', negative_prompt: 'flat snapshot, cheap poster, low contrast, random composition'},
+                dark_realism: {label: 'Dark Realism', positive_prefix: 'dark realism, moody atmosphere, dramatic shadows, grounded texture, tense cinematic realism, serious tone', negative_prompt: 'cute idol style, bright healing palette, dreamy fairy tale, childish anime'}
             };
 
-            function toCnLevel(level) {
-                const key = String(level || '').trim().toLowerCase();
-                return levelMap[key] || (level || '-');
+            function formatStrategyJson(value) {
+                try { return JSON.stringify(value || {}, null, 2); } catch (error) { return '{}'; }
             }
 
-            function toCnEvent(eventName) {
-                const key = String(eventName || '').trim();
-                return eventMap[key] || key || '-';
+            function ensureMangaConfigSection() {
+                const nav = document.getElementById('adminNav');
+                const licenseBtn = nav?.querySelector('.admin-tab[data-section="license"]');
+                if (nav && licenseBtn && !nav.querySelector('.admin-tab[data-section="manga-config"]')) {
+                    const btn = document.createElement('button');
+                    btn.className = 'admin-tab';
+                    btn.dataset.section = 'manga-config';
+                    btn.type = 'button';
+                    btn.textContent = '漫剧配置';
+                    licenseBtn.insertAdjacentElement('afterend', btn);
+                }
+
+                const licenseSection = document.getElementById('section-license');
+                if (licenseSection && !document.getElementById('section-manga-config')) {
+                    const panel = document.createElement('section');
+                    panel.className = 'admin-panel section';
+                    panel.id = 'section-manga-config';
+                    panel.innerHTML = '<div class="admin-card"><div class="section-head"><div><div class="section-kicker">漫剧配置</div><h2 class="card-title">SiliconFlow、生图策略、题材模板与风格模板</h2><p class="section-copy">把漫剧相关配置集中放在这里，授权页只保留额度、奖励、试用和 CDK 规则。</p></div></div><div class="license-grid"></div><div class="row" style="margin-top:14px;"><button id="saveMangaConfigBtn" class="btn primary" type="button">保存漫剧配置</button><div id="mangaConfigStatus" class="hint"></div></div></div>';
+                    licenseSection.insertAdjacentElement('afterend', panel);
+                }
             }
 
-            function ensureSecurityAuditPager() {
-                const table = document.getElementById('securityAuditTable');
-                if (!table) return null;
-                const shell = table.closest('.admin-subcard');
-                if (!shell) return null;
-                let row = shell.querySelector('#securityAuditPagerRow');
-                if (row) return row;
-                row = document.createElement('div');
-                row.id = 'securityAuditPagerRow';
-                row.className = 'row';
-                row.style.margin = '10px 0 0';
-                row.innerHTML = `
-                    <button id="securityAuditPrevBtn" class="btn secondary" type="button">上一页</button>
-                    <button id="securityAuditNextBtn" class="btn secondary" type="button">下一页</button>
-                    <div id="securityAuditPagerInfo" class="hint"></div>
-                `;
-                shell.appendChild(row);
-                row.querySelector('#securityAuditPrevBtn')?.addEventListener('click', () => {
-                    if (securityAuditState.page > 1) window.loadSecurityOps(securityAuditState.page - 1);
+            window.ensureSystemAiLicenseFields = function () {
+                ensureMangaConfigSection();
+                if (document.getElementById('admin_siliconflow_base_url')) return;
+                const grid = document.querySelector('#section-manga-config .license-grid');
+                if (!grid) return;
+
+                const silicon = document.createElement('section');
+                silicon.className = 'license-group single-column';
+                silicon.innerHTML = '<h3>SiliconFlow 生图</h3><p>分镜策略、题材模板、风格模板和模型适配会一起参与最终生图提示词拼装。</p><div class="license-group-grid" style="margin-top:16px;"><div class="field full"><label for="admin_siliconflow_base_url">接口地址</label><input id="admin_siliconflow_base_url" type="text" placeholder="https://api.siliconflow.cn/v1"></div><div class="field full"><label for="admin_siliconflow_api_key">默认 API Key</label><input id="admin_siliconflow_api_key" type="password" placeholder="保存后显示掩码"></div><div class="field"><label for="admin_siliconflow_docs_url">文档地址</label><input id="admin_siliconflow_docs_url" type="text"></div><div class="field"><label for="admin_siliconflow_signup_url">注册地址</label><input id="admin_siliconflow_signup_url" type="text"></div><div class="field full"><label for="admin_siliconflow_model">默认生图模型</label><input id="admin_siliconflow_model" type="text" placeholder="Kwai-Kolors/Kolors"></div><div class="field full"><label for="admin_siliconflow_scene_model_list">场景模型列表</label><textarea id="admin_siliconflow_scene_model_list" placeholder="每行一个模型"></textarea></div><div class="field"><label for="admin_siliconflow_scene_num_inference_steps">场景步数</label><input id="admin_siliconflow_scene_num_inference_steps" type="number" min="1" max="100" step="1" placeholder="40"></div><div class="field"><label for="admin_siliconflow_scene_guidance_scale">场景 Guidance</label><input id="admin_siliconflow_scene_guidance_scale" type="number" min="1" max="20" step="0.1" placeholder="5.0"></div><div class="field"><label for="admin_siliconflow_scene_seed">场景 Seed</label><input id="admin_siliconflow_scene_seed" type="text" placeholder="123456"></div><div class="field full"><label for="admin_siliconflow_character_model_list">人物模型列表</label><textarea id="admin_siliconflow_character_model_list" placeholder="每行一个模型"></textarea></div><div class="field full"><label for="admin_siliconflow_dialogue_model_list">对白模型列表</label><textarea id="admin_siliconflow_dialogue_model_list" placeholder="每行一个模型"></textarea></div><div class="field full"><label for="admin_siliconflow_action_model_list">动作模型列表</label><textarea id="admin_siliconflow_action_model_list" placeholder="每行一个模型"></textarea></div><div class="field full"><label for="admin_siliconflow_scene_positive_prefix">场景正向前缀</label><textarea id="admin_siliconflow_scene_positive_prefix"></textarea></div><div class="field full"><label for="admin_siliconflow_scene_prompt_suffix">场景补充后缀</label><textarea id="admin_siliconflow_scene_prompt_suffix"></textarea></div><div class="field full"><label for="admin_siliconflow_scene_negative_prompt">场景负面提示词</label><textarea id="admin_siliconflow_scene_negative_prompt"></textarea></div><div class="field full"><label for="admin_siliconflow_character_positive_prefix">人物正向前缀</label><textarea id="admin_siliconflow_character_positive_prefix"></textarea></div><div class="field full"><label for="admin_siliconflow_character_prompt_suffix">人物补充后缀</label><textarea id="admin_siliconflow_character_prompt_suffix"></textarea></div><div class="field full"><label for="admin_siliconflow_character_negative_prompt">人物负面提示词</label><textarea id="admin_siliconflow_character_negative_prompt"></textarea></div><div class="field full"><label for="admin_siliconflow_dialogue_positive_prefix">对白正向前缀</label><textarea id="admin_siliconflow_dialogue_positive_prefix"></textarea></div><div class="field full"><label for="admin_siliconflow_dialogue_prompt_suffix">对白补充后缀</label><textarea id="admin_siliconflow_dialogue_prompt_suffix"></textarea></div><div class="field full"><label for="admin_siliconflow_dialogue_negative_prompt">对白负面提示词</label><textarea id="admin_siliconflow_dialogue_negative_prompt"></textarea></div><div class="field full"><label for="admin_siliconflow_action_positive_prefix">动作正向前缀</label><textarea id="admin_siliconflow_action_positive_prefix"></textarea></div><div class="field full"><label for="admin_siliconflow_action_prompt_suffix">动作补充后缀</label><textarea id="admin_siliconflow_action_prompt_suffix"></textarea></div><div class="field full"><label for="admin_siliconflow_action_negative_prompt">动作负面提示词</label><textarea id="admin_siliconflow_action_negative_prompt"></textarea></div><div class="field full"><label for="admin_siliconflow_negative_prompt">全局负面提示词</label><textarea id="admin_siliconflow_negative_prompt"></textarea></div><div class="field full"><label for="admin_siliconflow_genre_templates">题材模板（JSON）</label><textarea id="admin_siliconflow_genre_templates" rows="14" placeholder="维护题材模板 JSON"></textarea></div><div class="field full"><label for="admin_siliconflow_style_templates">风格模板（JSON）</label><textarea id="admin_siliconflow_style_templates" rows="14" placeholder="维护风格模板 JSON"></textarea><div class="field-note">前台只暴露简化风格选项，实际风格描述仍由后台预设控制。</div></div></div>';
+
+                const textCard = document.createElement('section');
+                textCard.className = 'license-group single-column';
+                textCard.innerHTML = '<h3>SiliconFlow 文本</h3><div class="license-group-grid" style="margin-top:16px;"><div class="field full"><label for="admin_siliconflow_text_model_list">模型列表</label><textarea id="admin_siliconflow_text_model_list" placeholder="每行一个模型"></textarea></div><div class="field full"><label for="admin_siliconflow_text_system_prompt">系统提示词</label><textarea id="admin_siliconflow_text_system_prompt"></textarea></div></div>';
+
+                const promptCard = document.createElement('section');
+                promptCard.className = 'license-group single-column';
+                promptCard.innerHTML = '<h3>提示词默认配置</h3><div class="license-group-grid" style="margin-top:16px;"><div class="field full"><label for="admin_script_prompt_template">脚本提示词默认模板</label><textarea id="admin_script_prompt_template" placeholder="例如：整理人物、场景、动作、镜头、情绪和剧情衔接，兼顾建立镜头与对话镜头。"></textarea></div><div class="field full"><label for="admin_image_prompt_template">生图提示词默认模板</label><textarea id="admin_image_prompt_template" placeholder="例如：兼顾人物一致性、场景氛围、动作瞬间、关键道具和镜头语言，不只偏人物特写。"></textarea></div></div>';
+
+                grid.appendChild(silicon);
+                grid.appendChild(textCard);
+                grid.appendChild(promptCard);
+            };
+
+            window.loadMangaConfigSettings = async function () {
+                ensureSystemAiLicenseFields();
+                const status = document.getElementById('mangaConfigStatus');
+                if (!status) return;
+                status.textContent = '正在加载...';
+                const res = await authFetch('/api/admin/license-settings');
+                const data = await res.json();
+                if (!res.ok || !data.ok) {
+                    status.textContent = data.error || '漫剧配置加载失败。';
+                    return;
+                }
+                const s = data.settings || {};
+                document.getElementById('admin_siliconflow_base_url').value = s.siliconflow_base_url || '';
+                document.getElementById('admin_siliconflow_api_key').value = s.siliconflow_default_api_key_masked || '';
+                document.getElementById('admin_siliconflow_docs_url').value = s.siliconflow_docs_url || '';
+                document.getElementById('admin_siliconflow_signup_url').value = s.siliconflow_signup_url || '';
+                document.getElementById('admin_siliconflow_model').value = s.siliconflow_model || '';
+                document.getElementById('admin_siliconflow_scene_model_list').value = Array.isArray(s.siliconflow_scene_model_list) ? s.siliconflow_scene_model_list.join('\n') : '';
+                document.getElementById('admin_siliconflow_scene_num_inference_steps').value = s.siliconflow_scene_num_inference_steps ?? 40;
+                document.getElementById('admin_siliconflow_scene_guidance_scale').value = s.siliconflow_scene_guidance_scale ?? 5.0;
+                document.getElementById('admin_siliconflow_scene_seed').value = s.siliconflow_scene_seed || '123456';
+                document.getElementById('admin_siliconflow_character_model_list').value = Array.isArray(s.siliconflow_character_model_list) ? s.siliconflow_character_model_list.join('\n') : '';
+                document.getElementById('admin_siliconflow_dialogue_model_list').value = Array.isArray(s.siliconflow_dialogue_model_list) ? s.siliconflow_dialogue_model_list.join('\n') : '';
+                document.getElementById('admin_siliconflow_action_model_list').value = Array.isArray(s.siliconflow_action_model_list) ? s.siliconflow_action_model_list.join('\n') : '';
+                document.getElementById('admin_siliconflow_scene_positive_prefix').value = s.siliconflow_scene_positive_prefix || '';
+                document.getElementById('admin_siliconflow_scene_prompt_suffix').value = s.siliconflow_scene_prompt_suffix || '';
+                document.getElementById('admin_siliconflow_scene_negative_prompt').value = s.siliconflow_scene_negative_prompt || '';
+                document.getElementById('admin_siliconflow_character_positive_prefix').value = s.siliconflow_character_positive_prefix || '';
+                document.getElementById('admin_siliconflow_character_prompt_suffix').value = s.siliconflow_character_prompt_suffix || '';
+                document.getElementById('admin_siliconflow_character_negative_prompt').value = s.siliconflow_character_negative_prompt || '';
+                document.getElementById('admin_siliconflow_dialogue_positive_prefix').value = s.siliconflow_dialogue_positive_prefix || '';
+                document.getElementById('admin_siliconflow_dialogue_prompt_suffix').value = s.siliconflow_dialogue_prompt_suffix || '';
+                document.getElementById('admin_siliconflow_dialogue_negative_prompt').value = s.siliconflow_dialogue_negative_prompt || '';
+                document.getElementById('admin_siliconflow_action_positive_prefix').value = s.siliconflow_action_positive_prefix || '';
+                document.getElementById('admin_siliconflow_action_prompt_suffix').value = s.siliconflow_action_prompt_suffix || '';
+                document.getElementById('admin_siliconflow_action_negative_prompt').value = s.siliconflow_action_negative_prompt || '';
+                document.getElementById('admin_siliconflow_negative_prompt').value = s.siliconflow_negative_prompt || '';
+                document.getElementById('admin_siliconflow_genre_templates').value = formatStrategyJson(s.siliconflow_genre_templates || {});
+                document.getElementById('admin_siliconflow_style_templates').value = formatStrategyJson(s.siliconflow_style_templates || DEFAULT_STYLE_TEMPLATES);
+                document.getElementById('admin_siliconflow_text_model_list').value = Array.isArray(s.siliconflow_text_model_list) ? s.siliconflow_text_model_list.join('\n') : '';
+                document.getElementById('admin_siliconflow_text_system_prompt').value = s.siliconflow_text_system_prompt || '';
+                document.getElementById('admin_script_prompt_template').value = s.script_prompt_template || '';
+                document.getElementById('admin_image_prompt_template').value = s.image_prompt_template || '';
+                status.textContent = '漫剧配置已加载。';
+            };
+
+            window.saveMangaConfigSettings = async function () {
+                ensureSystemAiLicenseFields();
+                const status = document.getElementById('mangaConfigStatus');
+                let genreTemplates = {};
+                let styleTemplates = DEFAULT_STYLE_TEMPLATES;
+                try { genreTemplates = JSON.parse(document.getElementById('admin_siliconflow_genre_templates').value || '{}'); } catch (error) { status.textContent = '题材模板 JSON 格式不正确。'; return; }
+                try { styleTemplates = JSON.parse(document.getElementById('admin_siliconflow_style_templates').value || '{}'); } catch (error) { status.textContent = '风格模板 JSON 格式不正确。'; return; }
+                const payload = {siliconflow_base_url: (document.getElementById('admin_siliconflow_base_url').value || '').trim(), siliconflow_docs_url: (document.getElementById('admin_siliconflow_docs_url').value || '').trim(), siliconflow_signup_url: (document.getElementById('admin_siliconflow_signup_url').value || '').trim(), siliconflow_model: (document.getElementById('admin_siliconflow_model').value || '').trim(), siliconflow_scene_model_list: (document.getElementById('admin_siliconflow_scene_model_list').value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean), siliconflow_scene_num_inference_steps: parseInt(document.getElementById('admin_siliconflow_scene_num_inference_steps').value || '40', 10), siliconflow_scene_guidance_scale: parseFloat(document.getElementById('admin_siliconflow_scene_guidance_scale').value || '5.0'), siliconflow_scene_seed: (document.getElementById('admin_siliconflow_scene_seed').value || '123456').trim(), siliconflow_character_model_list: (document.getElementById('admin_siliconflow_character_model_list').value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean), siliconflow_dialogue_model_list: (document.getElementById('admin_siliconflow_dialogue_model_list').value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean), siliconflow_action_model_list: (document.getElementById('admin_siliconflow_action_model_list').value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean), siliconflow_scene_positive_prefix: document.getElementById('admin_siliconflow_scene_positive_prefix').value || '', siliconflow_scene_prompt_suffix: document.getElementById('admin_siliconflow_scene_prompt_suffix').value || '', siliconflow_scene_negative_prompt: document.getElementById('admin_siliconflow_scene_negative_prompt').value || '', siliconflow_character_positive_prefix: document.getElementById('admin_siliconflow_character_positive_prefix').value || '', siliconflow_character_prompt_suffix: document.getElementById('admin_siliconflow_character_prompt_suffix').value || '', siliconflow_character_negative_prompt: document.getElementById('admin_siliconflow_character_negative_prompt').value || '', siliconflow_dialogue_positive_prefix: document.getElementById('admin_siliconflow_dialogue_positive_prefix').value || '', siliconflow_dialogue_prompt_suffix: document.getElementById('admin_siliconflow_dialogue_prompt_suffix').value || '', siliconflow_dialogue_negative_prompt: document.getElementById('admin_siliconflow_dialogue_negative_prompt').value || '', siliconflow_action_positive_prefix: document.getElementById('admin_siliconflow_action_positive_prefix').value || '', siliconflow_action_prompt_suffix: document.getElementById('admin_siliconflow_action_prompt_suffix').value || '', siliconflow_action_negative_prompt: document.getElementById('admin_siliconflow_action_negative_prompt').value || '', siliconflow_negative_prompt: document.getElementById('admin_siliconflow_negative_prompt').value || '', siliconflow_genre_templates: genreTemplates, siliconflow_style_templates: styleTemplates, siliconflow_text_model_list: (document.getElementById('admin_siliconflow_text_model_list').value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean), siliconflow_text_system_prompt: document.getElementById('admin_siliconflow_text_system_prompt').value || '', script_prompt_template: document.getElementById('admin_script_prompt_template').value || '', image_prompt_template: document.getElementById('admin_image_prompt_template').value || ''};
+                const siliconKeyInput = document.getElementById('admin_siliconflow_api_key');
+                if (siliconKeyInput && siliconKeyInput.value && siliconKeyInput.value.indexOf('****') < 0) payload.siliconflow_default_api_key = siliconKeyInput.value.trim();
+                status.textContent = '正在保存...';
+                const res = await authFetch('/api/admin/license-settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+                const data = await res.json();
+                status.textContent = data.ok ? '漫剧配置已保存。' : (data.error || '保存失败。');
+            };
+
+            ensureMangaConfigSection();
+        })();
+    </script>
+    <script>
+        (function () {
+            function cleanText(value, fallback = '') {
+                const text = String(value ?? '').trim();
+                if (!text) return fallback;
+                return /[锘鏅鏈绠鍚璁姝瑙褰鍔鐧诲綍娉ㄥ唽鎺堟潈婵€瑙勫垯淇濆瓨鍔犺浇瀹夊叏姒傝杩愮淮鏆傛棤绯荤粺鍙戝竷]/.test(text) ? fallback : text;
+            }
+
+            function cleanList(items, fallback) {
+                const values = Array.isArray(items)
+                    ? items.map((item) => cleanText(item, '')).filter(Boolean)
+                    : [];
+                return values.length ? values : [fallback];
+            }
+
+            function replaceNodeAndBind(id, handler) {
+                const node = document.getElementById(id);
+                if (!node) return null;
+                const clone = node.cloneNode(true);
+                node.parentNode.replaceChild(clone, node);
+                clone.addEventListener('click', handler);
+                return clone;
+            }
+
+            function replaceTabAndBind(section, handler) {
+                const node = document.querySelector(`#adminNav .admin-tab[data-section="${section}"]`);
+                if (!node) return null;
+                const clone = node.cloneNode(true);
+                node.parentNode.replaceChild(clone, node);
+                clone.addEventListener('click', handler);
+                return clone;
+            }
+
+            function patchAdminCopy() {
+                const licenseSection = document.getElementById('section-license');
+                if (licenseSection) {
+                    licenseSection.querySelector('.section-kicker') && (licenseSection.querySelector('.section-kicker').textContent = '授权激活');
+                    licenseSection.querySelector('.card-title') && (licenseSection.querySelector('.card-title').textContent = '授权规则、奖励与试用次数');
+                    licenseSection.querySelector('.section-copy') && (licenseSection.querySelector('.section-copy').textContent = '后台保存什么，用户侧就按什么规则读取和展示。');
+                    const saveLicenseBtn = document.getElementById('saveLicenseBtn');
+                    if (saveLicenseBtn) saveLicenseBtn.textContent = '保存授权激活规则';
+                }
+
+                const securitySection = document.getElementById('section-security');
+                if (securitySection) {
+                    securitySection.querySelector('.section-kicker') && (securitySection.querySelector('.section-kicker').textContent = '安全运维');
+                    securitySection.querySelector('.card-title') && (securitySection.querySelector('.card-title').textContent = '审计、限流、备份与发布回滚');
+                    securitySection.querySelector('.section-copy') && (securitySection.querySelector('.section-copy').textContent = '把服务端风控和运维闭环收口到后台，不再只靠文档记忆。');
+                }
+            }
+
+            window.loadLicenseSettings = async function () {
+                const status = document.getElementById('licenseStatus');
+                if (!status) return;
+                status.textContent = '正在加载...';
+                const res = await authFetch('/api/admin/license-settings');
+                const data = await res.json();
+                if (!res.ok || !data.ok) {
+                    status.textContent = data.error || '授权激活规则加载失败。';
+                    return;
+                }
+                const s = data.settings || {};
+                document.getElementById('license_offline_hours').value = s.offline_hours ?? s.license_offline_hours ?? 0;
+                document.getElementById('license_transfer_cooldown_minutes').value = s.transfer_cooldown_minutes ?? 0;
+                document.getElementById('license_code_length').value = s.code_length ?? s.license_code_length ?? 16;
+                document.getElementById('license_points_ratio').value = s.points_ratio ?? s.license_points_ratio ?? 0;
+                document.getElementById('manga_generate_cost').value = s.manga_generate_cost ?? 1;
+                document.getElementById('ai_make_generate_cost').value = s.ai_make_generate_cost ?? 0;
+                document.getElementById('storyboard_generate_cost').value = s.storyboard_generate_cost ?? 0;
+                document.getElementById('daily_checkin_reward').value = s.daily_checkin_reward ?? 1;
+                document.getElementById('default_user_quota').value = s.default_user_quota ?? 5;
+                document.getElementById('invite_referrer_reward').value = s.invite_referrer_reward ?? 0;
+                document.getElementById('invite_invitee_reward').value = s.invite_invitee_reward ?? 0;
+                status.textContent = '授权激活规则已加载。';
+            };
+
+            window.saveLicenseSettings = async function () {
+                const status = document.getElementById('licenseStatus');
+                if (!status) return;
+                const payload = {
+                    license_offline_hours: parseInt(document.getElementById('license_offline_hours').value || '0', 10),
+                    license_transfer_cooldown_minutes: parseInt(document.getElementById('license_transfer_cooldown_minutes').value || '0', 10),
+                    license_code_length: parseInt(document.getElementById('license_code_length').value || '16', 10),
+                    license_points_ratio: parseInt(document.getElementById('license_points_ratio').value || '0', 10),
+                    manga_generate_cost: parseInt(document.getElementById('manga_generate_cost').value || '0', 10),
+                    ai_make_generate_cost: parseInt(document.getElementById('ai_make_generate_cost').value || '0', 10),
+                    storyboard_generate_cost: parseInt(document.getElementById('storyboard_generate_cost').value || '0', 10),
+                    daily_checkin_reward: parseInt(document.getElementById('daily_checkin_reward').value || '0', 10),
+                    default_user_quota: parseInt(document.getElementById('default_user_quota').value || '0', 10),
+                    invite_referrer_reward: parseInt(document.getElementById('invite_referrer_reward').value || '0', 10),
+                    invite_invitee_reward: parseInt(document.getElementById('invite_invitee_reward').value || '0', 10)
+                };
+                status.textContent = '正在保存...';
+                const res = await authFetch('/api/admin/license-settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
                 });
-                row.querySelector('#securityAuditNextBtn')?.addEventListener('click', () => {
-                    if (securityAuditState.page < securityAuditState.pages) window.loadSecurityOps(securityAuditState.page + 1);
-                });
-                return row;
-            }
+                const data = await res.json();
+                status.textContent = data.ok ? '授权激活规则已保存。' : (data.error || '保存失败。');
+                if (data.ok) await loadOverview();
+            };
 
-            window.loadSecurityOps = async function (page = 1) {
+            window.loadSecurityOps = async function () {
                 const hint = document.getElementById('securityHint');
                 const stats = document.getElementById('securityOverviewStats');
                 const deploy = document.getElementById('deploySteps');
                 const rollback = document.getElementById('rollbackSteps');
                 const backupTable = document.getElementById('serverBackupTable');
                 const auditTable = document.getElementById('securityAuditTable');
-                const pagerRow = ensureSecurityAuditPager();
-                const pagerInfo = document.getElementById('securityAuditPagerInfo');
-                const prevBtn = document.getElementById('securityAuditPrevBtn');
-                const nextBtn = document.getElementById('securityAuditNextBtn');
                 if (!hint || !stats || !deploy || !rollback || !backupTable || !auditTable) return;
+
                 hint.textContent = '正在加载...';
-                const cleanPage = Math.max(1, parseInt(page || 1, 10) || 1);
                 const [securityRes, opsRes] = await Promise.all([
-                    authFetch(`/api/admin/security/overview?page=${cleanPage}&per_page=${securityAuditState.per_page}`),
+                    authFetch('/api/admin/security/overview'),
                     authFetch('/api/admin/server/ops')
                 ]);
                 const securityData = await securityRes.json();
                 const opsData = await opsRes.json();
+
                 if (!securityRes.ok || !securityData.ok) {
-                    hint.textContent = securityData.error || '安全概览加载失败。';
-                    stats.innerHTML = '<div>安全概览加载失败。</div>';
-                    auditTable.innerHTML = '<tr><td colspan="4">安全概览加载失败。</td></tr>';
+                    const message = cleanText(securityData.error, '安全概览加载失败。');
+                    hint.textContent = message;
+                    stats.innerHTML = `<div>${escapeHtml(message)}</div>`;
+                    auditTable.innerHTML = `<tr><td colspan="4">${escapeHtml(message)}</td></tr>`;
                     return;
                 }
                 if (!opsRes.ok || !opsData.ok) {
-                    hint.textContent = opsData.error || '运维概览加载失败。';
-                    deploy.innerHTML = '<div>运维概览加载失败。</div>';
-                    rollback.innerHTML = '<div>运维概览加载失败。</div>';
-                    backupTable.innerHTML = '<tr><td colspan="4">运维概览加载失败。</td></tr>';
+                    const message = cleanText(opsData.error, '运维概览加载失败。');
+                    hint.textContent = message;
+                    deploy.innerHTML = `<div>${escapeHtml(message)}</div>`;
+                    rollback.innerHTML = `<div>${escapeHtml(message)}</div>`;
+                    backupTable.innerHTML = `<tr><td colspan="4">${escapeHtml(message)}</td></tr>`;
                     return;
                 }
+
                 const events = Array.isArray(securityData.audit_events) ? securityData.audit_events : [];
                 const backups = Array.isArray(opsData.backups) ? opsData.backups : [];
-                const pagination = securityData.pagination || {};
-                securityAuditState.page = Number(pagination.page || cleanPage || 1);
-                securityAuditState.pages = Number(pagination.pages || 1);
-                securityAuditState.total = Number(pagination.total || events.length || 0);
+                const deploySteps = cleanList(opsData.deploy_steps, '暂无发布步骤说明。');
+                const rollbackSteps = cleanList(opsData.rollback_steps, '暂无回滚步骤说明。');
 
-                stats.innerHTML = `<div><strong>审计事件：</strong>${securityAuditState.total}</div><div><strong>限流桶：</strong>${securityData.rate_limit_buckets || 0}</div><div><strong>审计日志：</strong>${escapeHtml(securityData.audit_log_path || '-')}</div><div><strong>限流文件：</strong>${escapeHtml(securityData.rate_limit_path || '-')}</div><div><strong>备份目录：</strong>${escapeHtml(opsData.backup_root || '-')}</div><div><strong>项目根目录：</strong>${escapeHtml(opsData.project_root || '-')}</div>`;
-                deploy.innerHTML = buildStepLines(opsData.deploy_steps);
-                rollback.innerHTML = buildStepLines(opsData.rollback_steps);
-                backupTable.innerHTML = backups.length ? backups.map((item) => `<tr><td>${escapeHtml(item.name || '-')}</td><td>${formatBytes(item.size)}</td><td>${formatDateTime(item.modified_at)}</td><td>${escapeHtml(item.path || '-')}</td></tr>`).join('') : '<tr><td colspan="4">还没有备份。</td></tr>';
-                auditTable.innerHTML = events.length ? events.slice().reverse().map((item) => `<tr><td>${formatDateTime(item.ts)}</td><td>${escapeHtml(toCnLevel(item.level))}</td><td>${escapeHtml(toCnEvent(item.event))}</td><td>${escapeHtml(item.user_id || '-')} / ${escapeHtml(item.ip || '-')}</td></tr>`).join('') : '<tr><td colspan="4">还没有审计事件。</td></tr>';
-                if (pagerInfo) pagerInfo.textContent = `第 ${securityAuditState.page} / ${securityAuditState.pages} 页，每页 15 条，共 ${securityAuditState.total} 条`;
-                if (prevBtn) prevBtn.disabled = securityAuditState.page <= 1;
-                if (nextBtn) nextBtn.disabled = securityAuditState.page >= securityAuditState.pages;
-                if (pagerRow) pagerRow.style.display = '';
-                hint.textContent = `最近备份 ${backups.length} 个，审计分页已加载。`;
+                stats.innerHTML = [
+                    `<div><strong>审计事件：</strong>${events.length}</div>`,
+                    `<div><strong>限流桶：</strong>${securityData.rate_limit_buckets || 0}</div>`,
+                    `<div><strong>审计日志：</strong>${escapeHtml(cleanText(securityData.audit_log_path, '-'))}</div>`,
+                    `<div><strong>限流文件：</strong>${escapeHtml(cleanText(securityData.rate_limit_path, '-'))}</div>`,
+                    `<div><strong>备份目录：</strong>${escapeHtml(cleanText(opsData.backup_root, '-'))}</div>`,
+                    `<div><strong>项目根目录：</strong>${escapeHtml(cleanText(opsData.project_root, '-'))}</div>`
+                ].join('');
+                deploy.innerHTML = deploySteps.map((item) => `<div>${escapeHtml(item)}</div>`).join('');
+                rollback.innerHTML = rollbackSteps.map((item) => `<div>${escapeHtml(item)}</div>`).join('');
+                backupTable.innerHTML = backups.length
+                    ? backups.map((item) => `<tr><td>${escapeHtml(cleanText(item.name, '-'))}</td><td>${formatBytes(item.size)}</td><td>${formatDateTime(item.modified_at)}</td><td>${escapeHtml(cleanText(item.path, '-'))}</td></tr>`).join('')
+                    : '<tr><td colspan="4">还没有备份。</td></tr>';
+                auditTable.innerHTML = events.length
+                    ? events.slice().reverse().map((item) => `<tr><td>${formatDateTime(item.ts)}</td><td>${escapeHtml(cleanText(item.level, '-'))}</td><td>${escapeHtml(cleanText(item.event, '系统事件'))}</td><td>${escapeHtml(cleanText(item.user_id, '-'))} / ${escapeHtml(cleanText(item.ip, '-'))}</td></tr>`).join('')
+                    : '<tr><td colspan="4">还没有审计事件。</td></tr>';
+                hint.textContent = `最近备份 ${backups.length} 个，最近审计 ${events.length} 条。`;
+                patchAdminCopy();
             };
+
+            function bindScopedAdminActions() {
+                replaceNodeAndBind('saveLicenseBtn', async () => {
+                    await window.saveLicenseSettings?.();
+                });
+                replaceNodeAndBind('securityRefreshBtn', async () => {
+                    await window.loadSecurityOps?.();
+                });
+                replaceNodeAndBind('createServerBackupBtn', async () => {
+                    await createServerBackup(false);
+                });
+                replaceNodeAndBind('createServerBackupWithEnvBtn', async () => {
+                    await createServerBackup(true);
+                });
+                replaceNodeAndBind('saveMangaConfigBtn', async () => {
+                    await window.saveMangaConfigSettings?.();
+                });
+                replaceTabAndBind('license', async () => {
+                    switchSection('license');
+                    await window.loadLicenseSettings?.();
+                });
+                replaceTabAndBind('security', async () => {
+                    switchSection('security');
+                    await window.loadSecurityOps?.();
+                });
+                replaceTabAndBind('manga-config', async () => {
+                    switchSection('manga-config');
+                    await window.loadMangaConfigSettings?.();
+                });
+            }
+
+            patchAdminCopy();
+            bindScopedAdminActions();
+
+            if (document.getElementById('section-license')?.classList.contains('active')) {
+                window.setTimeout(() => window.loadLicenseSettings?.(), 0);
+            }
+            if (document.getElementById('section-security')?.classList.contains('active')) {
+                window.setTimeout(() => window.loadSecurityOps?.(), 0);
+            }
         })();
     </script>
 </body>

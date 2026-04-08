@@ -75,9 +75,25 @@ def _save_binary(data: bytes, folder: str, ext: str) -> str:
 
 
 def _download_to_file(url: str, folder: str, ext: str) -> str:
-    resp = requests.get(url, timeout=120)
-    resp.raise_for_status()
-    return _save_binary(resp.content, folder, ext)
+    last_exc = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, timeout=120)
+            resp.raise_for_status()
+            return _save_binary(resp.content, folder, ext)
+        except requests.exceptions.SSLError as exc:
+            last_exc = exc
+            if attempt >= 2:
+                raise
+            time.sleep(1.2 + attempt * 0.8)
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            if attempt >= 2:
+                raise
+            time.sleep(0.8 + attempt * 0.6)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("download failed")
 
 
 def _guess_ext(content_type: str, fallback: str) -> str:
@@ -135,6 +151,40 @@ def _extract_model_candidates(payload: Dict[str, Any]) -> list:
         seen.add(model)
         candidates.append(model)
     return candidates
+
+
+def _extract_prompt_variants(payload: Dict[str, Any]) -> list:
+    variants = []
+    seen = set()
+    for item in payload.get("prompt_variants") or [payload.get("prompt")]:
+        prompt = str(item or "").strip()
+        if not prompt or prompt in seen:
+            continue
+        seen.add(prompt)
+        variants.append(prompt)
+    return variants
+
+
+def _build_material_metadata(task_type: str, provider_code: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = {}
+    if task_type != "image":
+        return metadata
+    extra = payload.get("extra_body") if isinstance(payload.get("extra_body"), dict) else {}
+    metadata.update({
+        "provider_code": provider_code or "",
+        "model": str(payload.get("model") or "").strip(),
+        "size": str(payload.get("size") or "").strip(),
+        "shot_type": str(extra.get("shot_type") or "").strip(),
+        "genre": str(extra.get("genre") or "").strip(),
+        "style_key": str(extra.get("style_key") or "").strip(),
+        "style_label": str(extra.get("style_label") or "").strip(),
+        "num_inference_steps": str(extra.get("num_inference_steps") or "").strip(),
+        "guidance_scale": str(extra.get("guidance_scale") or "").strip(),
+        "seed": str(extra.get("seed") or "").strip(),
+        "negative_prompt": str(extra.get("negative_prompt") or "").strip(),
+        "prompt": str(payload.get("prompt") or "").strip(),
+    })
+    return {key: value for key, value in metadata.items() if value}
 
 
 def _should_retry_with_next_model(exc: Exception) -> bool:
@@ -385,127 +435,6 @@ def _jimeng_signed_request(ak: str, sk: str, endpoint: str, payload: Dict[str, A
 def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, Any], save_text_file: bool = True) -> Dict[str, Any]:
     folder = _user_ai_folder(user_key.user_id, task_type)
     if not folder:
-        return {"ok": False, "error": "请先在软件设置中配置素材库路径"}
-
-    provider_code = user_key.provider.provider_code if user_key.provider else ""
-    payload = _normalize_provider_payload(provider_code, task_type, payload)
-    is_persisted_user_key = isinstance(user_key, UserApiKey) and bool(getattr(user_key, "id", 0))
-    api_key = user_key.get_api_key()
-    endpoint = user_key.endpoint or DEFAULT_OPENAI_BASE
-    base_url = user_key.base_url or DEFAULT_OPENAI_BASE
-    result_path = None
-    result_text = None
-    status = "success"
-    error_msg = None
-    saved_path = None
-
-    try:
-        if provider_code in ("openai", "chatanywhere", "siliconflow"):
-            if task_type == "text":
-                text = _openai_text(api_key, base_url, payload)
-                result_text = text
-                if save_text_file:
-                    saved_path = _save_text(text, folder)
-            elif task_type == "image":
-                url, data, ext = _openai_image(api_key, base_url, payload)
-                if data:
-                    saved_path = _save_binary(data, folder, ext)
-                elif url:
-                    saved_path = _download_to_file(url, folder, ext)
-                else:
-                    raise ValueError("图片结果为空")
-            elif task_type == "audio":
-                data, ext = _openai_audio(api_key, base_url, payload)
-                saved_path = _save_binary(data, folder, ext)
-            elif task_type == "video":
-                url, data, ext = _openai_video(api_key, base_url, payload)
-                if data:
-                    saved_path = _save_binary(data, folder, ext)
-                elif url:
-                    saved_path = _download_to_file(url, folder, ext)
-                else:
-                    raise ValueError("视频生成未返回结果，请稍后重试")
-            else:
-                raise ValueError("不支持的任务类型")
-        elif provider_code == "volc":
-            app_id = user_key.get_api_secret()
-            cluster = user_key.endpoint
-            extra = payload.get("extra_body") or {}
-            if isinstance(extra, dict):
-                app_id = extra.get("app_id") or extra.get("appid") or app_id
-                cluster = extra.get("cluster") or cluster
-                if extra.get("custom_url"):
-                    payload["custom_url"] = extra.get("custom_url")
-            data, ext = _volc_tts_http(api_key, app_id, cluster, payload)
-            saved_path = _save_binary(data, folder, ext)
-        elif provider_code == "jimeng":
-            if task_type != "video":
-                raise ValueError("即梦当前仅支持视频生成")
-            ak = user_key.get_api_key()
-            sk = user_key.get_api_secret()
-            if not ak or not sk:
-                raise ValueError("即梦需要 AK/SK")
-            url, data, ext = _jimeng_signed_request(ak, sk, user_key.endpoint, payload)
-            if data:
-                saved_path = _save_binary(data, folder, ext)
-            elif url:
-                saved_path = _download_to_file(url, folder, ext)
-            else:
-                raise ValueError("生成结果为空")
-        else:
-            raise ValueError("未知的服务商类型")
-
-        result_path = saved_path
-        if is_persisted_user_key:
-            user_key.last_used_at = datetime.utcnow()
-            user_key.usage_count = (user_key.usage_count or 0) + 1
-            db.session.add(user_key)
-            db.session.commit()
-        if result_path and task_type != "text":
-            material = UserMaterial(
-                user_id=user_key.user_id,
-                file_path=result_path,
-                file_type=task_type,
-                source=provider_code or "ai"
-            )
-            db.session.add(material)
-            db.session.commit()
-    except Exception as exc:
-        db.session.rollback()
-        status = "failed"
-        active_model = str(payload.get("model") or "").strip()
-        model_candidates = [str(item or "").strip() for item in (payload.get("model_candidates") or []) if str(item or "").strip()]
-        debug_parts = [f"provider={provider_code or '-'}"]
-        if active_model:
-            debug_parts.append(f"model={active_model}")
-        if model_candidates:
-            debug_parts.append(f"candidates={','.join(model_candidates)}")
-        debug_tail = " | " + " | ".join(debug_parts) if debug_parts else ""
-        error_msg = f"{exc}{debug_tail}"
-
-    log = AIGenerationLog(
-        user_id=user_key.user_id,
-        key_id=user_key.id if is_persisted_user_key else None,
-        provider_code=provider_code,
-        task_type=task_type,
-        prompt=payload.get("prompt"),
-        result_path=result_path,
-        status=status,
-        error_msg=error_msg,
-    )
-    db.session.add(log)
-    db.session.commit()
-
-    if status != "success":
-        return {"ok": False, "error": error_msg or "生成失败"}
-    if task_type == "text":
-        return {"ok": True, "text": result_text or "", "path": result_path}
-    return {"ok": True, "path": result_path}
-
-
-def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, Any], save_text_file: bool = True) -> Dict[str, Any]:
-    folder = _user_ai_folder(user_key.user_id, task_type)
-    if not folder:
         return {"ok": False, "error": "???????????????"}
 
     provider_code = user_key.provider.provider_code if user_key.provider else ""
@@ -522,18 +451,22 @@ def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, A
     try:
         if provider_code in ("openai", "chatanywhere", "siliconflow"):
             attempts = _extract_model_candidates(payload) or [str(payload.get("model") or "").strip()]
+            prompt_variants = _extract_prompt_variants(payload) or [str(payload.get("prompt") or "").strip()]
             last_exc = None
-            for index, candidate in enumerate(attempts):
-                attempt_payload = dict(payload or {})
-                if candidate:
-                    attempt_payload["model"] = candidate
-                try:
-                    if task_type == "text":
-                        text = _openai_text(api_key, base_url, attempt_payload)
-                        result_text = text
-                        if save_text_file:
-                            saved_path = _save_text(text, folder)
-                    elif task_type == "image":
+            if task_type == "image":
+                total_attempts = []
+                for prompt_variant in prompt_variants:
+                    for candidate in attempts:
+                        total_attempts.append((candidate, prompt_variant))
+                if not total_attempts:
+                    total_attempts = [(str(payload.get("model") or "").strip(), str(payload.get("prompt") or "").strip())]
+                for index, (candidate, prompt_variant) in enumerate(total_attempts):
+                    attempt_payload = dict(payload or {})
+                    if candidate:
+                        attempt_payload["model"] = candidate
+                    if prompt_variant:
+                        attempt_payload["prompt"] = prompt_variant
+                    try:
                         url, data, ext = _openai_image(api_key, base_url, attempt_payload)
                         if data:
                             saved_path = _save_binary(data, folder, ext)
@@ -541,27 +474,46 @@ def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, A
                             saved_path = _download_to_file(url, folder, ext)
                         else:
                             raise ValueError("??????")
-                    elif task_type == "audio":
-                        data, ext = _openai_audio(api_key, base_url, attempt_payload)
-                        saved_path = _save_binary(data, folder, ext)
-                    elif task_type == "video":
-                        url, data, ext = _openai_video(api_key, base_url, attempt_payload)
-                        if data:
+                        payload = attempt_payload
+                        last_exc = None
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if index >= len(total_attempts) - 1 or not _should_retry_with_next_model(exc):
+                            raise
+                        time.sleep(min(2.2, 0.7 + index * 0.35))
+            else:
+                for index, candidate in enumerate(attempts):
+                    attempt_payload = dict(payload or {})
+                    if candidate:
+                        attempt_payload["model"] = candidate
+                    try:
+                        if task_type == "text":
+                            text = _openai_text(api_key, base_url, attempt_payload)
+                            result_text = text
+                            if save_text_file:
+                                saved_path = _save_text(text, folder)
+                        elif task_type == "audio":
+                            data, ext = _openai_audio(api_key, base_url, attempt_payload)
                             saved_path = _save_binary(data, folder, ext)
-                        elif url:
-                            saved_path = _download_to_file(url, folder, ext)
+                        elif task_type == "video":
+                            url, data, ext = _openai_video(api_key, base_url, attempt_payload)
+                            if data:
+                                saved_path = _save_binary(data, folder, ext)
+                            elif url:
+                                saved_path = _download_to_file(url, folder, ext)
+                            else:
+                                raise ValueError("???????????????")
                         else:
-                            raise ValueError("???????????????")
-                    else:
-                        raise ValueError("????????")
-                    payload = attempt_payload
-                    last_exc = None
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    if index >= len(attempts) - 1 or not _should_retry_with_next_model(exc):
-                        raise
-                    time.sleep(min(2.0, 0.6 + index * 0.5))
+                            raise ValueError("????????")
+                        payload = attempt_payload
+                        last_exc = None
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if index >= len(attempts) - 1 or not _should_retry_with_next_model(exc):
+                            raise
+                        time.sleep(min(2.0, 0.6 + index * 0.5))
             if last_exc:
                 raise last_exc
         elif provider_code == "volc":
@@ -599,11 +551,13 @@ def generate_with_key(user_key: UserApiKey, task_type: str, payload: Dict[str, A
             db.session.add(user_key)
             db.session.commit()
         if result_path and task_type != "text":
+            material_metadata = _build_material_metadata(task_type, provider_code, payload)
             material = UserMaterial(
                 user_id=user_key.user_id,
                 file_path=result_path,
                 file_type=task_type,
-                source=provider_code or "ai"
+                source=provider_code or "ai",
+                metadata_json=json.dumps(material_metadata, ensure_ascii=False) if material_metadata else None,
             )
             db.session.add(material)
             db.session.commit()

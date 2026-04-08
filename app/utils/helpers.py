@@ -5,6 +5,7 @@ import uuid
 import logging
 import tempfile
 import time
+import sys
 from pathlib import Path
 from datetime import datetime
 from flask import current_app
@@ -13,7 +14,7 @@ from app.extensions import db
 from app.models.config import Config
 from app.models.user_material import UserMaterial
 from app.utils.crypto import encrypt_text, decrypt_text
-from app.utils.runtime_paths import runtime_file_path, runtime_path
+from app.utils.runtime_paths import app_install_root, runtime_file_path, runtime_path
 
 
 _SECURE_VALUE_PREFIX = "enc::"
@@ -66,6 +67,12 @@ _draft_list_cache = {
     "scan_limit": 0,
     "value": [],
 }
+
+
+def get_desktop_branding_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "branding"
+    return app_install_root() / "branding"
 
 
 def _ensure_config_table() -> bool:
@@ -943,6 +950,10 @@ def get_site_settings():
     official_site_url = get_config('official_site_url', '') or ''
     download_url = get_config('download_url', '') or ''
     official_logo_url = get_config('official_logo_url', '') or ''
+    if not official_logo_url:
+        packaged_logo = get_desktop_branding_root() / "logo.png"
+        if packaged_logo.exists():
+            official_logo_url = "/desktop-branding/logo.png"
     user_agreement_title = get_config('user_agreement_title', '用户协议') or '用户协议'
     user_agreement_content = get_config(
         'user_agreement_content',
