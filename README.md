@@ -15,6 +15,7 @@ JianYingvideo 是一套面向短视频矩阵生产、剪映草稿自动化、AI 
 - [截图预览](#截图预览)
 - [快速开始](#快速开始)
 - [依赖与自检脚本](#依赖与自检脚本)
+- [官网与下载页配置](#官网与下载页配置)
 - [桌面端功能模块](#桌面端功能模块)
 - [Admin 与商业化能力](#admin-与商业化能力)
 - [桌面打包 / 安装包发布](#桌面打包--安装包发布)
@@ -67,9 +68,19 @@ JianYingvideo 是一套面向短视频矩阵生产、剪映草稿自动化、AI 
 
 ## 快速开始
 
-### 本机开发启动
+### Windows 一键初始化
 
-下面命令适合二开者在本机快速启动开发环境。真实商业环境请改用自己的 MySQL、`.env` 和服务端配置。
+下面命令适合二开者在 Windows 本机快速启动开发环境。脚本会创建 `venv`、安装 `requirements.txt`、复制 `.env.example`、执行数据库迁移并创建管理员账号。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap_dev.ps1 -AdminUsername admin -AdminEmail admin@example.com
+```
+
+管理员密码会在命令执行过程中交互输入，不写进脚本和文档。真实商业环境请改用自己的 MySQL、`.env` 和服务端配置。
+
+### 手动初始化
+
+如果你希望手动控制每一步，可以使用：
 
 ```powershell
 python -m venv venv
@@ -125,13 +136,27 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py --preset env.presets\des
 | `requirements.txt` | 本机开发和桌面端主依赖 |
 | `requirements.server.txt` | 服务端 `remote-auth` 部署依赖 |
 | `app/utils/JianYingApi/requirements.txt` | 内置第三方 JianYingApi 参考依赖 |
+| `scripts/bootstrap_dev.ps1` | Windows 本机开发初始化 |
+| `scripts/bootstrap_server.sh` | Linux 服务端安全初始化 |
+| `scripts/create_admin.py` | 创建或修复管理员账号 |
 | `scripts/runtime_selfcheck.py` | 运行时环境检查 |
 | `scripts/selfcheck.py` | 基础接口 / 服务检查 |
 | `scripts/prepackage_check.py` | 打包前检查 |
 | `scripts/build_desktop_bundle.py` | 桌面 bundle / 安装包 staging 入口 |
 | `scripts/server_backup.py` | 服务端备份辅助脚本 |
 
-本项目当前不新增一键全自动部署脚本；README 提供可复制命令和仓库已有脚本入口，便于二开者按自己的服务器、数据库和打包环境调整。
+`bootstrap_server.sh` 只做安全初始化，不会自动重启 systemd 或修改 Nginx；README 提供可复制命令和仓库已有脚本入口，便于二开者按自己的服务器、数据库和打包环境调整。
+
+## 官网与下载页配置
+
+本项目自带官网首页和下载跳转入口：
+
+- 官网首页：`/`
+- 用户工作台：`/user`
+- 下载跳转：`/download`
+- 管理后台：`/admin`
+
+管理员登录 `/admin` 后，可以在“站点管理”中配置站点名称、标题、关键词、描述、官网地址、下载地址、Logo 地址、用户协议、隐私协议、联系方式和公告。安装包不提交到 Git，建议上传到 GitHub Releases、对象存储、CDN 或自己的下载服务器，再把最终下载 URL 填入后台“下载地址”。详细说明见 `docs/website_setup.md`。
 
 ## 桌面端功能模块
 
@@ -237,14 +262,10 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py --preset env.presets\des
 服务端部署用于 `remote-auth` 模式下的账号、授权、配额和后台运营，不负责在服务器上处理用户本地剪映草稿。
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.server.txt
-cp env.presets/server_auth.env.example .env
-gunicorn -w 2 -b 127.0.0.1:5000 wsgi:app
+bash scripts/bootstrap_server.sh --admin admin --email admin@example.com
 ```
 
-服务端部署优先安装 `requirements.server.txt`，不要直接使用桌面端完整依赖。README 提供可复制命令，完整部署边界以 `docs/server_auth_deploy.md` 和 `docs/server_ops.md` 为准。
+脚本会创建 `venv`、安装 `requirements.server.txt`、复制 `env.presets/server_auth.env.example`、检查 `.env` 必填项、执行迁移并创建管理员。它不会写入真实密钥、不会创建 MySQL 用户/数据库、不会修改 Nginx、不会重启 systemd。完整部署边界以 `docs/server_auth_deploy.md` 和 `docs/server_ops.md` 为准。
 
 ## 项目结构
 

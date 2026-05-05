@@ -15,6 +15,7 @@ The project is adapted for Jianying / CapCut 9+ draft structures. Actual compati
 - [Screenshots](#screenshots)
 - [Quick Start](#quick-start)
 - [Dependencies and Check Scripts](#dependencies-and-check-scripts)
+- [Website and Download Page](#website-and-download-page)
 - [Desktop Modules](#desktop-modules)
 - [Admin and Commercialization](#admin-and-commercialization)
 - [Desktop Packaging](#desktop-packaging)
@@ -67,9 +68,19 @@ Installers, portable packages, and `installer_manifest.json` should be distribut
 
 ## Quick Start
 
-### Local Development
+### Windows Bootstrap
 
-These commands are for quickly starting a local development environment. For real commercial usage, use your own MySQL, `.env`, and server configuration.
+This command is for quickly starting a local Windows development environment. It creates `venv`, installs `requirements.txt`, copies `.env.example`, runs migrations, and creates an admin user.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap_dev.ps1 -AdminUsername admin -AdminEmail admin@example.com
+```
+
+The admin password is entered interactively during the command and is not stored in scripts or docs. For real commercial usage, use your own MySQL, `.env`, and server configuration.
+
+### Manual Initialization
+
+If you want to control each step manually:
 
 ```powershell
 python -m venv venv
@@ -125,13 +136,27 @@ This repository already provides common entry points for secondary development, 
 | `requirements.txt` | Main dependency set for local development and desktop builds |
 | `requirements.server.txt` | Server-side dependency set for `remote-auth` deployment |
 | `app/utils/JianYingApi/requirements.txt` | Reference dependencies for the embedded third-party JianYingApi source |
+| `scripts/bootstrap_dev.ps1` | Windows local development bootstrap |
+| `scripts/bootstrap_server.sh` | Linux server-safe bootstrap |
+| `scripts/create_admin.py` | Create or repair an admin user |
 | `scripts/runtime_selfcheck.py` | Runtime environment check |
 | `scripts/selfcheck.py` | Basic API / service check |
 | `scripts/prepackage_check.py` | Prepackage validation |
 | `scripts/build_desktop_bundle.py` | Desktop bundle / installer staging entry |
 | `scripts/server_backup.py` | Server backup helper |
 
-The project currently does not add a fully automatic one-click deployment script. The README provides copyable commands and existing script entry points so developers can adapt them to their own server, database, and packaging environment.
+`bootstrap_server.sh` only performs safe initialization. It does not restart systemd or modify Nginx. The README provides copyable commands and existing script entry points so developers can adapt them to their own server, database, and packaging environment.
+
+## Website and Download Page
+
+The project includes a lightweight website and download redirect:
+
+- Website home: `/`
+- User workbench: `/user`
+- Download redirect: `/download`
+- Admin console: `/admin`
+
+After logging in to `/admin`, configure site name, title, keywords, description, official site URL, download URL, logo URL, user agreement, privacy policy, contact entries, and announcements in site settings. Installers should not be committed to Git. Upload them to GitHub Releases, object storage, CDN, or your own download server, then put the final URL into the Admin download setting. See `docs/website_setup.md` for details.
 
 ## Desktop Modules
 
@@ -225,14 +250,10 @@ Release notes should match the commit, branch, build time, and `git_dirty` state
 Server deployment is for accounts, licenses, quotas, and backend operation in `remote-auth` mode. It does not process the user's local Jianying drafts.
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.server.txt
-cp env.presets/server_auth.env.example .env
-gunicorn -w 2 -b 127.0.0.1:5000 wsgi:app
+bash scripts/bootstrap_server.sh --admin admin --email admin@example.com
 ```
 
-For server deployment, install `requirements.server.txt` first instead of the full desktop dependency set. Use the commands above and refer to `docs/server_auth_deploy.md` and `docs/server_ops.md` for the deployment boundary.
+The script creates `venv`, installs `requirements.server.txt`, copies `env.presets/server_auth.env.example`, checks required `.env` values, runs migrations, and creates an admin user. It does not write real secrets, create MySQL users/databases, modify Nginx, or restart systemd. See `docs/server_auth_deploy.md` and `docs/server_ops.md` for the full deployment boundary.
 
 ## Project Structure
 
