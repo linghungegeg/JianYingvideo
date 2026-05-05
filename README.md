@@ -4,6 +4,8 @@
 
 JianYingvideo 是一套面向短视频矩阵生产、剪映草稿自动化、AI 漫剧/生图工作流和会员化运营的 Windows 桌面应用源码。它不是单一脚本，而是把本地草稿处理、用户工作台、Admin 后台、授权/CDK、配额体系、AI 账号管理和桌面打包链路放在同一个项目里，适合作为商业桌面软件、内部私有化工具或二次开发底座。
 
+项目面向剪映 9+ 草稿结构做适配，实际兼容性仍以本机剪映/CapCut 版本、草稿结构和素材路径为准。剪映版本迭代较快，二开或商用封包前建议用自己的真实草稿模板跑一轮回归。
+
 ![JianYingvideo dashboard](app/static/images/landing/hero-dashboard.png)
 
 ## 适合做什么
@@ -173,24 +175,47 @@ AI 漫剧模块用于把脚本、分镜、图片和草稿结构串起来。
 公开仓库包含源码、文档、示例配置和打包脚本，便于审阅和二次开发：
 
 ```text
-app/                  Web 后端、用户工作台、Admin、API、草稿服务
-app/utils/JianYingApi 第三方剪映 API 内置源码
-app/utils/jianying_mcp 本地 MCP 草稿操作能力
-blanks/               空白草稿模板
-docs/                 打包、发布、设置、授权、回归和功能文档
-env.presets/          示例环境配置
-migrations/           数据库迁移
-packaging/            PyInstaller / Inno Setup 打包配置
-scripts/              自检、回归、打包和发布辅助脚本
+app/                         Web 后端、用户工作台、Admin、API、草稿服务
+app/models/                  用户、任务、授权、CDK、配额、AI、资源互换等数据模型
+app/views/                   用户端、Admin、鉴权、MCP/API 等 HTTP 路由
+app/services/                AI、用户配额、剪映草稿、批量生成、OpenClaw 等业务服务
+app/services/jianying/       剪映草稿替换、官方草稿兼容、权限、用量和校验逻辑
+app/static/                  工作台、落地页、图片、CSS、JS 和 Swagger 静态资源
+app/templates/               登录页、用户工作台、Admin、落地页和旧页面模板
+app/utils/                   通用工具、加密、路径、FFmpeg、授权、运行时辅助
+app/utils/JianYingApi/       第三方剪映 API 内置源码
+app/utils/jianying_mcp/      本地 MCP 草稿操作能力
+blanks/                      空白草稿模板
+docs/                        打包、发布、设置、授权、回归和功能文档
+env.presets/                 示例环境配置，只提交 .example
+migrations/                  数据库迁移
+packaging/                   PyInstaller / Inno Setup 打包配置和发布模板
+scripts/                     自检、回归、打包、发布、诊断和辅助脚本
+config.py                    Flask/桌面运行配置
+desktop_app.py               Windows 桌面壳入口
+run.py                       Web/本地调试入口
+run_worker.py                兼容后台任务入口
+runtime_paths_shared.py      桌面运行时路径封装
+wsgi.py                      WSGI 入口
 ```
 
 公开仓库不包含本机私密和运行时状态：
 
 - `.env`、真实 release preset、数据库、日志、缓存、用户上传内容
 - `venv/`、`venv312/`、`build/`、`dist/`
-- `runtime_tools/`、本地第三方二进制工具、私有服务配置和打包产物
+- `runtime_tools/`、`tools/`、`wenjian/`、本地第三方二进制工具、私有服务配置和打包产物
+- `instance/`、`user_data/`、`app/uploads/`、`.videofactory-runtime/` 等运行时目录
 
 安装包、便携包和 `installer_manifest.json` 应通过 GitHub Releases 发布，不提交到 Git 历史。
+
+## 二开建议
+
+- **改用户工作台**：优先看 `app/templates/user/index.html`、`app/static/js/user-index.js`、`app/static/css/user-index.css`、`app/views/api.py`。
+- **改 Admin / 商业化能力**：优先看 `app/views/admin.py`、`app/templates/user/admin.html`，以及用户、授权、CDK、配额相关 models。
+- **改剪映草稿能力**：优先看 `app/services/jianying/`、`app/utils/jianying_mcp/`、`app/utils/JianYingApi/`。
+- **改 AI 能力**：优先看 `app/services/ai_service.py`、`app/services/openclaw_client.py`、`app/models/ai_provider.py`、`app/models/user_api_key.py`。
+- **改打包发布**：优先看 `scripts/build_desktop_bundle.py`、`scripts/prepackage_check.py`、`packaging/`、`docs/windows_packaging.md`。
+- **做商业封包**：先确定 Desktop Core / Desktop Full 档位，再通过运行时开关控制 AI、Duo、OpenClaw、AI 漫剧等能力是否暴露。
 
 ## 运行与打包
 
@@ -221,6 +246,14 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py --preset env.presets\des
 - 文件分割和草稿结构查看已有基础能力，真实生产环境仍建议按素材类型做回归测试。
 - AI、Duo、OpenClaw、AI 漫剧等能力受运行时开关、账号配置和外部服务可用性影响。
 - 本项目不是剪映官方项目，使用时需要自行确认剪映/CapCut 版本、草稿目录和素材路径。
+
+## 联系与赞赏
+
+如果这个项目对你有帮助，欢迎赞赏支持后续维护；商业合作、定制开发、部署打包、剪映草稿适配和二开问题，可以通过微信联系作者。
+
+| 微信联系 | 赞赏支持 |
+|---|---|
+| ![微信联系](wx.jpg) | ![赞赏码](zhanshang.png) |
 
 ## 鸣谢
 
