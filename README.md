@@ -83,6 +83,15 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py --preset env.presets\des
 
 每次发布应保证 Release 说明与 manifest 中的提交、分支、构建时间和 `git_dirty` 状态一致。
 
+## 鸣谢
+
+本项目在剪映草稿结构理解、自动化能力和工具链整理过程中，参考并复用了部分开源项目的思路与代码，在此特别感谢：
+
+- [JianYing-Automation/JianYingApi](https://github.com/JianYing-Automation/JianYingApi)：第三方剪映 API 项目，当前仓库内置的 `app/utils/JianYingApi/` 源码来源于该项目，并保留其 MIT License。
+- [GuanYixuan/pyJianYingDraft](https://github.com/GuanYixuan/pyJianYingDraft)：Python 剪映草稿生成与编辑工具，本项目的 MCP 草稿导出、效果枚举和部分草稿能力接入参考了该生态。
+
+感谢以上项目作者和社区对剪映/CapCut 自动化方向的探索。
+
 ## License
 
 本项目使用 MIT License。你可以使用、复制、修改、分发和商用本项目代码，但需要保留原始版权声明和许可证文本。
