@@ -6,7 +6,9 @@ JianYingvideo 是一套面向短视频矩阵生产、剪映草稿自动化、AI 
 
 项目面向剪映 9+ 草稿结构做适配，实际兼容性仍以本机剪映/CapCut 版本、草稿结构和素材路径为准。剪映版本迭代较快，二开或商用封包前建议用自己的真实草稿模板跑一轮回归。
 
-![JianYingvideo dashboard](app/static/images/landing/hero-dashboard.png)
+![JianYingvideo 官网与运营能力展示](app/static/images/landing/hero-dashboard.png)
+
+上图为项目首页 / 运营能力展示图，适合在公开仓库中快速了解产品形态、商业化后台和下载入口的整体方向。
 
 ## 适合做什么
 
@@ -25,7 +27,9 @@ JianYingvideo 是一套面向短视频矩阵生产、剪映草稿自动化、AI 
 - **桌面打包可落地**：提供 Windows EXE/安装包打包脚本、Inno Setup 模板、发布检查和 manifest 追溯。
 - **开源可二开，商业可封包**：源码公开便于学习和改造，真实环境配置、运行时工具和安装包产物独立管理。
 
-![JianYingvideo workbench](app/static/images/landing/hero-workbench.png)
+![JianYingvideo 工作台与混剪主界面展示](app/static/images/landing/hero-workbench.png)
+
+上图为桌面工作台 / 批量混剪主界面展示图。公开仓库只引用已跟踪的展示图片，不引用 `user_data/`、`app/uploads/` 或运行时缓存中的本机测试截图。
 
 ## 桌面端功能模块
 
@@ -55,7 +59,7 @@ AI 漫剧模块用于把脚本、分镜、图片和草稿结构串起来。
 - 生图与素材整理结果可继续进入剪映草稿生成流程。
 - 适合漫画解说、短剧分镜、图文视频和批量内容工厂做二次开发。
 
-![AI feature](app/static/images/landing/feature-manga.png)
+![AI 漫剧与生图能力展示](app/static/images/landing/feature-manga.png)
 
 ### 批量效果
 
@@ -64,6 +68,8 @@ AI 漫剧模块用于把脚本、分镜、图片和草稿结构串起来。
 - 支持动画、转场、视频效果、滤镜、贴纸、文本效果等能力。
 - 保留 Duo 资源入口和效果检索入口。
 - 适合在批量生成草稿后继续统一补效果、补转场或做风格化处理。
+
+![批量效果与资源能力展示](app/static/images/landing/feature-effects.png)
 
 ### 批量分割
 
@@ -105,6 +111,8 @@ AI 漫剧模块用于把脚本、分镜、图片和草稿结构串起来。
 - 草稿目录、素材目录、音频目录、默认导出目录。
 - AI 账号管理，包括服务、密钥、模型/通道标识、服务地址和测试。
 
+![智能助手与配置能力展示](app/static/images/landing/feature-assistant.png)
+
 ### 资源互换 / 发布
 
 资源互换是面向运营的扩展模块。
@@ -116,6 +124,10 @@ AI 漫剧模块用于把脚本、分镜、图片和草稿结构串起来。
 ## Admin 与商业化能力
 
 项目内置一套适合商业化桌面软件的后台与授权基础。
+
+![Admin 后台与运营能力展示](app/static/images/landing/hero-dashboard.png)
+
+后台能力主要服务于商业化运营：用户、VIP、次数、授权、CDK、设备绑定、公告、下载地址和站点配置统一管理。桌面端在 `remote-auth` 模式下只保留本地草稿处理能力，商业化状态由服务端后台统一控制。
 
 ### 用户与权限
 
@@ -217,7 +229,69 @@ wsgi.py                      WSGI 入口
 - **改打包发布**：优先看 `scripts/build_desktop_bundle.py`、`scripts/prepackage_check.py`、`packaging/`、`docs/windows_packaging.md`。
 - **做商业封包**：先确定 Desktop Core / Desktop Full 档位，再通过运行时开关控制 AI、Duo、OpenClaw、AI 漫剧等能力是否暴露。
 
-## 运行与打包
+## 环境依赖
+
+### 本机开发
+
+- Windows 10/11。
+- Python 虚拟环境，建议使用仓库已有 `venv` 或自行创建新环境。
+- MySQL，商业化和多人使用建议使用 MySQL；SQLite 只适合临时本机调试。
+- FFmpeg / FFprobe，用于素材分割、音视频处理和导出相关链路。
+- 剪映 / CapCut 9+，并准备真实草稿目录和本地素材目录做兼容性回归。
+- `.env` 本机配置，公开仓库提供 `.env.example`，真实密钥、数据库地址和生产配置不要提交。
+
+### 桌面打包
+
+- PyInstaller 打包链路由 `packaging/video_factory_desktop.spec` 和 `scripts/build_desktop_bundle.py` 管理。
+- Inno Setup 用于生成 Windows 安装包，模板在 `packaging/video_factory_installer.iss`。
+- 真实 release preset、运行时工具、FFmpeg、官方草稿回归模板和私有服务配置由本机环境准备，不进入公开仓库。
+- 打包前应先跑 `scripts/prepackage_check.py`，涉及剪映官方草稿能力时再按 `docs/windows_packaging.md` 增加草稿回归检查。
+
+### 服务端部署
+
+- Linux 服务器建议使用 Python 3.10+、MySQL、Nginx 和 Gunicorn。
+- 服务端只负责登录注册、VIP、次数、CDK、设备绑定、邀请奖励、资源审核和 Admin 后台。
+- 服务端依赖使用 `requirements.server.txt`，配置从 `env.presets/server_auth.env.example` 复制到 `.env` 后填入真实值。
+- 详细说明见 `docs/server_auth_deploy.md`，生产环境不要把桌面端本地草稿处理链路放到服务器执行。
+
+## 本机快速启动
+
+下面命令适合二开者在本机快速启动开发环境。真实商业环境请改用自己的 MySQL、`.env` 和服务端配置。
+
+```powershell
+python -m venv venv
+venv\Scripts\pip.exe install -r requirements.txt
+venv\Scripts\python.exe -m flask db upgrade
+venv\Scripts\python.exe run.py
+```
+
+启动后优先验证 `/user` 工作台链路，再按需要测试批量混剪、分割、微调、导出、账户中心和 Admin 后台。
+
+## 服务端部署参考
+
+服务端部署用于 `remote-auth` 模式下的账号、授权、配额和后台运营，不负责在服务器上处理用户本地剪映草稿。
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.server.txt
+```
+
+复制示例配置并填入真实密钥和数据库连接：
+
+```bash
+cp env.presets/server_auth.env.example .env
+```
+
+生产环境建议放在 Nginx 反向代理后运行：
+
+```bash
+gunicorn -w 2 -b 127.0.0.1:5000 wsgi:app
+```
+
+本仓库当前不新增一键部署脚本；README 提供可复制命令，完整部署边界以 `docs/server_auth_deploy.md` 和 `docs/server_ops.md` 为准。
+
+## 桌面打包 / 安装包发布
 
 打包流程见 `docs/windows_packaging.md`。基础检查和桌面包构建命令示例：
 
@@ -226,7 +300,14 @@ venv\Scripts\python.exe scripts\prepackage_check.py
 venv\Scripts\python.exe scripts\build_desktop_bundle.py --preset env.presets\desktop_full.env.example --name ZhiyingShijie
 ```
 
-正式发布时请使用本机私有 release preset 填入生产配置，并确保该 preset 不提交到公开仓库。公开仓库只保留 `.example` 示例配置。
+这条命令可以作为公开仓库的一键打包参考入口。正式发布时请使用本机私有 release preset 填入生产配置，并确保该 preset 不提交到公开仓库。公开仓库只保留 `.example` 示例配置。
+
+构建输出通常包括：
+
+- 桌面 bundle：`build/release/<name>/`
+- 安装脚本：`build/installer/<name>_setup.iss`
+- 构建追溯：`installer_manifest.json`
+- 可选安装包：由 Inno Setup 编译生成的 `.exe`
 
 ## Release 附件
 
