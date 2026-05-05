@@ -5,6 +5,7 @@ __pycache__/
 
 # Flask stuff:
 instance/
+.videofactory-runtime/
 .webassets-cache
 
 # SQLite database files
@@ -24,6 +25,7 @@ logs/
 .vscode/
 .idea/
 venv/
+venv312/
 .pw-edge/
 .pw-browsers/
 .tmp/
@@ -32,8 +34,14 @@ duo_cache/
 mcp_cache/
 user_data/
 runtime_tools/
+tools/
+wenjian/
 build/
 dist/
+env.presets/desktop_zhiying_release.env
+env.presets/local_build_remote_auth.env
+env.presets/server_access.env.example
+docs/server_access.md
 runtime_server_5000.err.log
 runtime_server_5000.out.log
 runtime_server_5001.err.log
