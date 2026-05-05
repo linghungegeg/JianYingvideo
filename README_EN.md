@@ -14,6 +14,7 @@ The project is adapted for Jianying / CapCut 9+ draft structures. Actual compati
 
 - [Screenshots](#screenshots)
 - [Quick Start](#quick-start)
+- [Dependencies and Check Scripts](#dependencies-and-check-scripts)
 - [Desktop Modules](#desktop-modules)
 - [Admin and Commercialization](#admin-and-commercialization)
 - [Desktop Packaging](#desktop-packaging)
@@ -23,7 +24,7 @@ The project is adapted for Jianying / CapCut 9+ draft structures. Actual compati
 
 ## Screenshots
 
-The public repository only references tracked public images. It does not use images from `user_data/`, `app/uploads/`, `.videofactory-runtime/`, or local runtime caches.
+This repository only references tracked public images. It does not use images from `user_data/`, `app/uploads/`, `.videofactory-runtime/`, or local runtime caches.
 
 | Product / Operation Page | Workbench / Batch Remix |
 |---|---|
@@ -50,15 +51,17 @@ The public repository only references tracked public images. It does not use ima
 - **Batch-first workflow**: group replacement, material-pool variation, partition folders, batch effects, splitting, tuning, and export are designed for batch production.
 - **Pluggable AI capabilities**: AI account management, image generation, manga, copywriting, and TTS entry points are ready for extension.
 - **Practical desktop packaging**: Windows EXE / installer scripts, Inno Setup template, prepackage checks, and manifest-based traceability.
-- **Open source for development, practical for packaging**: source code is public, while real environment configs, runtime tools, and release artifacts stay outside Git history.
+- **Source-ready for development, practical for packaging**: the project source is included in this repository for learning, review, and secondary development, while real environment configs, runtime tools, and release artifacts stay outside Git history.
 
-## What The Public Version Includes
+## What The Source Distribution Includes
 
-The public repository includes source code, documentation, example presets, and packaging scripts for learning, review, and secondary development.
+This repository includes source code, documentation, example presets, and packaging scripts for learning, review, and secondary development.
 
 | Included | Not Included |
 |---|---|
 | Application source, user workbench, Admin, draft services, MCP/API, example configs, migrations, packaging scripts, installer templates | Real `.env`, real release presets, databases, logs, caches, uploaded user content, runtime tools, installers, portable packages |
+
+Database files are not committed to Git: do not commit `.db`, `.sqlite`, production MySQL dumps, or any user data. The schema is managed by `migrations/`. Secondary developers should copy `.env.example`, configure their own database, and run `flask db upgrade` to initialize or upgrade the schema.
 
 Installers, portable packages, and `installer_manifest.json` should be distributed through GitHub Releases instead of being committed to Git history.
 
@@ -75,6 +78,8 @@ venv\Scripts\python.exe -m flask db upgrade
 venv\Scripts\python.exe run.py
 ```
 
+`flask db upgrade` initializes or upgrades the local database schema from `migrations/`. This repository does not provide a real default admin account; secondary developers and deployers should create their own admin user and initial configuration according to their business rules.
+
 After startup, verify the `/user` workbench first, then test batch remix, splitting, tuning, export, account center, and Admin features as needed.
 
 ### Desktop Packaging Entry
@@ -84,7 +89,7 @@ venv\Scripts\python.exe scripts\prepackage_check.py
 venv\Scripts\python.exe scripts\build_desktop_bundle.py --preset env.presets\desktop_full.env.example --name ZhiyingShijie
 ```
 
-This is the public repository packaging entry point. For real releases, replace the example preset with your private release preset and never commit production secrets.
+This is the project packaging entry point. For real releases, replace the example preset with your private release preset and never commit production secrets.
 
 ## Dependencies
 
@@ -95,13 +100,13 @@ This is the public repository packaging entry point. For real releases, replace 
 - MySQL for commercial or multi-user usage; SQLite is only suitable for temporary local debugging.
 - FFmpeg / FFprobe for media splitting, audio/video processing, and export workflows.
 - Jianying / CapCut 9+, with real draft folders and local material folders for compatibility regression.
-- Local `.env` configuration. The public repository provides `.env.example`; real secrets, database settings, and production configs must not be committed.
+- Local `.env` configuration. This repository provides `.env.example`; real secrets, database settings, and production configs must not be committed.
 
 ### Desktop Packaging
 
 - PyInstaller packaging is managed by `packaging/video_factory_desktop.spec` and `scripts/build_desktop_bundle.py`.
 - Inno Setup is used for Windows installer generation, with the template in `packaging/video_factory_installer.iss`.
-- Real release presets, runtime tools, FFmpeg, official draft regression templates, and private service configs are prepared locally and are not included in the public repository.
+- Real release presets, runtime tools, FFmpeg, official draft regression templates, and private service configs are prepared locally and are not committed to Git.
 - Run `scripts/prepackage_check.py` before packaging. If official draft behavior is touched, add draft regression checks according to `docs/windows_packaging.md`.
 
 ### Server Deployment
@@ -110,6 +115,23 @@ This is the public repository packaging entry point. For real releases, replace 
 - The server handles login, registration, VIP, quota, CDK, device binding, invite rewards, resource review, and the Admin console.
 - Server dependencies use `requirements.server.txt`; copy `env.presets/server_auth.env.example` to `.env` and fill real values.
 - See `docs/server_auth_deploy.md` for details. Production servers should not run the user's local Jianying draft processing workflow.
+
+## Dependencies and Check Scripts
+
+This repository already provides common entry points for secondary development, deployment, and packaging:
+
+| File / Script | Purpose |
+|---|---|
+| `requirements.txt` | Main dependency set for local development and desktop builds |
+| `requirements.server.txt` | Server-side dependency set for `remote-auth` deployment |
+| `app/utils/JianYingApi/requirements.txt` | Reference dependencies for the embedded third-party JianYingApi source |
+| `scripts/runtime_selfcheck.py` | Runtime environment check |
+| `scripts/selfcheck.py` | Basic API / service check |
+| `scripts/prepackage_check.py` | Prepackage validation |
+| `scripts/build_desktop_bundle.py` | Desktop bundle / installer staging entry |
+| `scripts/server_backup.py` | Server backup helper |
+
+The project currently does not add a fully automatic one-click deployment script. The README provides copyable commands and existing script entry points so developers can adapt them to their own server, database, and packaging environment.
 
 ## Desktop Modules
 
@@ -186,7 +208,7 @@ Packaging details are in `docs/windows_packaging.md`. Typical outputs include:
 - Build traceability: `installer_manifest.json`
 - Optional installer binary generated by Inno Setup
 
-Use a private release preset for real releases. The public repository keeps only `.example` presets.
+Install `requirements.txt` and run `scripts/prepackage_check.py` before desktop packaging. Use a private release preset for real releases; this repository keeps only `.example` presets.
 
 ## GitHub Releases
 
@@ -210,7 +232,7 @@ cp env.presets/server_auth.env.example .env
 gunicorn -w 2 -b 127.0.0.1:5000 wsgi:app
 ```
 
-The repository currently does not add a one-click deployment script. Use the commands above and refer to `docs/server_auth_deploy.md` and `docs/server_ops.md` for the deployment boundary.
+For server deployment, install `requirements.server.txt` first instead of the full desktop dependency set. Use the commands above and refer to `docs/server_auth_deploy.md` and `docs/server_ops.md` for the deployment boundary.
 
 ## Project Structure
 

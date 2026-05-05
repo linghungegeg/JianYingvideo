@@ -14,6 +14,7 @@ JianYingvideo 是一套面向短视频矩阵生产、剪映草稿自动化、AI 
 
 - [截图预览](#截图预览)
 - [快速开始](#快速开始)
+- [依赖与自检脚本](#依赖与自检脚本)
 - [桌面端功能模块](#桌面端功能模块)
 - [Admin 与商业化能力](#admin-与商业化能力)
 - [桌面打包 / 安装包发布](#桌面打包--安装包发布)
@@ -23,7 +24,7 @@ JianYingvideo 是一套面向短视频矩阵生产、剪映草稿自动化、AI 
 
 ## 截图预览
 
-公开仓库只引用已跟踪的展示图片，不引用 `user_data/`、`app/uploads/`、`.videofactory-runtime/` 或运行时缓存中的本机测试截图。
+本仓库只引用已跟踪的展示图片，不引用 `user_data/`、`app/uploads/`、`.videofactory-runtime/` 或运行时缓存中的本机测试截图。
 
 | 官网 / 运营首页 | 工作台 / 批量混剪 |
 |---|---|
@@ -50,15 +51,17 @@ JianYingvideo 是一套面向短视频矩阵生产、剪映草稿自动化、AI 
 - **批量生产而非单点工具**：按组替换、素材池裂变、分区目录、批量效果、分割、微调和导出都围绕批量生产设计。
 - **AI 能力可插拔**：AI 账号管理、生图、漫剧、文案和 TTS 入口已经预留，可按业务模型和账号体系扩展。
 - **桌面打包可落地**：提供 Windows EXE/安装包打包脚本、Inno Setup 模板、发布检查和 manifest 追溯。
-- **开源可二开，商业可封包**：源码公开便于学习和改造，真实环境配置、运行时工具和安装包产物独立管理。
+- **源码可二开，商业可封包**：项目源码已随仓库提供，便于学习、审阅和二次开发；真实环境配置、运行时工具和安装包产物独立管理。
 
-## 公开版包含什么 / 不包含什么
+## 项目源码包含什么 / 不包含什么
 
-公开仓库包含源码、文档、示例配置和打包脚本，方便学习、审阅和二次开发。
+本仓库提供项目源码、文档、示例配置和打包脚本，方便学习、审阅和二次开发。
 
 | 包含 | 不包含 |
 |---|---|
 | 应用源码、用户工作台、Admin、草稿服务、MCP/API、示例配置、迁移、打包脚本、安装包模板 | 真实 `.env`、真实 release preset、数据库、日志、缓存、用户上传内容、运行时工具、安装包、便携包 |
+
+数据库文件不提交到 Git：不提交 `.db`、`.sqlite`、生产 MySQL dump 或任何用户数据。数据库结构由 `migrations/` 管理，二开者复制 `.env.example` 配置自己的数据库后，通过 `flask db upgrade` 初始化或升级表结构。
 
 安装包、便携包和 `installer_manifest.json` 应通过 GitHub Releases 发布，不提交到 Git 历史。
 
@@ -75,6 +78,8 @@ venv\Scripts\python.exe -m flask db upgrade
 venv\Scripts\python.exe run.py
 ```
 
+其中 `flask db upgrade` 会根据 `migrations/` 初始化或升级本地数据库结构。本仓库不提供真实默认管理员账号；二开或部署时应按自己的业务创建管理员和初始配置。
+
 启动后优先验证 `/user` 工作台链路，再按需要测试批量混剪、分割、微调、导出、账户中心和 Admin 后台。
 
 ### 桌面一键打包参考
@@ -84,7 +89,7 @@ venv\Scripts\python.exe scripts\prepackage_check.py
 venv\Scripts\python.exe scripts\build_desktop_bundle.py --preset env.presets\desktop_full.env.example --name ZhiyingShijie
 ```
 
-这条命令可以作为公开仓库的一键打包参考入口。正式发布时请使用本机私有 release preset 填入生产配置，并确保该 preset 不提交到公开仓库。
+这条命令可以作为本项目的一键打包参考入口。正式发布时请使用本机私有 release preset 填入生产配置，并确保该 preset 不提交到 Git。
 
 ## 环境依赖
 
@@ -95,13 +100,13 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py --preset env.presets\des
 - MySQL，商业化和多人使用建议使用 MySQL；SQLite 只适合临时本机调试。
 - FFmpeg / FFprobe，用于素材分割、音视频处理和导出相关链路。
 - 剪映 / CapCut 9+，并准备真实草稿目录和本地素材目录做兼容性回归。
-- `.env` 本机配置，公开仓库提供 `.env.example`，真实密钥、数据库地址和生产配置不要提交。
+- `.env` 本机配置，本仓库提供 `.env.example`，真实密钥、数据库地址和生产配置不要提交。
 
 ### 桌面打包
 
 - PyInstaller 打包链路由 `packaging/video_factory_desktop.spec` 和 `scripts/build_desktop_bundle.py` 管理。
 - Inno Setup 用于生成 Windows 安装包，模板在 `packaging/video_factory_installer.iss`。
-- 真实 release preset、运行时工具、FFmpeg、官方草稿回归模板和私有服务配置由本机环境准备，不进入公开仓库。
+- 真实 release preset、运行时工具、FFmpeg、官方草稿回归模板和私有服务配置由本机环境准备，不进入 Git。
 - 打包前应先跑 `scripts/prepackage_check.py`，涉及剪映官方草稿能力时再按 `docs/windows_packaging.md` 增加草稿回归检查。
 
 ### 服务端部署
@@ -110,6 +115,23 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py --preset env.presets\des
 - 服务端只负责登录注册、VIP、次数、CDK、设备绑定、邀请奖励、资源审核和 Admin 后台。
 - 服务端依赖使用 `requirements.server.txt`，配置从 `env.presets/server_auth.env.example` 复制到 `.env` 后填入真实值。
 - 详细说明见 `docs/server_auth_deploy.md`，生产环境不要把桌面端本地草稿处理链路放到服务器执行。
+
+## 依赖与自检脚本
+
+本仓库已经提供二开、部署和打包常用入口：
+
+| 文件 / 脚本 | 用途 |
+|---|---|
+| `requirements.txt` | 本机开发和桌面端主依赖 |
+| `requirements.server.txt` | 服务端 `remote-auth` 部署依赖 |
+| `app/utils/JianYingApi/requirements.txt` | 内置第三方 JianYingApi 参考依赖 |
+| `scripts/runtime_selfcheck.py` | 运行时环境检查 |
+| `scripts/selfcheck.py` | 基础接口 / 服务检查 |
+| `scripts/prepackage_check.py` | 打包前检查 |
+| `scripts/build_desktop_bundle.py` | 桌面 bundle / 安装包 staging 入口 |
+| `scripts/server_backup.py` | 服务端备份辅助脚本 |
+
+本项目当前不新增一键全自动部署脚本；README 提供可复制命令和仓库已有脚本入口，便于二开者按自己的服务器、数据库和打包环境调整。
 
 ## 桌面端功能模块
 
@@ -198,7 +220,7 @@ venv\Scripts\python.exe scripts\build_desktop_bundle.py --preset env.presets\des
 - 构建追溯：`installer_manifest.json`
 - 可选安装包：由 Inno Setup 编译生成的 `.exe`
 
-正式发布时请使用本机私有 release preset 填入生产配置，并确保该 preset 不提交到公开仓库。公开仓库只保留 `.example` 示例配置。
+桌面打包前请先安装 `requirements.txt` 并运行 `scripts/prepackage_check.py`。正式发布时请使用本机私有 release preset 填入生产配置，并确保该 preset 不提交到 Git；本仓库只保留 `.example` 示例配置。
 
 ## Release 附件
 
@@ -222,7 +244,7 @@ cp env.presets/server_auth.env.example .env
 gunicorn -w 2 -b 127.0.0.1:5000 wsgi:app
 ```
 
-本仓库当前不新增一键部署脚本；README 提供可复制命令，完整部署边界以 `docs/server_auth_deploy.md` 和 `docs/server_ops.md` 为准。
+服务端部署优先安装 `requirements.server.txt`，不要直接使用桌面端完整依赖。README 提供可复制命令，完整部署边界以 `docs/server_auth_deploy.md` 和 `docs/server_ops.md` 为准。
 
 ## 项目结构
 
